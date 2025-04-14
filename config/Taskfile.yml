@@ -1,0 +1,80 @@
+version: 3
+
+tasks:
+
+  build:
+    cmd: go build ./...
+
+  repl:
+    desc: Start the REPL for ./{{.SECAI_DIR}}/*.addr
+    cmd: arpc -d {{.SECAI_DIR}}
+
+  lazysql:
+    desc: Start lazysql for {{.SECAI_DIR}}/db.sqlite
+    cmd: lazysql {{.SECAI_DIR}}/db.sqlite
+
+  install-deps:
+    silent: true
+    cmds:
+      - echo "Installing Go-based dependencies..."
+      - go install github.com/pancsta/asyncmachine-go/tools/cmd/arpc@latest
+      - go install github.com/pancsta/asyncmachine-go/tools/cmd/am-dbg@latest
+      - echo "Install Zellij from:"
+      - echo "- https://zellij.dev/documentation/installation"
+
+  prometheus:
+    desc: Open Prometheus
+    cmd: xdg-open http://localhost:9091/
+
+  grafana:
+    desc: Open Grafana
+    cmd: xdg-open http://localhost:3000/dashboards
+
+  jaeger:
+    desc: Open Jaeger
+    cmd: xdg-open http://localhost:16686/search
+
+
+  am-dbg:
+    desc: Start the TUI debugger
+    silent: false
+    ignore_error: true
+    cmd: am-dbg --log-level 2
+      --dir {{.SECAI_DIR}}
+      --graph 3
+      --output-clients
+      {{.CLI_ARGS}}
+
+  am-dbg-dashboard-2:
+    desc: Start a dashboard with 2 instances
+    silent: false
+    ignore_error: true
+    cmd: zellij --layout config/dash-1x1.kdl
+
+  am-dbg-dashboard-3:
+    desc: Start a dashboard with 3 instances
+    silent: false
+    ignore_error: true
+    cmd: zellij --layout config/dash-2x1.kdl
+
+  am-dbg-dashboard-4:
+    desc: Start a dashboard with 4 instances
+    silent: false
+    ignore_error: true
+    cmd: zellij --layout config/dash-2x1x1.kdl
+
+  am-dbg-dashboard-exit:
+    desc: Exit all dashboards
+    silent: false
+    ignore_error: true
+    cmds:
+      - killall am-dbg
+      - killall zellij
+
+  start-web-metrics:
+    desc: Start docker-compose with Grafana and Jaeger
+    cmds:
+      - docker-compose -f config/web-metrics/docker-compose.yml up -d --force-recreate
+      - |
+        echo Grafana: http://localhost:3000
+        echo Jaeger: http://localhost:16686

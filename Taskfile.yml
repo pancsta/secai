@@ -1,0 +1,74 @@
+version: '3'
+dotenv: [ '.env' ]
+includes:
+  shared:
+    taskfile: ./config
+    flatten: true
+    excludes: [install-deps]
+
+tasks:
+
+  ex-deepresearch-delve:
+    cmd: dlv debug --headless --listen=:2345 --api-version=2 --accept-multiclient
+      ./examples/deepresearch/cmd -- 
+        {{.CLI_ARGS}}
+
+  ex-deepresearch:
+    cmd: go run ./examples/deepresearch/cmd {{.CLI_ARGS}}
+
+  install-deps:
+    cmds:
+      - go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
+      - cd config && task install-deps
+
+  test:
+    env:
+      AM_REPL_ADDR_DIR: '{{.SECAI_DIR}}'
+    cmd: echo $AM_REPL_ADDR_DIR
+
+  am-dbg-update:
+    dir: ../asyncmachine-go
+    cmds:
+      - go install ./tools/cmd/am-dbg
+
+  repl-update:
+    dir: ../asyncmachine-go
+    cmds:
+      - go install ./tools/cmd/arpc
+
+  am-dbg-kill:
+    cmd: killall am-dbg
+
+  am-dbg-delve:
+    silent: false
+    dir: ../asyncmachine-go
+    cmd: dlv debug --headless --listen=:2345 --api-version=2 --accept-multiclient
+      ./tools/cmd/am-dbg -- 
+        --dir {{.SECAI_DIR}}
+        --graph 3
+        --clean-on-connect 
+        {{.CLI_ARGS}}
+
+  am-dbg-debug:
+    silent: false
+    cmd: task am-dbg -- 
+      --am-dbg-addr localhost:9913
+      --log-level 2
+      --dir {{.SECAI_DIR}}
+      --graph 3
+      {{.CLI_ARGS}}
+
+  am-dbg-delve-debug:
+    silent: false
+    dir: ../asyncmachine-go
+    cmd: dlv debug --headless --listen=:2345 --api-version=2 --accept-multiclient
+      ./tools/cmd/am-dbg -- 
+        --am-dbg-addr localhost:9913
+        --log-level 2
+        --dir {{.SECAI_DIR}}
+        --graph 3
+        --clean-on-connect 
+        {{.CLI_ARGS}}
+
+  gen-db:
+    cmd: sqlc generate

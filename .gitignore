@@ -1,0 +1,77 @@
+# Jetbrains IDEs
+.idea
+
+# Vim
+*.swp
+*.swn
+*.swo
+
+# MacOS system file
+.DS_Store
+
+# Environment variable files
+.env
+
+# PEM files
+*.pem
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Binaries compiled by Go
+build/
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.new
+*.old
+*.out
+
+# Dependency directories
+vendor/
+
+# Redis
+*.rdb
+
+# Go workspace file
+go.work
+
+# local dev
+/.dev
+/dist
+/tools/cmd/am-dbg/am-dbg
+*.log
+/*.gob
+/assets/*.cast.yml
+
+tmp
+_py
+/.run
+/*.bz2
+/*.br
+/mem.*
+/cpu.*
+/.local
+/assets/video.gif
+/*.svg
+/assets/*.pdf
+/*.png
+/*.prof
+/am-dbg-ssh
+/built
+/log.md
+/coverage*.txt
+/tests*.txt
+/assets
+/__*
+/trace*
+*.mmd
+/demo
+/am-dbg.txt
+/db.sqlite

@@ -1,0 +1,13 @@
+version: '3'
+dotenv: [ '.env' ]
+includes:
+  shared:
+    taskfile: ./config/Taskfile.yml
+    flatten: true
+tasks:
+
+  start:
+    desc: Start the agent
+    env:
+      AM_REPL_ADDR_DIR: '{{.SECAI_DIR}}'
+    cmd: go run ./cmd {{.CLI_ARGS}}
