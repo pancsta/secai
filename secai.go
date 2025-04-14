@@ -34,9 +34,11 @@ var sessId = uuid.New().String()
 
 // ///// ///// /////
 
-var (
-// ErrPromptNotFound = errors.New("prompt not found")
-)
+func init() {
+	if os.Getenv("SECAI_DIR") == "" {
+		os.Setenv("SECAI_DIR", ".")
+	}
+}
 
 // DOCUMENT
 
