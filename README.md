@@ -1,7 +1,18 @@
+# secret-aigents
+
 **secai** is an AtomicAgents-like framework for **autonomous LLM daemons**. It's implemented on top of a
 **unified state graph** and makes a solid foundation for complex, proactive, and long-lived **AI Agents** with deep and
 structured memory. It offers a dedicated set of devtools and is written in the Go programming language. By having
 graph-based flow, **secai** allows for precise behavior modeling of agents, including interruptions and fault-tolerancy.
+
+## Demo
+
+[Screenshots](#screenshots) and [YouTube](https://youtu.be/0VJzO1S-gV0) are also available.
+
+<p align="center"><a href="https://pancsta.github.io/assets/secai/demo1/secai-demo1.mp4"><img src="https://pancsta.github.io/assets/secai/demo1/demo1.png"></a></p>
+
+> [!NOTE]
+> This tech demo is a 5min captions-only screencast, showcasing all 9 ways an agent can be seen, in addition to the classic chat view.
 
 ## Features
 
@@ -88,15 +99,6 @@ Unlike Python apps, you can start it with a single command:
    - `export OPENAI_API_KEY=myapikey`
    - `export DEEPSEEK_API_KEY=myapikey`
 3. Run `go run github.com/pancsta/secai/examples/deepresearch/cmd@latest`
-
-## Demo
-
-[Screenshots are also available](#screenshots).
-
-<p align="center"><a href="https://pancsta.github.io/assets/secai/demo1/secai-demo1.mp4"><img src="https://pancsta.github.io/assets/secai/demo1/demo1.png"></a></p>
-
-> [!NOTE]
-> This tech demo is a 5min captions-only screencast, showcasing all 9 ways an agent can be seen, in addition to the classic chat view.
 
 ## Example
 
