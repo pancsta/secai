@@ -1,9 +1,9 @@
 # secret-aigents
 
-**secai** is an AtomicAgents-like framework for **autonomous LLM daemons**. It's implemented on top of a
+**SecAI** is an AtomicAgents-like framework for **autonomous LLM daemons**. It's implemented on top of a
 **unified state graph** and makes a solid foundation for complex, proactive, and long-lived **AI Agents** with deep and
 structured memory. It offers a dedicated set of devtools and is written in the Go programming language. By having
-graph-based flow, **secai** allows for precise behavior modeling of agents, including interruptions and fault-tolerancy.
+graph-based flow, **SecAI** allows for precise behavior modeling of agents, including interruptions and fault-tolerancy.
 
 ## Demo
 
@@ -16,7 +16,7 @@ graph-based flow, **secai** allows for precise behavior modeling of agents, incl
 
 ## Features
 
-- atomicity on the state level
+- prompt atomicity on the state level
 - atomic consensus with relations and negotiation
 - declarative flow definitions
 - REPL & CLI
@@ -67,7 +67,7 @@ graph-based flow, **secai** allows for precise behavior modeling of agents, incl
 
 ## Comparison
 
-| Feature       | secai                                                                                                          | AtomicAgents                                     |
+| Feature       | SecAI                                                                                                          | AtomicAgents                                     |
 |---------------|----------------------------------------------------------------------------------------------------------------|--------------------------------------------------|
 | Model         | unified state graph                                                                                            | BaseAgent class                                  |
 | Debugger      | multi-client with time travel                                                                                  | X                                                |
@@ -221,6 +221,8 @@ type ResultCheckingInfo struct {
 Read the [schema file in full](/examples/deepresearch/schema/sa_research.go).
 
 ## Screenshots
+
+![DeepResearch SVG](https://pancsta.github.io/assets/secai/deepresearch.svg)
 
 <table>
 
