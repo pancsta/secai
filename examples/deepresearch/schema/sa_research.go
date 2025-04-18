@@ -24,8 +24,6 @@ var Sp = shared.Sp
 type ResearchStatesDef struct {
 	*am.StatesBase
 
-	// PROMPTS
-
 	CheckingInfo string
 	NeedMoreInfo string
 
@@ -56,8 +54,6 @@ var ResearchSchema = SchemaMerge(
 	ss.AgentSchema,
 
 	am.Schema{
-
-		// PROMPTS
 
 		// Choice "agent"
 		ssR.CheckingInfo: {

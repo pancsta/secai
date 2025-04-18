@@ -83,10 +83,10 @@ graph-based flow, **SecAI** allows for precise behavior modeling of agents, incl
 ### Go vs Python
 
 - just works, batteries included, no magic
-- 1 package manager vs 4
-- single binary vs interpreted multi-file source
-- coherent static typing vs maybe
-- easy & stable vs easy
+- 1 package manager **vs** 4
+- single binary **vs** interpreted multi-file source
+- coherent static typing **vs** maybe
+- easy & stable **vs** easy
 - no ecosystem fragmentation
 - million times faster /s
 
@@ -111,13 +111,12 @@ Code snippets from [`/examples/deepresearch`](/examples/deepresearch/schema/sa_r
 type ResearchStatesDef struct {
     *am.StatesBase
 
-    // PROMPTS
-
     CheckingInfo string
     NeedMoreInfo string
 
-    Searching  string
-    SearchDone string
+    SearchingLLM string
+    SearchingWeb string
+    Scraping     string
 
     Answering string
     Answered  string
@@ -139,43 +138,45 @@ var ResearchSchema = SchemaMerge(
 
     am.Schema{
 
-        // PROMPTS
-
         // Choice "agent"
         ssR.CheckingInfo: {
-            Require: S{ssR.Start},
+            Require: S{ssR.Start, ssR.Prompt},
             Remove:  sgR.Info,
         },
         ssR.NeedMoreInfo: {
             Require: S{ssR.Start},
-            Add:     S{ssR.Searching},
+            Add:     S{ssR.SearchingLLM},
             Remove:  sgR.Info,
         },
 
         // Query "agent"
-        ssR.Searching: {
-            Require: S{ssR.NeedMoreInfo},
+        ssR.SearchingLLM: {
+            Require: S{ssR.NeedMoreInfo, ssR.Prompt},
             Remove:  sgR.Search,
         },
-        ssR.SearchDone: {
-            Require: S{ssR.Start},
+        ssR.SearchingWeb: {
+            Require: S{ssR.NeedMoreInfo, ssR.Prompt},
+            Remove:  sgR.Search,
+        },
+        ssR.Scraping: {
+            Require: S{ssR.NeedMoreInfo, ssR.Prompt},
             Remove:  sgR.Search,
         },
 
         // Q&A "agent"
         ssR.Answering: {
-            Require: S{ssR.Start},
-            Remove:  SAdd(sgR.Info, sgR.Answers, sgR.Search),
+            Require: S{ssR.Start, ssR.Prompt},
+            Remove:  SAdd(sgR.Info, sgR.Answers),
         },
         ssR.Answered: {
             Require: S{ssR.Start},
-            Remove:  SAdd(sgR.Info, sgR.Answers, sgR.Search),
+            Remove:  SAdd(sgR.Info, sgR.Answers, S{ssR.Prompt}),
         },
     })
 
 var sgR = am.NewStateGroups(ResearchGroupsDef{
         Info:    S{ssR.CheckingInfo, ssR.NeedMoreInfo},
-        Search:  S{ssR.Searching, ssR.SearchDone},
+        Search:  S{ssR.SearchingLLM, ssR.SearchingWeb, ssR.Scraping},
         Answers: S{ssR.Answering, ssR.Answered},
     })
 ```
@@ -221,8 +222,6 @@ type ResultCheckingInfo struct {
 Read the [schema file in full](/examples/deepresearch/schema/sa_research.go).
 
 ## Screenshots
-
-![DeepResearch SVG](https://pancsta.github.io/assets/secai/deepresearch.svg)
 
 <table>
 
@@ -277,6 +276,16 @@ Read the [schema file in full](/examples/deepresearch/schema/sa_research.go).
   </tr>
 
   <tr>
+    <td align="center" colspan="5">State Schema</td>
+  </tr>
+  <tr>
+    <td align="center" colspan="5">
+        <img src="https://pancsta.github.io/assets/secai/deepresearch.svg"/>
+    </td>
+  </tr>
+
+
+  <tr>
     <td align="center" colspan="5">Dashboard 1</td>
   </tr>
   <tr>
@@ -284,6 +293,7 @@ Read the [schema file in full](/examples/deepresearch/schema/sa_research.go).
         <img src="https://pancsta.github.io/assets/secai/dashboard-2.png"/>
     </td>
   </tr>
+
   <tr>
     <td align="center" colspan="5">Dashboard 2</td>
   </tr>

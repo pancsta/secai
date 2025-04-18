@@ -9,12 +9,17 @@ includes:
 tasks:
 
   ex-deepresearch-delve:
-    cmd: dlv debug --headless --listen=:2345 --api-version=2 --accept-multiclient
-      ./examples/deepresearch/cmd -- 
-        {{.CLI_ARGS}}
+    cmds:
+      - go mod tidy
+      - dlv debug --headless --listen=:2345 --api-version=2 --accept-multiclient
+        ./examples/deepresearch/cmd -- 
+          {{.CLI_ARGS}}
 
   ex-deepresearch:
-    cmd: go run ./examples/deepresearch/cmd {{.CLI_ARGS}}
+    cmds:
+      - go mod tidy
+      - go run ./examples/deepresearch/cmd {{.CLI_ARGS}}
+
 
   install-deps:
     cmds:

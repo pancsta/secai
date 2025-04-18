@@ -35,6 +35,7 @@ var sessId = uuid.New().String()
 // ///// ///// /////
 
 func init() {
+	// TODO handle better
 	if os.Getenv("SECAI_DIR") == "" {
 		os.Setenv("SECAI_DIR", ".")
 	}
@@ -702,8 +703,8 @@ type Scenario struct {
 	// additional context states (optional)
 	Contexts am.S
 
-	// number of future transitions to check for checkpoint activations, eg [1, 5, 10]
-	// will mark a checkpoint true if it gets activated in 1 or 5 or 10 txes
+	// Number of future transitions to check for checkpoint activations, eg [1, 5, 10]
+	// will mark a checkpoint true if it gets activated in 1 or 5 or 10 txs
 	// from the input state
 	// default: [1]
 	ActivationDistances []int
@@ -712,7 +713,7 @@ type Scenario struct {
 }
 
 type ScenarioSamples struct {
-	// active checkpoints in the beginning of the scenario
+	// active checkpoints at the beginning of the scenario
 	StartingCheckpoints []string
 	// names of input states, with only one being called at a time
 	Inputs []string
