@@ -1,76 +1,67 @@
 package tui
 
 import (
+	"errors"
+	"log/slog"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/gdamore/tcell/v2/terminfo"
+	"github.com/gliderlabs/ssh"
 	"github.com/navidys/tvxwidgets"
 	amhist "github.com/pancsta/asyncmachine-go/pkg/history"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
-	ssam "github.com/pancsta/asyncmachine-go/pkg/states"
+	"github.com/pancsta/secai/tui/states"
 	"github.com/rivo/tview"
 
-	"github.com/pancsta/secai/schema"
+	baseschema "github.com/pancsta/secai/schema"
 	"github.com/pancsta/secai/shared"
 )
 
-var ss = schema.AgentStates
+// aliases
+
+type A = shared.A
+type S = am.S
+
+var ParseArgs = shared.ParseArgs
+var Pass = shared.Pass
+
+var ss = baseschema.AgentStates
 var placeholder = "Enter text here..."
 
-const clockHistSize = 5
-
 type Chat struct {
-	mach         *am.Machine
-	app          *tview.Application
-	msgs         []Msg
-	msgsView     *tview.TextView
-	button       *tview.Button
-	layout       *tview.Flex
-	prompt       *tview.TextArea
-	hist         *amhist.History
-	clockView    *tvxwidgets.Plot
-	clockHeight  int
-	clockEnabled bool
+	mach   *am.Machine
+	logger *slog.Logger
+	app    *tview.Application
+	msgs   []*shared.Msg
+
+	msgsView   *tview.TextView
+	buttonSend *tview.Button
+	layout     *tview.Flex
+	prompt     *tview.TextArea
+	hist       *amhist.History
+	clockView  *tvxwidgets.Plot
+	buttonIntt *tview.Button
+	dispose    func() error
+	uiMach     *am.Machine
 }
 
-type Msg struct {
-	From      shared.From
-	Content   string
-	CreatedAt time.Time
-}
+var _ shared.UI = &Chat{}
 
-func NewChat(mach *am.Machine, sysMsgs []string, enableClockmoji bool) (*Chat, error) {
+func NewChat(mach *am.Machine, logger *slog.Logger, msgs []*shared.Msg) *Chat {
 
 	c := &Chat{
-		mach: mach,
-		app:  tview.NewApplication(),
-		msgs: shared.Map(sysMsgs, func(m string) Msg {
-			return Msg{
-				From:      shared.FromSystem,
-				Content:   m,
-				CreatedAt: time.Now(),
-			}
-		}),
-		clockHeight:  4,
-		clockEnabled: enableClockmoji,
+		mach:   mach,
+		logger: logger,
+		app:    tview.NewApplication(),
+		msgs:   msgs,
 	}
 
-	// TODO cut better
-	trackedStates := mach.StateNames()
-	trackedStates = trackedStates[0:slices.Index(trackedStates, "UIErr")]
-
-	c.hist = amhist.Track(mach, trackedStates, clockHistSize)
-	c.initUI()
-
-	// bind UI states
-	err := mach.BindHandlers(c)
-	if err != nil {
-		return nil, err
-	}
-
-	return c, nil
+	return c
 }
 
 // ///// ///// /////
@@ -79,64 +70,120 @@ func NewChat(mach *am.Machine, sysMsgs []string, enableClockmoji bool) (*Chat, e
 
 // ///// ///// /////
 
-func (c *Chat) UIButtonPressState(e *am.Event) {
-	c.mach.Remove1(ss.UIButtonPress, nil)
-
-	if c.mach.Is1(ss.Requesting) {
-		c.mach.EvAdd1(e, ss.Interrupt, nil)
-		return
-	}
-
-	c.mach.EvAdd1(e, ss.Prompt, am.A{"prompt": c.prompt.GetText()})
-	c.prompt.SetText("", false)
-	c.redraw()
+func (c *Chat) UICleanOutputState(e *am.Event) {
+	c.mach.Remove1(ss.UICleanOutput, nil)
+	c.msgs = nil
+	go c.app.QueueUpdateDraw(func() {
+		c.msgsView.SetText("")
+	})
 }
 
-func (c *Chat) InputPendingEnd(e *am.Event) {
+func (c *Chat) UIButtonSendState(e *am.Event) {
+	c.mach.Remove1(ss.UIButtonSend, nil)
+
+	c.mach.EvAdd1(e, ss.Prompt, Pass(&A{Prompt: c.prompt.GetText()}))
+	c.prompt.SetText("", false)
+	c.Redraw()
+}
+
+func (c *Chat) UIButtonInttState(e *am.Event) {
+	c.mach.Remove1(ss.UIButtonIntt, nil)
+
+	if c.mach.Is1(ss.Interrupted) {
+		c.mach.EvAdd1(e, ss.Resume, nil)
+	} else {
+		c.mach.EvAdd1(e, ss.Interrupted, nil)
+	}
+	c.Redraw()
+}
+
+func (c *Chat) InputBlockedEnd(e *am.Event) {
 	c.prompt.SetDisabled(true)
 	c.prompt.SetPlaceholder("")
-	c.redraw()
+	c.Redraw()
 }
 
-func (c *Chat) InputPendingState(e *am.Event) {
+func (c *Chat) InputBlockedState(e *am.Event) {
 	c.prompt.SetDisabled(false)
 	c.prompt.SetPlaceholder(placeholder)
-	c.redraw()
-}
-
-func (c *Chat) UIReadyState(e *am.Event) {
-	c.mach.Add1(ss.Ready, nil)
-}
-
-func (c *Chat) AnsweredState(e *am.Event) {
-	c.redraw()
-}
-
-func (c *Chat) PromptEnter(e *am.Event) bool {
-	_, ok := e.Args["prompt"].(string)
-	return ok
-}
-
-func (c *Chat) PromptState(e *am.Event) {
-	c.AddMsg(e.Args["prompt"].(string), shared.FromUser)
+	c.Redraw()
 }
 
 func (c *Chat) RequestingState(e *am.Event) {
-	c.prompt.SetTitle("Requesting...")
-	c.button.SetLabel("STOP")
-	c.redraw()
+	ctx := c.Mach().NewStateCtx(ss.Requesting)
+
+	// progress indicator
+	go func() {
+		if ctx.Err() != nil {
+			return // expired
+		}
+
+		c.app.QueueUpdateDraw(func() {
+			c.prompt.SetTitle("requesting")
+		})
+
+		t := time.NewTicker(1 * time.Second)
+		dots := ""
+		for {
+			select {
+
+			case <-ctx.Done():
+				t.Stop()
+				return // expired
+
+			case <-t.C:
+				dots += "."
+				if len(dots) > 3 {
+					dots = ""
+				}
+				c.app.QueueUpdateDraw(func() {
+					c.prompt.SetTitle(dots + "requesting" + dots)
+				})
+			}
+		}
+	}()
 }
 
 func (c *Chat) RequestingEnd(e *am.Event) {
-	c.prompt.SetTitle("Prompt")
-	c.button.SetLabel("Send Message")
-	c.redraw()
+	go c.app.QueueUpdateDraw(func() {
+		c.prompt.SetTitle("Prompt")
+	})
 }
 
-func (c *Chat) AnyState(e *am.Event) {
-	c.updateClock()
-	// TODO optimize
-	c.redraw()
+func (c *Chat) MsgEnter(e *am.Event) bool {
+	m := ParseArgs(e.Args).Msg
+	l := len(c.msgs)
+
+	// skip duplicates
+	return l == 0 || !(m.Text == c.msgs[l-1].Text && m.From == c.msgs[l-1].From)
+}
+
+func (c *Chat) MsgState(e *am.Event) {
+	c.msgs = append(c.msgs, ParseArgs(e.Args).Msg)
+	text := c.renderMsgs()
+
+	go c.app.QueueUpdateDraw(func() {
+		c.msgsView.SetText(text)
+		c.msgsView.ScrollToEnd()
+	})
+}
+
+func (c *Chat) InterruptedState(e *am.Event) {
+	c.buttonIntt.SetLabel("Resume")
+	c.Redraw()
+}
+
+func (c *Chat) InterruptedEnd(e *am.Event) {
+	c.buttonIntt.SetLabel("Interrupt")
+	c.Redraw()
+}
+
+func (c *Chat) PromptState(e *am.Event) {
+	// set the ignored prompt back into the UI
+	if c.Mach().Is1(ss.Interrupted) {
+		c.prompt.SetText(ParseArgs(e.Args).Prompt, false)
+		return
+	}
 }
 
 // ///// ///// /////
@@ -145,64 +192,57 @@ func (c *Chat) AnyState(e *am.Event) {
 
 // ///// ///// /////
 
-func (c *Chat) updateClock() {
-	if !c.clockEnabled {
-		return
+func (c *Chat) Init(sub shared.UI, screen tcell.Screen, name string) error {
+
+	id := "tui-chat-" + c.mach.Id() + "-" + name
+	uiMach, err := am.NewCommon(c.mach.NewStateCtx(ss.UIMode), id, states.UIStoriesSchema, ssui.Names(), nil, c.mach, nil)
+	if err != nil {
+		return err
+	}
+	shared.MachTelemetry(uiMach, nil)
+	c.uiMach = uiMach
+	mach := c.Mach()
+
+	// TODO cut better
+	trackedStates := mach.StateNames()
+	lastState := slices.Index(trackedStates, baseschema.AgentStates.UICleanOutput)
+	trackedStates = trackedStates[0 : lastState+1]
+
+	c.InitComponents()
+	if screen != nil {
+		screen.EnableMouse(tcell.MouseMotionEvents)
+		// TODO enable paste?
+		c.app.SetScreen(screen)
 	}
 
-	ticks := make(am.Time, len(c.hist.States))
-	for _, e := range c.hist.Entries {
-		ticks = ticks.Add(e.MTimeDiff[0:len(c.hist.States)])
-	}
-
-	var maxC uint64
-	for _, c := range ticks {
-		if c > maxC {
-			maxC = c
-		}
-	}
-	div := float64(c.clockHeight) / float64(maxC)
-	plot := [][]float64{make([]float64, len(ticks))}
-
-	for i, t := range ticks {
-		plot[0][i] = float64(t) / div
-	}
-
-	c.clockView.SetData(plot)
+	return sub.BindHandlers()
 }
 
-func (c *Chat) initUI() {
+func (c *Chat) Logger() *slog.Logger {
+	return c.logger
+}
 
-	// clock
-	var clockLayout *tview.Flex
-	if c.clockEnabled {
-		c.clockView = tvxwidgets.NewPlot()
-		c.clockView.SetLineColor([]tcell.Color{
-			tcell.ColorGold,
-			tcell.ColorLightSkyBlue,
-		})
-		c.clockView.SetDrawXAxisLabel(false)
-		c.clockView.SetDrawYAxisLabel(false)
-		c.clockView.SetDrawAxes(false)
-		clockCols := len(c.hist.States)
-		c.clockView.SetData([][]float64{make([]float64, clockCols)})
-		c.clockView.SetMarker(tvxwidgets.PlotMarkerBraille)
-		// TODO fix empty line between clock and msgs
+func (c *Chat) Mach() *am.Machine {
+	return c.mach
+}
 
-		clockLayout = tview.NewFlex().SetDirection(tview.FlexColumn).
-			AddItem(tview.NewBox(), 0, 1, false).
-			AddItem(c.clockView, clockCols, 1, false).
-			AddItem(tview.NewBox(), 0, 1, false)
-	}
+func (c *Chat) UIMach() *am.Machine {
+	return c.uiMach
+}
+
+// BindHandlers binds transition handlers to the state machine. Overwrite it to bind methods from a subclass.
+func (c *Chat) BindHandlers() error {
+	return c.Mach().BindHandlers(c)
+}
+
+func (c *Chat) InitComponents() {
 
 	// messages
 	c.msgsView = tview.NewTextView().
 		SetDynamicColors(true).
 		SetRegions(true).
 		SetWordWrap(true).
-		SetChangedFunc(func() {
-			c.redraw()
-		}).
+		ScrollToEnd().
 		SetText(c.renderMsgs())
 	c.msgsView.SetTitle("Messages").SetBorder(true)
 
@@ -214,14 +254,16 @@ func (c *Chat) initUI() {
 		SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 			switch event.Key() {
 
-			// submit TODO state
+			// submit TODO UI state
 			case tcell.KeyEnter:
-				res := c.mach.Add1(ss.Prompt, am.A{"prompt": c.prompt.GetText()})
+				res := c.mach.Add1(ss.Prompt, Pass(&A{
+					Prompt: c.prompt.GetText(),
+				}))
 				if res == am.Canceled {
 					return nil
 				}
 				c.prompt.SetText("", false)
-				c.redraw()
+				c.Redraw()
 
 				return nil
 			}
@@ -230,25 +272,34 @@ func (c *Chat) initUI() {
 			return event
 		})
 
-	c.button = tview.NewButton("Send Message").
+	c.buttonSend = tview.NewButton("Send Message").
 		SetSelectedFunc(func() {
-			c.mach.Add1(ss.UIButtonPress, nil)
+			c.mach.Add1(ss.UIButtonSend, nil)
 		})
+	c.buttonSend.SetBorder(true)
+
+	c.buttonIntt = tview.NewButton("Interrupt").
+		SetSelectedFunc(func() {
+			c.mach.Add1(ss.UIButtonIntt, nil)
+		})
+	if c.Mach().Is1(ss.Interrupted) {
+		c.buttonIntt.SetLabel("Resume")
+	}
+	c.buttonIntt.SetBorder(true)
 
 	// LAYOUT
 
 	c.layout = tview.NewFlex().SetDirection(tview.FlexRow)
-	if c.clockEnabled {
-		c.layout.AddItem(clockLayout, c.clockHeight, 1, false)
-	}
 	c.layout.
 		AddItem(c.msgsView, 0, 1, false).
 		AddItem(c.prompt, 5, 1, true).
-		AddItem(c.button, 3, 1, false)
+		AddItem(c.buttonSend, 3, 1, false).
+		AddItem(c.buttonIntt, 3, 1, false)
 	c.app = tview.NewApplication().SetRoot(c.layout, true).EnableMouse(true)
 
 	// tab navigation
-	focusable := []tview.Primitive{c.msgsView, c.prompt, c.button}
+	focusable := []tview.Primitive{c.msgsView, c.prompt, c.buttonSend, c.buttonIntt}
+	// TODO reuse across tviews
 	c.layout.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyTab {
 			cycleFocus(c.app, focusable, false)
@@ -258,40 +309,55 @@ func (c *Chat) initUI() {
 			return nil
 		}
 
+		// data
+		c.msgsView.SetText(c.renderMsgs())
+		c.Redraw()
+
+		return event
+	})
+
+	// catch ctrl+c
+	c.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyCtrlC {
+			_ = c.Stop()
+			return nil
+		}
+
 		return event
 	})
 }
 
-func (c *Chat) Run() error {
+// Start starts the UI and optionally returns the error and mutates with UIErr.
+func (c *Chat) Start(dispose func() error) error {
+	c.dispose = dispose
 	// start the UI loop
+	c.UIMach().Add(S{ssui.Start, ssui.Ready}, nil)
 	go c.mach.Add1(ss.UIReady, nil)
 	err := c.app.Run()
-	if err != nil {
-		c.mach.AddErrState(ss.UIErr, err, nil)
+	if err != nil && err.Error() != "EOF" {
+		c.mach.AddErrState(ss.ErrUI, err, nil)
 	}
-	c.mach.Add1(ssam.DisposedStates.Disposing, nil)
 
 	return err
 }
 
-func (c *Chat) AddMsg(msg string, from shared.From) {
-	c.msgs = append(c.msgs, Msg{
-		From: from,
-		// trim and reset styles
-		Content:   strings.Trim(msg, " \n\t") + "[-:-:-]",
-		CreatedAt: time.Now(),
-	})
-	c.msgsView.SetText(c.renderMsgs())
-	c.msgsView.ScrollToEnd()
-	c.redraw()
+func (c *Chat) Stop() error {
+	_ = c.dispose()
+	c.app.Stop()
+
+	return nil
 }
 
-func (c *Chat) redraw() {
+func (c *Chat) Redraw() {
 	go c.app.QueueUpdateDraw(func() {})
 }
 
 func (c *Chat) renderMsgs() string {
-	return strings.Join(shared.Map(c.msgs, func(m Msg) string {
+	return strings.Join(shared.Map(c.msgs, func(m *shared.Msg) string {
+
+		// trim and reset styles
+		text := strings.Trim(m.Text, " \n\t") + "[-:-:-]"
+
 		var prefix string
 		switch m.From {
 		case shared.FromAssistant:
@@ -300,9 +366,11 @@ func (c *Chat) renderMsgs() string {
 			prefix = "[::ub]System[::-]: \n"
 		case shared.FromUser:
 			prefix = "[::ub]You[::-]: \n"
+		case shared.FromNarrator:
+			prefix = "[::ub]Narrator[::-]: \n"
 		}
 
-		return prefix + m.Content
+		return prefix + text
 	}), "\n\n")
 }
 
@@ -324,5 +392,82 @@ func cycleFocus(app *tview.Application, elements []tview.Primitive, reverse bool
 
 		app.SetFocus(elements[i])
 		return
+	}
+}
+
+// ///// ///// /////
+
+// ///// SSH
+
+// ///// ///// /////
+
+func NewSessionScreen(s ssh.Session) (tcell.Screen, error) {
+	pi, ch, ok := s.Pty()
+	if !ok {
+		return nil, errors.New("no pty requested")
+	}
+	ti, err := terminfo.LookupTerminfo(pi.Term)
+	if err != nil {
+		return nil, err
+	}
+
+	t := &tty{
+		Session: s,
+		ch:      ch,
+	}
+	t.size.Store(&pi.Window)
+	screen, err := tcell.NewTerminfoScreenFromTtyTerminfo(t, ti)
+	if err != nil {
+		return nil, err
+	}
+
+	return screen, nil
+}
+
+type tty struct {
+	ssh.Session
+	size     atomic.Pointer[ssh.Window]
+	ch       <-chan ssh.Window
+	resizecb func()
+	mu       sync.Mutex
+}
+
+func (t *tty) Start() error {
+	go func() {
+		for win := range t.ch {
+			t.size.Store(&win)
+			t.notifyResize()
+		}
+	}()
+
+	return nil
+}
+
+func (t *tty) Stop() error {
+	return nil
+}
+
+func (t *tty) Drain() error {
+	return nil
+}
+
+func (t *tty) WindowSize() (window tcell.WindowSize, err error) {
+	return tcell.WindowSize{
+		Width:  t.size.Load().Width,
+		Height: t.size.Load().Height,
+	}, nil
+}
+
+func (t *tty) NotifyResize(cb func()) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.resizecb = cb
+}
+
+func (t *tty) notifyResize() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.resizecb != nil {
+		t.resizecb()
 	}
 }
