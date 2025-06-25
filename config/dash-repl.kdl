@@ -1,0 +1,50 @@
+keybinds clear-defaults=true {
+  locked {
+  // navi
+    bind "Alt Left" {
+      MoveFocusOrTab "Left"; }
+    bind "Alt Right" {
+      MoveFocusOrTab "Right"; }
+    bind "Alt Down" {
+      MoveFocus "Down"; }
+    bind "Alt Up" {
+      MoveFocus "Up"; }
+    bind "Alt =" {
+      Resize "Increase"; }
+
+  // resize
+    bind "Alt =" "Alt +" {
+      Resize "Increase"; }
+    bind "Alt -" {
+      Resize "Decrease"; }
+
+
+    bind "Ctrl q" {
+      Quit ; }
+  }
+}
+
+pane_frames false
+on_force_close "quit"
+copy_on_select false
+pane_frames false
+ui {
+  pane_frames {
+    hide_session_name true
+    rounded_corners true
+  }
+}
+show_release_notes false
+show_startup_tips false
+
+layout {
+  pane split_direction="horizontal" {
+    pane size="85%" command="sh" {
+      args "-c" "am-dbg --dir $SECAI_DIR_ABS -l localhost:6831 --output-diagrams 3 --tail --output-clients --import-data am-dbg-dump.gob.br"
+    }
+    pane size="15%" command="sh" {
+      args "-c" "sleep 5; arpc -d $SECAI_DIR_ABS --watch"
+    }
+  }
+
+}

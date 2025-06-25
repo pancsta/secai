@@ -1,0 +1,53 @@
+keybinds clear-defaults=true {
+  locked {
+  // navi
+    bind "Alt Left" {
+      MoveFocusOrTab "Left"; }
+    bind "Alt Right" {
+      MoveFocusOrTab "Right"; }
+    bind "Alt Down" {
+      MoveFocus "Down"; }
+    bind "Alt Up" {
+      MoveFocus "Up"; }
+    bind "Alt =" {
+      Resize "Increase"; }
+
+  // resize
+    bind "Alt =" "Alt +" {
+      Resize "Increase"; }
+    bind "Alt -" {
+      Resize "Decrease"; }
+
+
+    bind "Ctrl q" {
+      Quit ; }
+  }
+}
+
+pane_frames false
+copy_on_select false
+pane_frames false
+ui {
+  pane_frames {
+    hide_session_name true
+    rounded_corners true
+  }
+}
+show_release_notes false
+show_startup_tips false
+
+layout {
+  pane split_direction="vertical" {
+    pane size="50%" split_direction="horizontal" {
+      pane size="6" command="task" {
+        args "tui-clock"
+      }
+      pane command="task" {
+        args "tui-chat"
+      }
+    }
+    pane size="50%" command="task" {
+      args "tui-stories"
+    }
+  }
+}

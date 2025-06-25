@@ -1,24 +1,50 @@
 version: 3
 
+vars:
+  SECAI_DIR_ABS: '{{.USER_WORKING_DIR}}/{{.SECAI_AGENT_DIR}}/{{.SECAI_DIR}}'
+
 tasks:
 
+  start-agent:
+    desc: Start the agent
+    dir: '{{.SECAI_AGENT_DIR}}'
+    cmds:
+      - mkdir -p {{.SECAI_DIR}}
+      - ./{{.SECAI_ID}} {{.CLI_ARGS}} > {{.SECAI_DIR}}/{{.SECAI_ID}}.jsonl
+
+  release: goreleaser release --clean --skip-publish --skip-validate
+
+  gen-db:
+    cmd: sqlc generate
+
+  logs-agent:
+    dir: '{{.SECAI_AGENT_DIR}}'
+    cmd: tail -f {{.SECAI_DIR}}/{{.SECAI_ID}}.jsonl | fblog -d -x time
+
   build:
-    cmd: go build ./...
+    dir: '{{.SECAI_AGENT_DIR}}'
+    cmds:
+      - go build -o {{.SECAI_ID}} ./cmd
 
   repl:
     desc: Start the REPL for ./{{.SECAI_DIR}}/*.addr
+    dir: '{{.SECAI_AGENT_DIR}}'
     cmd: arpc -d {{.SECAI_DIR}}
 
   lazysql:
     desc: Start lazysql for {{.SECAI_DIR}}/db.sqlite
+    dir: '{{.SECAI_AGENT_DIR}}'
     cmd: lazysql {{.SECAI_DIR}}/db.sqlite
 
+  # TODO migrate to go tools 1.24
   install-deps:
     silent: true
     cmds:
-      - echo "Installing Go-based dependencies..."
+      # TODO lock versions
       - go install github.com/pancsta/asyncmachine-go/tools/cmd/arpc@latest
       - go install github.com/pancsta/asyncmachine-go/tools/cmd/am-dbg@latest
+      - go install github.com/mattn/goreman@latest
+      - go install github.com/eliben/static-server@latest
       - echo "Install Zellij from:"
       - echo "- https://zellij.dev/documentation/installation"
 
@@ -34,47 +60,291 @@ tasks:
     desc: Open Jaeger
     cmd: xdg-open http://localhost:16686/search
 
-
   am-dbg:
+    requires:
+      vars: [AM_DBG_ADDR]
+    env:
+      AM_DBG_ADDR: '{{.AM_DBG_ADDR}}'
     desc: Start the TUI debugger
     silent: false
     ignore_error: true
-    cmd: am-dbg --log-level 2
-      --dir {{.SECAI_DIR}}
-      --graph 3
+    dir: ../asyncmachine-go
+    cmd: task am-dbg -- 
+      --log-level 2
+      --dir "{{.SECAI_DIR_ABS}}"
+      --output-diagrams 3
       --output-clients
+      --listen-on {{.AM_DBG_ADDR}}
       {{.CLI_ARGS}}
 
-  am-dbg-dashboard-2:
-    desc: Start a dashboard with 2 instances
-    silent: false
-    ignore_error: true
-    cmd: zellij --layout config/dash-1x1.kdl
+  dashboard-wide-narrow:
+    requires:
+      vars: [SECAI_DIR, SECAI_ID]
+    dir: ../asyncmachine-go
+    desc: Start a dashboard with 2 instances of am-dbg
+    cmds:
+      - task: am-dbg-dashboard-exit
+      - zellij --session secai-dash-{{.SECAI_ID}}
+          --new-session-with-layout {{.USER_WORKING_DIR}}/config/dash-wide-narrow.kdl
+      - task: am-dbg-dashboard-exit
 
-  am-dbg-dashboard-3:
-    desc: Start a dashboard with 3 instances
-    silent: false
+  dashboard-repl:
+    requires:
+      vars: [SECAI_DIR, SECAI_ID]
+    env:
+      SECAI_DIR_ABS: "{{.SECAI_DIR_ABS}}"
     ignore_error: true
-    cmd: zellij --layout config/dash-2x1.kdl
+    dir: ../asyncmachine-go
+    desc: Start a dashboard with am-dbg and a REPL
+    cmds:
+      - task: am-dbg-dashboard-exit
+      - zellij --session secai-dash-{{.SECAI_ID}}
+          --new-session-with-layout {{.USER_WORKING_DIR}}/config/dash-repl.kdl
+      - task: am-dbg-dashboard-exit
 
-  am-dbg-dashboard-4:
-    desc: Start a dashboard with 4 instances
-    silent: false
-    ignore_error: true
-    cmd: zellij --layout config/dash-2x1x1.kdl
+  dashboard-wn-repl:
+    requires:
+      vars: [SECAI_DIR, SECAI_ID]
+    env:
+      SECAI_DIR_ABS: "{{.SECAI_DIR_ABS}}"
+    dir: ../asyncmachine-go
+    desc: Start a dashboard with 2 instances of am-dbg and a REPL
+    cmds:
+      - task: am-dbg-dashboard-exit
+      - zellij --session secai-dash-{{.SECAI_ID}}
+          --new-session-with-layout {{.USER_WORKING_DIR}}/config/dash-wide-narrow-repl.kdl
+      - task: am-dbg-dashboard-exit
 
   am-dbg-dashboard-exit:
     desc: Exit all dashboards
-    silent: false
-    ignore_error: true
-    cmds:
-      - killall am-dbg
-      - killall zellij
+    cmd: zellij delete-session secai-dash-{{.SECAI_ID}} --force
 
-  start-web-metrics:
-    desc: Start docker-compose with Grafana and Jaeger
+  start-agent-metrics:
+    desc: Start docker-compose with Grafana and Jaeger for agents
     cmds:
-      - docker-compose -f config/web-metrics/docker-compose.yml up -d --force-recreate
+      - docker-compose -f config/agent-metrics/docker-compose.yml up -d --force-recreate
       - |
         echo Grafana: http://localhost:3000
         echo Jaeger: http://localhost:16686
+
+  start-docker-metrics:
+    desc: Start docker-compose with Grafana for Docker
+    cmds:
+      - docker-compose -f config/docker-metrics/docker-compose.yml up -d --force-recreate
+      - |
+        echo Grafana: http://localhost:3001
+
+  start:
+    desc: Start a full deployment
+    vars:
+      MSG: |
+        TUI Debugger:
+        > zellij attach secai-dash-{{.SECAI_ID}}
+        
+        Web Desktop:
+        > https://host
+
+        Web Mobile:
+        > https://host/mobile
+
+        Web Logs:
+        > https://host/logs
+
+        Web Debugger:
+        > https://host/dbg
+
+        Web Files:
+        > https://host/files
+    cmds:
+#      - task: build
+      - echo "{{.MSG}}"
+      - goreman -exit-on-error start
+
+  # TUI CHAT
+
+  tui-chat:
+    ignore_error: true
+    desc: Connect to Chat TUI via SSH
+    cmd: ssh chat@localhost -p {{.SECAI_TUI_PORT}}
+      -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no
+
+  tui-chat-auto:
+    ignore_error: true
+    desc: Connect to Chat TUI via SSH and keep reconnecting
+    cmd: |
+      while true; do
+        task tui-chat
+        sleep 3
+      done
+
+  # TUI STORIES
+
+  tui-stories:
+    ignore_error: true
+    desc: Connect to Stories TUI via SSH
+    cmd: ssh stories@localhost -p {{.SECAI_TUI_PORT}}
+      -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no
+
+  tui-stories-auto:
+    ignore_error: true
+    desc: Connect to Storied TUI via SSH and keep reconnecting
+    cmd: |
+      while true; do
+        task tui-stories
+        sleep 3
+      done
+
+  # TUI CLOCK
+
+  tui-clock:
+    ignore_error: true
+    desc: Connect to Clock TUI via SSH
+    cmd: ssh clock@localhost -p {{.SECAI_TUI_PORT}}
+      -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no
+
+  tui-clock-auto:
+    ignore_error: true
+    desc: Connect to Clock TUI via SSH and keep reconnecting
+    cmd: |
+      while true; do
+        task tui-clock
+        sleep 3
+      done
+
+  # LAYOUTS
+
+  tui:
+    desc: Start a TUI with 3 UI connections
+    silent: false
+    ignore_error: true
+    cmds:
+      - zellij --layout ./config/tui.kdl
+          attach secai-{{.SECAI_ID}}
+          --create
+
+  tui-auto:
+    desc: Start a TUI with 3 UI connections and reconnect
+    silent: false
+    ignore_error: true
+    cmds:
+      - zellij --layout ./config/tui-auto.kdl
+          attach secai-{{.SECAI_ID}}
+          --create
+
+  tui-mini:
+    desc: Start a TUI with 3 UI connections
+    silent: false
+    ignore_error: true
+    cmds:
+      - zellij --layout ./config/tui-mini.kdl
+          attach secai-{{.SECAI_ID}}
+          --create
+
+  tui-mini-auto:
+    desc: Start a TUI with 3 UI connections and reconnect
+    silent: false
+    ignore_error: true
+    cmds:
+      - zellij --layout ./config/tui-mini-auto.kdl
+          attach secai-{{.SECAI_ID}}
+          --create
+
+  tui-exit:
+    desc: Exit all TUIs
+    cmd: zellij delete-session secai-{{.SECAI_ID}} --force
+
+  tui-mobile:
+    desc: Start a TUI with 3 UI connections
+    silent: false
+    ignore_error: true
+    cmds:
+      - zellij --layout ./config/tui-mobile.kdl
+          attach secai-{{.SECAI_ID}}-mobile
+          --create
+
+  tui-mobile-auto:
+    desc: Start a TUI with 3 UI connections and reconnect
+    silent: false
+    ignore_error: true
+    cmds:
+      - zellij --layout ./config/tui-mobile-auto.kdl
+          attach secai-{{.SECAI_ID}}-mobile
+          --create
+
+  tui-mobile-exit:
+    desc: Exit all mobile TUIs
+    cmd: zellij delete-session secai-{{.SECAI_ID}}-mobile --force
+
+  # WEB
+
+  web-tui:
+    desc: Start a web TUI with 3 UI connections
+    cmds:
+      - echo "http://localhost:{{.SECAI_WEB_DESKTOP_PORT}}"
+      - ttyd --writable -p {{.SECAI_WEB_DESKTOP_PORT}}
+          -t titleFixed="{{.SECAI_LABEL}}"
+          {{.SECAI_TTYD_ARGS}}
+          task tui
+
+  web-tui-auto:
+    desc: Start a web TUI with 3 UI auto connections
+    cmds:
+      - echo "http://localhost:{{.SECAI_WEB_DESKTOP_PORT}}"
+      - ttyd --writable -p {{.SECAI_WEB_DESKTOP_PORT}}
+          -t titleFixed="{{.SECAI_LABEL}}"
+          -t disableLeaveAlert=true
+          {{.SECAI_TTYD_ARGS}}
+          task tui-auto
+
+  web-tui-mobile:
+    desc: Start a mobile web TUI with 3 UI connections
+    cmds:
+      - echo "http://localhost:{{.SECAI_WEB_MOBILE_PORT}}"
+      - ttyd --writable -p {{.SECAI_WEB_MOBILE_PORT}}
+          -t fontSize=30
+          -t disableResizeOverlay=true
+          -t titleFixed="{{.SECAI_LABEL}} (mobile)"
+          -t disableLeaveAlert=true
+          --base-path /mobile
+          {{.SECAI_TTYD_MOBILE_ARGS}}
+          task tui-mobile
+
+  web-tui-mobile-auto:
+    desc: Start a mobile web TUI with 3 UI auto connections
+    cmds:
+      - echo "http://localhost:{{.SECAI_WEB_MOBILE_PORT}}"
+      - ttyd --writable -p {{.SECAI_WEB_MOBILE_PORT}}
+          -t fontSize=30
+          -t disableResizeOverlay=true
+          -t titleFixed="{{.SECAI_LABEL}} (mobile)"
+          -t disableLeaveAlert=true
+          --base-path /mobile
+          {{.SECAI_TTYD_MOBILE_ARGS}}
+          task tui-mobile-auto
+
+  web-dashboard:
+    desc: Start a web debugger with REPL
+    cmds:
+      - echo "http://localhost:{{.SECAI_WEB_DBG_PORT}}"
+      - ttyd --writable -p {{.SECAI_WEB_DBG_PORT}}
+          -t titleFixed="{{.SECAI_LABEL}} (dbg)"
+          -t disableLeaveAlert=true
+          -t disableResizeOverlay=true
+          --base-path /dbg
+          {{.SECAI_TTYD_ARGS}}
+          zellij attach secai-dash-{{.SECAI_ID}}
+
+  web-logs-agent:
+    cmd: ttyd --writable -p {{.SECAI_WEB_LOGS_PORT}}
+      -t titleFixed="{{.SECAI_LABEL}} (logs)"
+      -t disableLeaveAlert=true
+      -t disableResizeOverlay=true
+      --base-path /logs
+      {{.SECAI_TTYD_ARGS}}
+      task logs-agent
+
+  web-dir:
+    cmds:
+      - cp ./examples/{{.SECAI_ID}}/schema/sa_{{.SECAI_ID}}.go {{.SECAI_DIR}}/_schema.go
+      - static-server --host {{.SECAI_TUI_HOST}}
+          --port {{.SECAI_WEB_DIR_PORT}} {{.SECAI_DIR}}
