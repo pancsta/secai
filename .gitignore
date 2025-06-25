@@ -75,3 +75,9 @@ _py
 /demo
 /am-dbg.txt
 /db.sqlite
+/ttyd*.html
+/deploy/agent/data
+/deploy/agent/agent.env
+.aider*
+/examples/cook/cook
+/examples/research/research

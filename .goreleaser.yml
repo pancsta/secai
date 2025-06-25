@@ -1,0 +1,86 @@
+# .goreleaser.yml
+
+builds:
+  -
+    id: "research"
+    env:
+      - CGO_ENABLED=0
+      - GO111MODULE=on
+      - SECAI_ID=aig-research
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    main: ./examples/research/cmd
+    binary: aig-research
+    ldflags:
+      - -s -w # Remove debug info, strip symbols (common optimization)
+      - -X main.id=aig-research
+
+
+
+  -
+    id: "cook"
+    env:
+      - CGO_ENABLED=0
+      - GO111MODULE=on
+      - SECAI_ID=aig-cook
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    main: ./examples/cook/cmd
+    binary: aig-cook
+    ldflags:
+      - -s -w # Remove debug info, strip symbols (common optimization)
+      - -X main.id=aig-cook
+
+archives:
+  -
+    id: "example-research"
+    format: tar.gz
+    name_template: "example-research_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # dont add readmes etc
+    files: [""]
+    builds:
+      - research
+
+  -
+    id: "example-cook"
+    format: tar.gz
+    name_template: "example-cook_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # dont add readmes etc
+    files: [""]
+    builds:
+      - cook
+
+checksum:
+  name_template: 'checksums.txt'
+
+release:
+  github:
+    owner: pancsta
+    name: asyncmachine-go
+  draft: true
+  replace_existing_draft: true
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^refactor:'
+      - '^style:'
+      - '^ci:'
+      - '^perf:'
+      - '^revert:'
+snapshot:
+  name_template: "{{ .Tag }}-next"

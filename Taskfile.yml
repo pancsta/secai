@@ -8,6 +8,46 @@ includes:
 
 tasks:
 
+  docker:
+    env:
+      DOCKER_BUILDKIT: 1
+    cmd: docker build -t secai/{{.SECAI_ID}}
+      --build-arg SECAI_ID="{{.SECAI_ID}}"
+      -f deploy/agent/Dockerfile ..
+
+  docker-compose:
+    dotenv: ["deploy/agent/agent.env"]
+#    cmd: env
+    cmd: docker-compose -f ./deploy/agent/docker-compose.yml
+      up -d
+#      up -d --force-recreate
+
+  docker-compose-stop:
+    cmd: docker-compose -f ./deploy/agent/docker-compose.yml
+      down
+
+  dev-docker:
+    env:
+      DOCKER_BUILDKIT: 1
+    cmd: docker build -t secai/{{.SECAI_ID}}-dev
+      --build-arg SECAI_ID="{{.SECAI_ID}}"
+      -f deploy/agent/Dockerfile ..
+
+  dev-docker-compose:
+    dotenv: ["deploy/agent/agent.env"]
+    env:
+      SECAI_ENV: "-dev"
+#    cmd: env
+    cmd: docker-compose -f ./deploy/agent/docker-compose.yml
+      up -d
+#      up -d --force-recreate
+
+  dev-docker-compose-stop:
+    env:
+      SECAI_ENV: "-dev"
+    cmd: docker-compose -f ./deploy/agent/docker-compose.yml
+      down
+
   ex-deepresearch-delve:
     cmds:
       - go mod tidy
@@ -20,16 +60,30 @@ tasks:
       - go mod tidy
       - go run ./examples/deepresearch/cmd {{.CLI_ARGS}}
 
+  ex-cook:
+    cmds:
+      - go mod tidy
+      - go run ./examples/cook/cmd {{.CLI_ARGS}} | fblog -d -x time
+
+  ex-cook-clock:
+    cmds:
+      - go mod tidy
+      - go run ./examples/cook/cmd {{.CLI_ARGS}} | fblog -d -x time
+      - ssh clock@localhost:7855
+
+  ex-cook-delve:
+    cmds:
+      - go mod tidy
+      - dlv debug --headless --listen=:2345 --api-version=2 --accept-multiclient
+        ./examples/cook/cmd -- 
+          {{.CLI_ARGS}} | fblog -d -x time
 
   install-deps:
+    ignore_error: true
     cmds:
       - go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
-      - cd config && task install-deps
-
-  test:
-    env:
-      AM_REPL_ADDR_DIR: '{{.SECAI_DIR}}'
-    cmd: echo $AM_REPL_ADDR_DIR
+      - task: shared:install-deps
+      - cargo install fblog
 
   am-dbg-update:
     dir: ../asyncmachine-go
@@ -74,6 +128,3 @@ tasks:
         --graph 3
         --clean-on-connect 
         {{.CLI_ARGS}}
-
-  gen-db:
-    cmd: sqlc generate
