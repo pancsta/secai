@@ -1,0 +1,19 @@
+version: '3'
+dotenv: [ '.env' ]
+includes:
+  shared:
+    taskfile: ./config/Taskfile.yml
+    flatten: true
+    optional: true
+
+env:
+  SECAI_ID: "cook"
+
+tasks:
+
+  sync:
+    cmds:
+      - rm ./config/Taskfile.yml
+      - wget -O ./config/Taskfile.yml https://raw.githubusercontent.com/pancsta/secai/refs/heads/main/config/Taskfile.yml
+
+  # TODO custom tasks go here
