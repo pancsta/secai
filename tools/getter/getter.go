@@ -17,7 +17,7 @@ type Tool struct {
 	getter func() (string, error)
 }
 
-func New(agent secai.AgentApi, id, title string, getter func() (string, error)) (*Tool, error) {
+func New(agent secai.AgentAPI, id, title string, getter func() (string, error)) (*Tool, error) {
 	var err error
 	t := &Tool{
 		getter: getter,

@@ -11,7 +11,7 @@ import (
 
 	"github.com/cixtor/readability"
 	"github.com/gocolly/colly/v2"
-	html2text "github.com/jaytaylor/html2text"
+	"github.com/jaytaylor/html2text"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
 	"golang.org/x/sync/errgroup"
 
@@ -35,13 +35,13 @@ type Tool struct {
 	*secai.Tool
 	*am.ExceptionHandler
 
-	agent  secai.AgentApi
+	agent  secai.AgentAPI
 	result schema.Result
 	client *http.Client
 	c      *colly.Collector
 }
 
-func New(agent secai.AgentApi) (*Tool, error) {
+func New(agent secai.AgentAPI) (*Tool, error) {
 	var err error
 	t := &Tool{}
 	t.Tool, err = secai.NewTool(agent, id, title, ss.Names(), schema.Schema)

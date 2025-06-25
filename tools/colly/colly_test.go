@@ -6,7 +6,7 @@ import (
 
 	"github.com/gocolly/colly/v2"
 	"github.com/pancsta/secai"
-	"github.com/pancsta/secai/examples/deepresearch/schema"
+	"github.com/pancsta/secai/examples/research/schema"
 )
 
 func TestReader(t *testing.T) {

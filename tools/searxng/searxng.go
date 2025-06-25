@@ -39,8 +39,9 @@ type Tool struct {
 //go:embed config
 var cfgFolder embed.FS
 
-func New(agent secai.AgentApi) (*Tool, error) {
+func New(agent secai.AgentAPI) (*Tool, error) {
 	var err error
+	// TODO config
 	t := &Tool{port: "7452"}
 	t.Tool, err = secai.NewTool(agent, id, title, ss.Names(), schema.Schema)
 	if err != nil {
@@ -63,7 +64,7 @@ func (t *Tool) Document() *secai.Document {
 		return &doc
 	}
 
-	doc.AddPart("Queries: " + strings.Join(t.queries, "; "))
+	doc.AddPart("BaseQueries: " + strings.Join(t.queries, "; "))
 	// TODO config
 	for _, r := range t.result.Results[:min(30, len(t.result.Results))] {
 		doc.AddPart("- " + r.Title)
@@ -72,7 +73,7 @@ func (t *Tool) Document() *secai.Document {
 	return &doc
 }
 
-// Search is a blocking method, which performs the search.
+// Search is a blocking method that performs the search.
 func (t *Tool) Search(ctx context.Context, params *schema.Params) (*schema.Result, error) {
 	mach := t.Mach()
 	mach.Add1(ss.Working, nil)
@@ -170,14 +171,16 @@ func (t *Tool) Search(ctx context.Context, params *schema.Params) (*schema.Resul
 // ///// ///// /////
 
 func (t *Tool) StartState(e *am.Event) {
+	mach := t.Mach()
 	if os.Getenv("SEARXNG_PORT") != "" {
 		t.port = os.Getenv("SEARXNG_PORT")
-		t.Mach().Add1(ss.Ready, nil)
+		mach.EvAdd1(e, ss.Ready, nil)
 
 		return
 	}
 
-	t.Mach().Add1(ss.DockerChecking, nil)
+	mach.Log("SEARXNG_PORT empty - starting docker compose")
+	mach.EvAdd1(e, ss.DockerChecking, nil)
 }
 
 func (t *Tool) DockerCheckingState(e *am.Event) {
@@ -196,9 +199,9 @@ func (t *Tool) DockerCheckingState(e *am.Event) {
 			return
 		}
 		if len(output) == 0 {
-			mach.AddErr(errors.New("docker not available"), nil)
+			mach.EvAddErr(e, errors.New("docker not available"), nil)
 		} else {
-			mach.Add1(ss.DockerAvailable, nil)
+			mach.EvAdd1(e, ss.DockerAvailable, nil)
 		}
 	}()
 }
@@ -213,11 +216,15 @@ func (t *Tool) DockerStartingState(e *am.Event) {
 		}
 
 		// crate and clean
-		tmpDir := filepath.Join(os.TempDir(), mach.Id())
+		tmpDir := filepath.Join(os.TempDir(), "secai-tool-searxng")
 		tmpDirFiles, err := os.ReadDir(tmpDir)
 		if err == nil {
 			for _, f := range tmpDirFiles {
-				os.RemoveAll(filepath.Join(tmpDir, f.Name()))
+				err := os.RemoveAll(filepath.Join(tmpDir, f.Name()))
+				if err != nil {
+					mach.EvAddErr(e, fmt.Errorf("docker cleanup failed: %w", err), nil)
+					return
+				}
 			}
 		}
 
@@ -229,11 +236,11 @@ func (t *Tool) DockerStartingState(e *am.Event) {
 		}
 
 		// start
-		cmd := exec.Command("docker", "compose", "-p", mach.Id(), "up", "-d")
+		cmd := exec.Command("docker", "compose", "-p", "secai-tool-searxng", "up", "-d")
 		cmd.Dir = filepath.Join(tmpDir, "config")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			mach.AddErr(fmt.Errorf("docker compose failed: %w: %s", err, out), nil)
+			mach.EvAddErr(e, fmt.Errorf("docker compose failed: %w: %s", err, out), nil)
 			return
 		}
 		if ctx.Err() != nil {
@@ -241,6 +248,6 @@ func (t *Tool) DockerStartingState(e *am.Event) {
 		}
 
 		// next
-		mach.Add1(ss.Ready, nil)
+		mach.EvAdd1(e, ss.Ready, nil)
 	}()
 }
