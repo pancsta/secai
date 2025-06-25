@@ -1,3 +1,4 @@
+//nolint:lll
 package schema
 
 import (
@@ -5,6 +6,7 @@ import (
 
 	"github.com/invopop/jsonschema"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
+	llm "github.com/pancsta/secai/llm_agent/schema"
 
 	"github.com/pancsta/secai"
 	ss "github.com/pancsta/secai/schema"
@@ -38,7 +40,8 @@ type ResearchStatesDef struct {
 	// CheckingRefs string
 	// RefsChecked  string
 
-	*ss.AgentStatesDef
+	// inherit from LLM Agent
+	*llm.LLMAgentStatesDef
 }
 
 // ResearchGroupsDef contains all the state groups Research state machine.
@@ -50,9 +53,8 @@ type ResearchGroupsDef struct {
 
 // ResearchSchema represents all relations and properties of ResearchStates.
 var ResearchSchema = SchemaMerge(
-	// inherit from Agent
-	ss.AgentSchema,
-
+	// inherit from LLM Agent
+	llm.LLMAgentSchema,
 	am.Schema{
 
 		// Choice "agent"
@@ -92,7 +94,7 @@ var ResearchSchema = SchemaMerge(
 
 		// OVERRIDES
 
-		ssR.Interrupt: StateAdd(ss.AgentSchema[ss.AgentStates.Interrupt], State{
+		ssR.Interrupted: StateAdd(ss.AgentSchema[ss.AgentStates.Interrupted], State{
 			// stop these from happening when interrupted
 			Remove: S{ssR.CheckingInfo, ssR.SearchingLLM, ssR.SearchingWeb, ssR.Scraping},
 		}),
@@ -129,8 +131,9 @@ func NewResearch(ctx context.Context) *am.Machine {
 // ///// PROMPTS
 
 // ///// ///// /////
+// Comments are automatically converted to a jsonschema_description tag.
 
-func NewCheckingInfoPrompt(agent secai.AgentApi) *secai.Prompt[ParamsCheckingInfo, ResultCheckingInfo] {
+func NewCheckingInfoPrompt(agent secai.AgentAPI) *secai.Prompt[ParamsCheckingInfo, ResultCheckingInfo] {
 	return secai.NewPrompt[ParamsCheckingInfo, ResultCheckingInfo](
 		agent, ssR.CheckingInfo, `
 			- You are a decision-making agent that determines whether a new web search is needed to answer the user's question.
@@ -152,7 +155,7 @@ func NewCheckingInfoPrompt(agent secai.AgentApi) *secai.Prompt[ParamsCheckingInf
 		`)
 }
 
-func NewSearchingLLMPrompt(agent secai.AgentApi) *secai.Prompt[ParamsSearching, ResultSearching] {
+func NewSearchingLLMPrompt(agent secai.AgentAPI) *secai.Prompt[ParamsSearching, ResultSearching] {
 	return secai.NewPrompt[ParamsSearching, ResultSearching](
 		agent, ssR.SearchingLLM, `
 			- You are an expert search engine query generator with a deep understanding of which queries will maximize the
@@ -168,7 +171,7 @@ func NewSearchingLLMPrompt(agent secai.AgentApi) *secai.Prompt[ParamsSearching, 
 		`)
 }
 
-func NewAnsweringPrompt(agent secai.AgentApi) *secai.Prompt[ParamsAnswering, ResultAnswering] {
+func NewAnsweringPrompt(agent secai.AgentAPI) *secai.Prompt[ParamsAnswering, ResultAnswering] {
 	return secai.NewPrompt[ParamsAnswering, ResultAnswering](
 		agent, ssR.Answering, `
 			- You are an expert question answering agent focused on providing factual information and encouraging deeper topic
@@ -204,15 +207,19 @@ type ParamsCheckingInfo struct {
 }
 
 type ResultCheckingInfo struct {
-	Reasoning string `jsonschema:"description=Detailed explanation of the decision-making process"`
-	Decision  bool   `jsonschema:"description=The final decision based on the analysis"`
+	// Detailed explanation of the decision-making process
+	Reasoning string
+	// The final decision based on the analysis
+	Decision bool
 }
 
 // Searching (Query "agent")
 
 type ParamsSearching struct {
-	Instruction string `jsonschema:"description=A detailed instruction or request to generate search engine queries for."`
-	NumQueries  int    `jsonschema:"description=The number of search queries to generate."`
+	// A detailed instruction or request to generate search engine queries for.
+	Instruction string
+	// The number of search queries to generate.
+	NumQueries int
 }
 
 type ResultSearching = websearch.Params
@@ -220,11 +227,13 @@ type ResultSearching = websearch.Params
 // Answering (Q&A "agent")
 
 type ParamsAnswering struct {
-	Question string `jsonschema:"description=The question to answer."`
+	// The question to answer.
+	Question string
 }
 
 type ResultAnswering struct {
-	Answer            string `jsonschema:"description=The answer to the question."`
+	// The answer to the question.
+	Answer            string
 	FollowUpQuestions FollowUpQuestions
 }
 

@@ -1,21 +1,23 @@
 // Package deepresearch is a port of atomic-agents/deepresearch to secai.
 // https://github.com/BrainBlend-AI/atomic-agents/blob/main/atomic-examples/deep-research/deep_research/main.py
-package deepresearch
+package research
 
 import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/gliderlabs/ssh"
 	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
-	ssam "github.com/pancsta/asyncmachine-go/pkg/states"
 
 	"github.com/pancsta/secai"
-	"github.com/pancsta/secai/examples/deepresearch/schema"
+	"github.com/pancsta/secai/examples/research/schema"
+	llmagent "github.com/pancsta/secai/llm_agent"
 	baseschema "github.com/pancsta/secai/schema"
 	"github.com/pancsta/secai/shared"
 	"github.com/pancsta/secai/tools/colly"
@@ -24,9 +26,6 @@ import (
 	"github.com/pancsta/secai/tools/searxng"
 	"github.com/pancsta/secai/tui"
 )
-
-// var bug = true
-// var id = "deepresearch-bug"
 
 const id = "deepresearch"
 const mock = false
@@ -49,10 +48,26 @@ var StarterQuestions = Sp(`
     3. Where can I learn more about quantum computing?
 `)
 
-type Agent struct {
-	*secai.Agent
+type Config struct {
 
-	tui *tui.Chat
+	// SECAI TODO extract
+
+	OpenAIAPIKey   string `arg:"env:OPENAI_API_KEY" help:"OpenAI API key."`
+	DeepseekAPIKey string `arg:"env:DEEPSEEK_API_KEY" help:"DeepSeek API key."`
+	TUIPort        int    `arg:"env:SECAI_TUI_PORT" help:"SSH port for the TUI." default:"7854"`
+	TUIHost        string `arg:"env:SECAI_TUI_HOST" help:"SSH host for the TUI." default:"localhost"`
+	Mock           bool   `arg:"env:SECAI_MOCK" help:"Enable scenario mocking."`
+	ReqLimit       int    `arg:"env:SECAI_REQ_LIMIT" help:"Max LLM requests per session." default:"1000"`
+}
+
+type Agent struct {
+	// inherit from LLM Agent
+	*llmagent.Agent
+
+	Config Config
+	TUIs   []shared.UI
+	srvUI  *ssh.Server
+	Msgs   []*shared.Msg
 
 	// tools
 
@@ -65,21 +80,47 @@ type Agent struct {
 	pCheckingInfo *secai.Prompt[schema.ParamsCheckingInfo, schema.ResultCheckingInfo]
 	pSearchingLLM *secai.Prompt[schema.ParamsSearching, schema.ResultSearching]
 	pAnswering    *secai.Prompt[schema.ParamsAnswering, schema.ResultAnswering]
-	payloadList   []string
 }
 
-func New(ctx context.Context) (*Agent, error) {
-
-	// init the agent along with the base
-	a, err := secai.InitAgent(ctx, id, ss.Names(), schema.ResearchSchema, &Agent{
-		Agent: &secai.Agent{
-			// TODO automate?
-			DisposedHandlers: &ssam.DisposedHandlers{},
-		},
-	})
-	if err != nil {
+// NewResearch returns a preconfigured instance of Agent.
+func NewResearch(ctx context.Context, config Config) (*Agent, error) {
+	a := New(ctx, id, ss.Names(), schema.ResearchSchema)
+	if err := a.Init(a); err != nil {
 		return nil, err
 	}
+	a.Config = config
+
+	return a, nil
+}
+
+// New returns a custom instance of Agent.
+func New(
+	ctx context.Context, id string, states am.S, machSchema am.Schema,
+) *Agent {
+
+	a := &Agent{
+		Agent: llmagent.New(ctx, id, states, machSchema),
+	}
+
+	// predefined msgs
+	a.Msgs = append(a.Msgs,
+		shared.NewMsg(WelcomeMessage, shared.FromSystem),
+		shared.NewMsg(StarterQuestions, shared.FromSystem),
+	)
+
+	return a
+}
+
+func (a *Agent) Init(agent secai.AgentAPI) error {
+	// call super
+	err := a.Agent.Init(agent)
+	if err != nil {
+		return err
+	}
+	mach := a.Mach()
+
+	// args mapper for logging
+	mach.SetLogArgs(LogArgs)
 
 	// create a date tool
 	a.tDate, _ = getter.New(a, "date", "Current date", func() (string, error) {
@@ -90,13 +131,13 @@ func New(ctx context.Context) (*Agent, error) {
 	// init searxng - websearch tool
 	a.tSearxng, err = searxng.New(a)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	// init colly - webscrape tool
 	a.tColly, err = colly.New(a)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	// init prompts
@@ -109,7 +150,39 @@ func New(ctx context.Context) (*Agent, error) {
 	secai.ToolAddToPrompts(a.tDate, a.pCheckingInfo, a.pSearchingLLM, a.pAnswering)
 	secai.ToolAddToPrompts(a.tColly, a.pAnswering)
 
-	return a, nil
+	return nil
+}
+
+func (a *Agent) nextUIName(uiType string) string {
+	i := 0
+	// TODO enum
+	switch uiType {
+	case "chat":
+		for _, ui := range a.TUIs {
+			if _, ok := ui.(*tui.Chat); ok {
+				i++
+			}
+		}
+
+	case "clock":
+		for _, ui := range a.TUIs {
+			if _, ok := ui.(*tui.Clock); ok {
+				i++
+			}
+		}
+	}
+
+	return strconv.Itoa(i)
+}
+
+// clockStates returns the list of states monitored in the chat's clock emoji chart.
+func (a *Agent) clockStates() S {
+	trackedStates := a.Mach().StateNames()
+
+	// dont track a global handler
+	// trackedStates = shared.SlicesWithout(trackedStates, ss.CheckStories)
+
+	return trackedStates
 }
 
 // HANDLERS
@@ -135,13 +208,10 @@ func (a *Agent) StartState(e *am.Event) {
 
 	// start the UI
 	mach.Add(S{ss.InputPending, ss.UIMode}, nil)
-	a.payloadList = strings.Split(StarterQuestions, "\n")
+	a.OfferList = strings.Split(StarterQuestions, "\n")
 
 	// unblock
 	go func() {
-		if ctx.Err() != nil {
-			return // expired
-		}
 		if ctx.Err() != nil {
 			return // expired
 		}
@@ -186,7 +256,7 @@ func (a *Agent) LoopState(e *am.Event) {
 
 			case <-mach.When1(ss.Answered, stepCtx):
 				// loop again
-			case <-mach.When1(ss.Interrupt, stepCtx):
+			case <-mach.When1(ss.Interrupted, stepCtx):
 				// loop again
 			// TODO ErrLoop
 			// case <-mach.When1(ss.Interrupt, stepCtx):
@@ -194,9 +264,9 @@ func (a *Agent) LoopState(e *am.Event) {
 
 			// timeout - trigger an interruption
 			case <-time.After(timeout):
-				done := mach.WhenTicks(ss.Interrupt, 2, stepCtx)
+				done := mach.WhenTicks(ss.Interrupted, 2, stepCtx)
 				// TODO typed args
-				mach.Add1(ss.Interrupt, am.A{"timeout": true})
+				mach.Add1(ss.Interrupted, am.A{"timeout": true})
 				mach.AddErr(am.ErrTimeout, nil)
 
 				// wait for Interrupt to finish
@@ -207,7 +277,10 @@ func (a *Agent) LoopState(e *am.Event) {
 	}()
 }
 
-func (a *Agent) InterruptState(e *am.Event) {
+func (a *Agent) InterruptedState(e *am.Event) {
+	// call super
+	a.Agent.InterruptedState(e)
+
 	// TODO typed args
 	timeout, _ := e.Args["timeout"].(bool)
 
@@ -216,7 +289,7 @@ func (a *Agent) InterruptState(e *am.Event) {
 	} else {
 		a.Output("Interrupted by the user", shared.FromSystem)
 	}
-	a.Mach().Remove1(ss.Interrupt, nil)
+	a.Mach().Remove1(ss.Interrupted, nil)
 }
 
 func (a *Agent) ReadyEnter(e *am.Event) bool {
@@ -229,27 +302,143 @@ func (a *Agent) ReadyEnter(e *am.Event) bool {
 // }
 
 func (a *Agent) UIModeState(e *am.Event) {
-	mach := a.Mach()
-	tui, err := tui.NewChat(mach, []string{WelcomeMessage, StarterQuestions}, true)
+	mach := e.Machine()
+	ctx := mach.NewStateCtx(ss.UIMode)
+
+	// new session handler passing to UINewSess state
+	var handlerFn ssh.Handler = func(sess ssh.Session) {
+		srcAddr := sess.RemoteAddr().String()
+		done := make(chan struct{})
+		mach.EvAdd1(e, ss.UISessConn, PassAA(&AA{
+			SSHSess: sess,
+			ID:      sess.User(),
+			Addr:    srcAddr,
+			Done:    done,
+		}))
+
+		// TODO WhenArgs for typed args
+		// amhelp.WaitForAll(ctx, time.Hour*9999, mach.WhenArgs(ss.UISessDisconn, am.A{}))
+
+		// keep this session alive
+		select {
+		case <-ctx.Done():
+		case <-done:
+		}
+	}
+
+	// start the server
+	go func() {
+		// save srv ref
+		optSrv := func(s *ssh.Server) error {
+			mach.EvAdd1(e, ss.UISrvListening, PassAA(&AA{
+				SSHServer: s,
+			}))
+			return nil
+		}
+
+		addr := a.Config.TUIHost + ":" + strconv.Itoa(a.Config.TUIPort)
+		a.Log("SSH UI listening", "addr", addr)
+		err := ssh.ListenAndServe(addr, handlerFn, optSrv)
+		if err != nil {
+			mach.EvAddErrState(e, ss.ErrUI, err, nil)
+		}
+	}()
+}
+
+func (a *Agent) UIModeEnd(e *am.Event) {
+	// TUIs
+	for _, ui := range a.TUIs {
+		_ = ui.Stop()
+	}
+	a.TUIs = nil
+
+	// SSHs
+	if a.srvUI != nil {
+		_ = a.srvUI.Close()
+	}
+}
+
+func (a *Agent) UIReadyEnter(e *am.Event) bool {
+	for _, ui := range a.TUIs {
+		if ui.UIMach().Not1(ss.Ready) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// TODO enter
+
+func (a *Agent) UISessConnState(e *am.Event) {
+	mach := e.Machine()
+	args := ParseArgs(e.Args)
+	sess := args.SSHSess
+	done := args.Done
+	ctx := mach.NewStateCtx(ss.UIMode)
+	var ui shared.UI
+	uiType := sess.User()
+
+	// wait for the new UI for UIReady
+	mach.Remove1(ss.UIReady, nil)
+
+	screen, err := tui.NewSessionScreen(sess)
 	if err != nil {
-		mach.AddErr(err, nil)
+		err = fmt.Errorf("unable to create screen: %w", err)
+		mach.EvAddErrState(e, ss.ErrUI, err, nil)
 		return
 	}
-	a.tui = tui
 
-	// fork tui
-	go tui.Run()
+	// TODO enum
+	switch uiType {
+	case "chat":
+		// init the UI
+		mach.Remove1(ss.UIReady, nil)
+		ui = tui.NewChat(mach, a.Logger(), slices.Clone(a.Msgs))
+		err := ui.Init(ui, screen, a.nextUIName(uiType))
+		if err != nil {
+			mach.EvAddErr(e, err, nil)
+			return
+		}
+
+	case "clock":
+		// init the UI
+		mach.Remove1(ss.UIReady, nil)
+		ui = tui.NewClock(mach, a.Logger(), a.clockStates())
+		err := ui.Init(ui, screen, a.nextUIName(uiType))
+		if err != nil {
+			mach.EvAddErr(e, err, nil)
+			return
+		}
+
+	default:
+		mach.EvAddErrState(e, ss.ErrUI, fmt.Errorf("unknown user: %s", uiType), nil)
+		return
+	}
+
+	// register
+	a.TUIs = append(a.TUIs, ui)
+
+	// start the UI
+	go func() {
+		if ctx.Err() != nil {
+			return // expired
+		}
+
+		err = ui.Start(sess.Close)
+		// TODO log err if not EOF?
+
+		close(done)
+		mach.EvAdd1(e, ss.UISessDisconn, PassAA(&AA{
+			UI: ui,
+		}))
+	}()
 }
 
-func (a *Agent) PromptEnter(e *am.Event) bool {
+func (a *Agent) UISessDisconnState(e *am.Event) {
+	ui := ParseArgs(e.Args).UI
 
-	p, ok := e.Args["prompt"].(string)
-	// TODO config, skip when it's a reference
-	return ok && len(p) >= 1
-}
-
-func (a *Agent) PromptState(e *am.Event) {
-	a.UserInput = e.Args["prompt"].(string)
+	a.TUIs = shared.SlicesWithout(a.TUIs, ui)
 }
 
 func (a *Agent) CheckingInfoState(e *am.Event) {
@@ -258,33 +447,33 @@ func (a *Agent) CheckingInfoState(e *am.Event) {
 	ctx := mach.NewStateCtx(ss.CheckingInfo)
 	llm := a.pCheckingInfo
 
-	// parse references
-	if len(a.payloadList) > 0 {
-		num := strings.Trim(a.UserInput, " \n\t.")
-		i, err := strconv.Atoi(num)
-		// TODO config, read a.ChoiceOpts
-		if err == nil && i <= len(a.payloadList) {
-			// expand number to value
-			// TODO support rich values
-			a.UserInput = a.payloadList[i-1]
-			// remove prefix
-			if strings.HasPrefix(a.UserInput, num) {
-				_, a.UserInput, _ = strings.Cut(a.UserInput, num)
-			}
-			a.UserInput = strings.TrimLeft(a.UserInput, " \n\t.")
-		}
-	}
-
-	prompt := a.UserInput
-	a.Output("Checking...", shared.FromAssistant)
-
-	// TODO detect NLP references to numbers (prompt)
-
 	// unblock
 	go func() {
+		if ctx.Err() != nil {
+			return // expired
+		}
+
+		// dereference the prompt TODO extract
+		retOffer := make(chan *shared.OfferRef, 1)
+		mach.EvAdd1(e, ss.CheckingOfferRefs, PassAA(&AA{
+			Prompt:      a.UserInput,
+			RetOfferRef: retOffer,
+			CheckLLM:    true,
+		}))
+		select {
+		case ret := <-retOffer:
+			if ret != nil {
+				a.UserInput = a.OfferList[ret.Index]
+			}
+		case <-ctx.Done():
+			return
+		}
+
+		prompt := a.UserInput
+		a.Output("Checking...", shared.FromAssistant)
 
 		// run the prompt (checks ctx)
-		res, err := llm.Run(schema.ParamsCheckingInfo{
+		res, err := llm.Run(e, schema.ParamsCheckingInfo{
 			UserMessage: prompt,
 			DecisionType: Sp(`
 				Should we perform a new web search? TRUE if we need new or updated information, FALSE if existing 
@@ -327,7 +516,7 @@ func (a *Agent) SearchingLLMState(e *am.Event) {
 		mach.EvAdd1(e, ss.RequestingLLM, nil)
 
 		// ask LLM for relevant links
-		res, err := llm.Run(schema.ParamsSearching{
+		res, err := llm.Run(e, schema.ParamsSearching{
 			Instruction: input,
 			NumQueries:  3,
 		}, "")
@@ -339,7 +528,7 @@ func (a *Agent) SearchingLLMState(e *am.Event) {
 			return
 		}
 
-		mach.Log("Queries: %s", strings.Join(res.Queries, ";"))
+		mach.Log("BaseQueries: %s", strings.Join(res.Queries, ";"))
 
 		// show results to the user
 		msg := Sl("[green::b]🔍 Generated search queries:[-::-]")
@@ -355,7 +544,7 @@ func (a *Agent) SearchingLLMState(e *am.Event) {
 
 // InputPendingState is a test mocking handler.
 func (a *Agent) InputPendingState(e *am.Event) {
-	if !mock {
+	if !mock || os.Getenv("SECAI_MOCK") == "" {
 		return
 	}
 
@@ -413,6 +602,7 @@ func (a *Agent) ScrapingState(e *am.Event) {
 	// collect
 	mach := a.Mach()
 	ctx := mach.NewStateCtx(ss.Scraping)
+	// TODO typed args
 	websites := e.Args["[]*Website"].([]*baseschema.Website)
 
 	// unblock
@@ -452,7 +642,7 @@ func (a *Agent) AnsweringState(e *am.Event) {
 	// unblock
 	go func() {
 		// ask LLM for relevant links
-		res, err := llm.Run(schema.ParamsAnswering{Question: input}, "")
+		res, err := llm.Run(e, schema.ParamsAnswering{Question: input}, "")
 		if ctx.Err() != nil {
 			return // expired
 		}
@@ -489,18 +679,117 @@ func (a *Agent) AnsweredState(e *am.Event) {
 	}
 
 	a.Output(msg, shared.FromAssistant)
-	// TODO config
-	a.payloadList = res.FollowUpQuestions[:min(3, len(res.FollowUpQuestions))]
+	// TODO config min
+	a.OfferList = res.FollowUpQuestions[:min(3, len(res.FollowUpQuestions))]
 	// ask again
 	a.Mach().EvAdd1(e, ss.InputPending, nil)
+
+	// TODO fix in TUI?
+	for _, ui := range a.TUIs {
+		ui.Redraw()
+	}
 }
 
-// REST
+// ///// ///// /////
 
-func (a *Agent) Output(msg string, from shared.From) {
-	if a.Mach().Is1(ss.UIMode) {
-		a.tui.AddMsg(msg, from)
-	} else {
-		shared.P(msg)
+// ///// ARGS
+
+// ///// ///// /////
+
+// aliases
+
+type AA = shared.A
+type AARpc = shared.ARpc
+
+var PassAA = shared.Pass
+
+const APrefix = "cook"
+
+// A is a struct for node arguments. It's a typesafe alternative to [am.A].
+type A struct {
+	// base args of the framework
+	*shared.A
+
+	// agent's args
+	// TODO
+
+	// agent's non-RPC args
+	// TODO
+}
+
+// ARpc is a subset of [am.A], that can be passed over RPC (eg no channels, instances, etc)
+type ARpc struct {
+	// base args of the framework
+	*shared.A
+
+	// agent's args
+	// TODO
+}
+
+// ParseArgs extracts A from [am.Event.Args][APrefix] (decoder).
+func ParseArgs(args am.A) *A {
+	// RPC-only args (pointer)
+	if r, ok := args[APrefix].(*ARpc); ok {
+		a := amhelp.ArgsToArgs(r, &A{})
+		// decode base args
+		a.A = shared.ParseArgs(args)
+
+		return a
 	}
+
+	// RPC-only args (value, eg from a network transport)
+	if r, ok := args[APrefix].(ARpc); ok {
+		a := amhelp.ArgsToArgs(&r, &A{})
+		// decode base args
+		a.A = shared.ParseArgs(args)
+
+		return a
+	}
+
+	// regular args (pointer)
+	if a, _ := args[APrefix].(*A); a != nil {
+		// decode base args
+		a.A = shared.ParseArgs(args)
+
+		return a
+	}
+
+	// defaults
+	return &A{
+		A: shared.ParseArgs(args),
+	}
+}
+
+// Pass prepares [am.A] from A to be passed to further mutations (encoder).
+func Pass(args *A) am.A {
+	// dont nest in plain maps
+	clone := *args
+	clone.A = nil
+	// ref the clone
+	out := am.A{APrefix: &clone}
+
+	// merge with base args
+	return am.AMerge(out, shared.Pass(args.A))
+}
+
+// PassRpc is a network-safe version of Pass. Use it when mutating aRPC workers.
+func PassRpc(args *A) am.A {
+	// dont nest in plain maps
+	clone := *amhelp.ArgsToArgs(args, &ARpc{})
+	clone.A = nil
+	out := am.A{APrefix: clone}
+
+	// merge with base args
+	return am.AMerge(out, shared.PassRpc(args.A))
+}
+
+// LogArgs is an args logger for A and [secai.A].
+func LogArgs(args am.A) map[string]string {
+	a1 := shared.ParseArgs(args)
+	a2 := ParseArgs(args)
+	if a1 == nil && a2 == nil {
+		return nil
+	}
+
+	return am.AMerge(amhelp.ArgsToLogMap(a1, 0), amhelp.ArgsToLogMap(a2, 0))
 }
