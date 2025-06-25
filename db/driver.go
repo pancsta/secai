@@ -12,7 +12,7 @@ import (
 var schema string
 
 func Open(dir string) (*sql.DB, error) {
-	return sql.Open("sqlite3", "file:"+dir+"/db.sqlite")
+	return sql.Open("sqlite3", "file:"+dir+"/secai.sqlite")
 }
 
 func Schema() string {

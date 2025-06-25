@@ -8,16 +8,14 @@ import (
 	ssam "github.com/pancsta/asyncmachine-go/pkg/states"
 )
 
-type ToolState = string
-
 // ToolStatesDef contains all the states of the Tool state machine.
 type ToolStatesDef struct {
 	*am.StatesBase
 
 	// STATUS
 
-	Working ToolState
-	Idle    ToolState
+	Working string
+	Idle    string
 
 	// inherit from BasicStatesDef
 	*ssam.BasicStatesDef
@@ -32,14 +30,13 @@ type ToolGroupsDef struct {
 }
 
 // ToolSchema represents all relations and properties of ToolStates.
-// TODO
 var ToolSchema = SchemaMerge(
 	// inherit from BasicStruct
-	ssam.BasicStruct,
+	ssam.BasicSchema,
 	// inherit from DisposedStruct
-	ssam.DisposedStruct,
+	ssam.DisposedSchema,
 	// inherit from WorkerStates
-	ssrpc.WorkerStruct,
+	ssrpc.WorkerSchema,
 	am.Schema{
 
 		// status
