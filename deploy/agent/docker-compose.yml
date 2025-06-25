@@ -1,0 +1,48 @@
+services:
+  agent:
+    env_file: "agent.env"
+    image: secai/${SECAI_ID}${SECAI_ENV}
+    volumes:
+      - ./data:/data
+      - ./agent.env:/app/secai/.env
+    # TODO SEARXNG_PORT env var
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+#      - TODO labels and vars for exported ones
+      - "${SECAI_TUI_PORT}:${SECAI_TUI_PORT}"
+      - "${SECAI_WEB_DESKTOP_PORT}:${SECAI_WEB_DESKTOP_PORT}"
+      - "${SECAI_WEB_MOBILE_PORT}:${SECAI_WEB_MOBILE_PORT}"
+      - "${SECAI_WEB_LOGS_PORT}:${SECAI_WEB_LOGS_PORT}"
+      - "${SECAI_WEB_DIR_PORT}:${SECAI_WEB_DIR_PORT}"
+    restart: unless-stopped
+    depends_on:
+      - am-dbg
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 300m
+
+  am-dbg:
+    image: asyncmachine/web-am-dbg
+    stdin_open: true
+    tty: true
+    environment:
+      - AM_REPL_DIR=/data
+      - AM_DBG_BASE_PATH=${SECAI_WEB_DBG_BASE}
+      - AM_DBG_ADDR=0.0.0.0:6831
+      - TERM=xterm-256color
+    volumes:
+      - ./data:/data
+    # debug
+    ports:
+      - "${SECAI_WEB_DBG_PORT}:7681"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 300m
+
+# TODO resource limits
+# TODO searxng

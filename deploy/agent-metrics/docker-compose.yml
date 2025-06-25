@@ -97,4 +97,3 @@ services:
 
 volumes:
   grafana_data: { }
-  perses: { }
