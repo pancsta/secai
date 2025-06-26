@@ -153,12 +153,12 @@ Unlike Python apps, you can start it with a single command:
 - Set either of the API keys:
   - `export OPENAI_API_KEY=myapikey`
   - `export DEEPSEEK_API_KEY=myapikey`
-- Run `./cook` or `./research` to start the server
-  - then copy-paste-run the *TUI Desktop* line
+- Run `./aigent-cook` or `./aigent-research` to start the server
+  - then copy-paste-run the *TUI Desktop* line in another terminal
   - you'll see files being created in `./tmp`
 
 ```markdown
-cook v0.2
+aigent-cook v0.2
 
 TUI Chat:
 $ ssh chat@localhost -p 7854 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no
@@ -170,7 +170,7 @@ TUI Clock:
 $ ssh clock@localhost -p 7854 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no
 
 TUI Desktop:
-$ bash <(curl -L https://zellij.dev/launch) --layout $(./cook desktop-layout) attach secai-cook --create
+$ bash <(curl -L https://zellij.dev/launch) --layout $(./aigent-cook desktop-layout) attach secai-aigent-cook --create
 
 https://ai-gents.work
 
