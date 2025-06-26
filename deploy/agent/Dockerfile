@@ -42,4 +42,4 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # START
 
 EXPOSE 7000-8000
-ENTRYPOINT ["task", "start"]
+ENTRYPOINT ["task", "start-deploy"]

@@ -11,9 +11,12 @@ env:
 
 tasks:
 
-  sync:
+  sync-taskfile:
+    ignore_error: true
     cmds:
+      - go mod tidy
       - rm ./config/Taskfile.yml
-      - wget -O ./config/Taskfile.yml https://raw.githubusercontent.com/pancsta/secai/refs/heads/main/config/Taskfile.yml
+      - wget -O ./config/Taskfile.yml
+          https://raw.githubusercontent.com/pancsta/secai/refs/heads/main/config/Taskfile.yml
 
-  # TODO custom tasks go here
+  # TODO agent's tasks go here

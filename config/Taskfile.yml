@@ -2,14 +2,25 @@ version: 3
 
 vars:
   SECAI_DIR_ABS: '{{.USER_WORKING_DIR}}/{{.SECAI_AGENT_DIR}}/{{.SECAI_DIR}}'
+  SECAI_DIR: '{{.SECAI_DIR | default "tmp"}}'
+  SECAI_ID: '{{.SECAI_ID | default "myagent"}}'
 
 tasks:
 
-  start-agent:
-    desc: Start the agent
+  start:
+    desc: Start the agent from source
     dir: '{{.SECAI_AGENT_DIR}}'
     cmds:
       - mkdir -p {{.SECAI_DIR}}
+      - task: build
+      - ./{{.SECAI_ID}} {{.CLI_ARGS}}
+
+  start-agent:
+    desc: Start the agent within a deployment
+    dir: '{{.SECAI_AGENT_DIR}}'
+    cmds:
+      - mkdir -p {{.SECAI_DIR}}
+      - task: build
       - ./{{.SECAI_ID}} {{.CLI_ARGS}} > {{.SECAI_DIR}}/{{.SECAI_ID}}.jsonl
 
   release: goreleaser release --clean --skip-publish --skip-validate
@@ -38,11 +49,13 @@ tasks:
 
   # TODO migrate to go tools 1.24
   install-deps:
+    desc: Install Golang dependencies
     silent: true
     cmds:
+      - go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
       # TODO lock versions
-      - go install github.com/pancsta/asyncmachine-go/tools/cmd/arpc@latest
-      - go install github.com/pancsta/asyncmachine-go/tools/cmd/am-dbg@latest
+      - go install github.com/pancsta/asyncmachine-go/tools/cmd/arpc@6bc9125b89958bc39e1bdde90223ff8a864502d9
+      - go install github.com/pancsta/asyncmachine-go/tools/cmd/am-dbg@6bc9125b89958bc39e1bdde90223ff8a864502d9
       - go install github.com/mattn/goreman@latest
       - go install github.com/eliben/static-server@latest
       - echo "Install Zellij from:"
@@ -50,51 +63,41 @@ tasks:
 
   prometheus:
     desc: Open Prometheus
+    deps:
+      - start-docker-metrics
     cmd: xdg-open http://localhost:9091/
 
   grafana:
     desc: Open Grafana
+    deps:
+      - start-docker-metrics
     cmd: xdg-open http://localhost:3000/dashboards
 
   jaeger:
     desc: Open Jaeger
+    deps:
+      - start-docker-metrics
     cmd: xdg-open http://localhost:16686/search
 
   am-dbg:
-    requires:
-      vars: [AM_DBG_ADDR]
-    env:
-      AM_DBG_ADDR: '{{.AM_DBG_ADDR}}'
     desc: Start the TUI debugger
     silent: false
     ignore_error: true
-    dir: ../asyncmachine-go
-    cmd: task am-dbg -- 
-      --log-level 2
+    cmd: am-dbg 
       --dir "{{.SECAI_DIR_ABS}}"
       --output-diagrams 3
       --output-clients
-      --listen-on {{.AM_DBG_ADDR}}
       {{.CLI_ARGS}}
 
-  dashboard-wide-narrow:
-    requires:
-      vars: [SECAI_DIR, SECAI_ID]
-    dir: ../asyncmachine-go
-    desc: Start a dashboard with 2 instances of am-dbg
-    cmds:
-      - task: am-dbg-dashboard-exit
-      - zellij --session secai-dash-{{.SECAI_ID}}
-          --new-session-with-layout {{.USER_WORKING_DIR}}/config/dash-wide-narrow.kdl
-      - task: am-dbg-dashboard-exit
+  am-dbg-kill:
+    cmd: killall am-dbg
 
   dashboard-repl:
+    ignore_error: true
     requires:
       vars: [SECAI_DIR, SECAI_ID]
     env:
       SECAI_DIR_ABS: "{{.SECAI_DIR_ABS}}"
-    ignore_error: true
-    dir: ../asyncmachine-go
     desc: Start a dashboard with am-dbg and a REPL
     cmds:
       - task: am-dbg-dashboard-exit
@@ -102,12 +105,25 @@ tasks:
           --new-session-with-layout {{.USER_WORKING_DIR}}/config/dash-repl.kdl
       - task: am-dbg-dashboard-exit
 
+  dashboard-wide-narrow:
+    ignore_error: true
+    requires:
+      vars: [SECAI_DIR, SECAI_ID]
+    desc: Start a dashboard with 2 instances of am-dbg
+    env:
+      SECAI_DIR_ABS: "{{.SECAI_DIR_ABS}}"
+    cmds:
+      - task: am-dbg-dashboard-exit
+      - zellij --session secai-dash-{{.SECAI_ID}}
+          --new-session-with-layout {{.USER_WORKING_DIR}}/config/dash-wide-narrow.kdl
+      - task: am-dbg-dashboard-exit
+
   dashboard-wn-repl:
+    ignore_error: true
     requires:
       vars: [SECAI_DIR, SECAI_ID]
     env:
       SECAI_DIR_ABS: "{{.SECAI_DIR_ABS}}"
-    dir: ../asyncmachine-go
     desc: Start a dashboard with 2 instances of am-dbg and a REPL
     cmds:
       - task: am-dbg-dashboard-exit
@@ -134,7 +150,7 @@ tasks:
       - |
         echo Grafana: http://localhost:3001
 
-  start:
+  start-deploy:
     desc: Start a full deployment
     vars:
       MSG: |
@@ -214,7 +230,7 @@ tasks:
   # LAYOUTS
 
   tui:
-    desc: Start a TUI with 3 UI connections
+    desc: Start the full desktop TUI
     silent: false
     ignore_error: true
     cmds:
@@ -223,7 +239,7 @@ tasks:
           --create
 
   tui-auto:
-    desc: Start a TUI with 3 UI connections and reconnect
+    desc: Start the full desktop TUI and reconnect
     silent: false
     ignore_error: true
     cmds:
@@ -232,7 +248,7 @@ tasks:
           --create
 
   tui-mini:
-    desc: Start a TUI with 3 UI connections
+    desc: Start the mini desktop TUI
     silent: false
     ignore_error: true
     cmds:
@@ -241,7 +257,7 @@ tasks:
           --create
 
   tui-mini-auto:
-    desc: Start a TUI with 3 UI connections and reconnect
+    desc: Start the mini desktop TUI and reconnect
     silent: false
     ignore_error: true
     cmds:
@@ -250,11 +266,11 @@ tasks:
           --create
 
   tui-exit:
-    desc: Exit all TUIs
+    desc: Exit all desktop TUIs
     cmd: zellij delete-session secai-{{.SECAI_ID}} --force
 
   tui-mobile:
-    desc: Start a TUI with 3 UI connections
+    desc: Start the mobile TUI with stories
     silent: false
     ignore_error: true
     cmds:
@@ -263,7 +279,7 @@ tasks:
           --create
 
   tui-mobile-auto:
-    desc: Start a TUI with 3 UI connections and reconnect
+    desc: Start the mobile TUI with stories and reconnect
     silent: false
     ignore_error: true
     cmds:
@@ -278,7 +294,7 @@ tasks:
   # WEB
 
   web-tui:
-    desc: Start a web TUI with 3 UI connections
+    desc: Start the full desktop TUI via ttyd
     cmds:
       - echo "http://localhost:{{.SECAI_WEB_DESKTOP_PORT}}"
       - ttyd --writable -p {{.SECAI_WEB_DESKTOP_PORT}}
@@ -287,7 +303,7 @@ tasks:
           task tui
 
   web-tui-auto:
-    desc: Start a web TUI with 3 UI auto connections
+    desc: Start the full desktop TUI via ttyd and reconnect
     cmds:
       - echo "http://localhost:{{.SECAI_WEB_DESKTOP_PORT}}"
       - ttyd --writable -p {{.SECAI_WEB_DESKTOP_PORT}}
@@ -297,7 +313,7 @@ tasks:
           task tui-auto
 
   web-tui-mobile:
-    desc: Start a mobile web TUI with 3 UI connections
+    desc: Start the mobile TUI via ttyd
     cmds:
       - echo "http://localhost:{{.SECAI_WEB_MOBILE_PORT}}"
       - ttyd --writable -p {{.SECAI_WEB_MOBILE_PORT}}
@@ -310,7 +326,7 @@ tasks:
           task tui-mobile
 
   web-tui-mobile-auto:
-    desc: Start a mobile web TUI with 3 UI auto connections
+    desc: Start the mobile TUI via ttyd and reconnect
     cmds:
       - echo "http://localhost:{{.SECAI_WEB_MOBILE_PORT}}"
       - ttyd --writable -p {{.SECAI_WEB_MOBILE_PORT}}
@@ -348,3 +364,31 @@ tasks:
       - cp ./examples/{{.SECAI_ID}}/schema/sa_{{.SECAI_ID}}.go {{.SECAI_DIR}}/_schema.go
       - static-server --host {{.SECAI_TUI_HOST}}
           --port {{.SECAI_WEB_DIR_PORT}} {{.SECAI_DIR}}
+
+  # CONFIG
+
+  sync-configs:
+
+    desc: Pull the newest ./config and ./template
+    ignore_error: true
+    cmd: |
+      files=(
+        "./template.env"
+        "./config/Taskfile.yml" 
+        "./config/dash-repl.kdl" 
+        "./config/dash-wide-narrow.kdl"
+        "./config/dash-wide-narrow-repl.kdl"
+        "./config/tui-auto.kdl"
+        "./config/tui-mini-auto.kdl"
+        "./config/tui-mini.kdl"
+        "./config/tui-mobile-auto.kdl"
+        "./config/tui-mobile.kdl"
+        "./config/tui.kdl"
+        "./deploy/docker-metrics/docker-compose.yml"
+        "./deploy/docker-metrics/prometheus.yml"
+      )
+      mkdir -p deploy/docker-metrics
+      for file in "${files[@]}"; do
+        rm -f "$file"
+        wget -O "$file" "https://raw.githubusercontent.com/pancsta/secai/refs/heads/main${file:1}"
+      done

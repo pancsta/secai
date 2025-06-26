@@ -473,13 +473,15 @@ We can use one of the examples as a starting template. It allows for further sem
 1. Choose the source example
    - `export SECAI_EXAMPLE=cook`
    - `export SECAI_EXAMPLE=research`
-2. `git clone https://github.com/pansta/secai`
+2. `git clone https://github.com/pancsta/secai.git`
 3. install task `./secai/scripts/deps.sh`
-4. copy the agent `cp -R secai/examples/${SECAI_EXAMPLE} MYAGENT`
-5. `cd MYAGENT`
-6. get configs `task sync`
+4. copy the agent `cp -R secai/examples/$SECAI_EXAMPLE MYAGENT`
+5. `cd MYAGENT && go mod init github.com/USER/MYAGENT`
+6. get fresh configs
+   1. `task sync-taskfile`
+   2. `task sync-configs`
 7. start it `task start`
-8. look around `task --list`
+8. look around `task --list-all`
 9. configure `cp template.env .env`
 
 ## User Interfaces

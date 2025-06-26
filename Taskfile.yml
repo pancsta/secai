@@ -48,40 +48,9 @@ tasks:
     cmd: docker-compose -f ./deploy/agent/docker-compose.yml
       down
 
-  ex-deepresearch-delve:
-    cmds:
-      - go mod tidy
-      - dlv debug --headless --listen=:2345 --api-version=2 --accept-multiclient
-        ./examples/deepresearch/cmd -- 
-          {{.CLI_ARGS}}
-
-  ex-deepresearch:
-    cmds:
-      - go mod tidy
-      - go run ./examples/deepresearch/cmd {{.CLI_ARGS}}
-
-  ex-cook:
-    cmds:
-      - go mod tidy
-      - go run ./examples/cook/cmd {{.CLI_ARGS}} | fblog -d -x time
-
-  ex-cook-clock:
-    cmds:
-      - go mod tidy
-      - go run ./examples/cook/cmd {{.CLI_ARGS}} | fblog -d -x time
-      - ssh clock@localhost:7855
-
-  ex-cook-delve:
-    cmds:
-      - go mod tidy
-      - dlv debug --headless --listen=:2345 --api-version=2 --accept-multiclient
-        ./examples/cook/cmd -- 
-          {{.CLI_ARGS}} | fblog -d -x time
-
   install-deps:
     ignore_error: true
     cmds:
-      - go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
       - task: shared:install-deps
       - cargo install fblog
 
@@ -95,8 +64,64 @@ tasks:
     cmds:
       - go install ./tools/cmd/arpc
 
-  am-dbg-kill:
-    cmd: killall am-dbg
+  am-dbg-dev:
+    requires:
+      vars: [AM_DBG_ADDR]
+    env:
+      AM_DBG_ADDR: '{{.AM_DBG_ADDR}}'
+    desc: Start the TUI debugger
+    silent: false
+    ignore_error: true
+    dir: ../asyncmachine-go
+    cmd: task am-dbg -- 
+      --log-level 2
+      --dir "{{.SECAI_DIR_ABS}}"
+      --output-diagrams 3
+      --output-clients
+      --listen-on {{.AM_DBG_ADDR}}
+      {{.CLI_ARGS}}
+
+  dashboard-repl-dev:
+    ignore_error: true
+    requires:
+      vars: [SECAI_DIR, SECAI_ID]
+    env:
+      SECAI_DIR_ABS: "{{.SECAI_DIR_ABS}}"
+    dir: ../asyncmachine-go
+    desc: Start a dashboard with am-dbg and a REPL
+    cmds:
+      - task: am-dbg-dashboard-exit
+      - zellij --session secai-dash-{{.SECAI_ID}}
+          --new-session-with-layout {{.USER_WORKING_DIR}}/config/dash-repl.kdl
+      - task: am-dbg-dashboard-exit
+
+  dashboard-wide-narrow-dev:
+    ignore_error: true
+    requires:
+      vars: [SECAI_DIR, SECAI_ID]
+    dir: ../asyncmachine-go
+    desc: Start a dashboard with 2 instances of am-dbg
+    env:
+      SECAI_DIR_ABS: "{{.SECAI_DIR_ABS}}"
+    cmds:
+      - task: am-dbg-dashboard-exit
+      - zellij --session secai-dash-{{.SECAI_ID}}
+          --new-session-with-layout {{.USER_WORKING_DIR}}/config/dash-wide-narrow.kdl
+      - task: am-dbg-dashboard-exit
+
+  dashboard-wn-repl-dev:
+    ignore_error: true
+    requires:
+      vars: [SECAI_DIR, SECAI_ID]
+    env:
+      SECAI_DIR_ABS: "{{.SECAI_DIR_ABS}}"
+    dir: ../asyncmachine-go
+    desc: Start a dashboard with 2 instances of am-dbg and a REPL
+    cmds:
+      - task: am-dbg-dashboard-exit
+      - zellij --session secai-dash-{{.SECAI_ID}}
+          --new-session-with-layout {{.USER_WORKING_DIR}}/config/dash-wide-narrow-repl.kdl
+      - task: am-dbg-dashboard-exit
 
   am-dbg-delve:
     silent: false

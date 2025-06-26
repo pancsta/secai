@@ -43,17 +43,17 @@ layout {
       pane size="85%" command="sh" {
 //        args "-c" "sleep 2 && task am-dbg -- --dir tmp -l localhost:6831 --fwd-data localhost:6832 --output-diagrams 3 --tail --output-clients"
 //        args "-c" "sleep 2 && task am-dbg -- --dir tmp -l localhost:6831 --fwd-data localhost:6832 --output-diagrams 3 --tail --output-clients --import-data am-dbg-dump.gob.br"
-        args "-c" "sleep 2 && task am-dbg -- --dir $SECAI_DIR_ABS -l localhost:6831 --fwd-data localhost:6832 --output-diagrams 3 --tail --output-clients --am-dbg-addr localhost:9913"
+        args "-c" "sleep 2 && am-dbg --dir $SECAI_DIR_ABS -l localhost:6831 --fwd-data localhost:6832 --output-diagrams 3 --tail --output-clients --am-dbg-addr localhost:9913"
       }
 
       pane size="15%" command="sh" {
-        args "-c" "sleep 5 && task arpc -- -d $SECAI_DIR_ABS --watch"
+        args "-c" "sleep 5 && arpc -d $SECAI_DIR_ABS --watch"
 //        args "-c" "task arpc -- -d $SECAI_DIR_ABS --watch --am-dbg-addr localhost:9913 --log-level 2"
       }
     }
 
     pane size="25%" command="sh" {
-      args "-c" "task am-dbg -- -l localhost:6832 --view-narrow --view-timelines 0 --tail --view-timelines 1"
+      args "-c" "am-dbg -l localhost:6832 --view-narrow --view-timelines 0 --tail --view-timelines 1"
     }
   }
 }

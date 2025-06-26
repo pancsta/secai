@@ -40,10 +40,10 @@ show_startup_tips false
 layout {
   pane split_direction="vertical" {
     pane size="75%" command="sh" {
-      args "-c" "sleep 2 && task am-dbg -- --dir $SECAI_DIR_ABS -l localhost:6831 --fwd-data localhost:6832 --output-diagrams 3 --tail --output-clients"
+      args "-c" "sleep 2 && am-dbg --dir $SECAI_DIR_ABS -l localhost:6831 --fwd-data localhost:6832 --output-diagrams 3 --tail --output-clients"
     }
     pane size="25%" command="sh" {
-      args "-c" "task am-dbg -- -l localhost:6832 --view-narrow --view-timelines 0 --tail --view-timelines 1"
+      args "-c" "am-dbg -l localhost:6832 --view-narrow --view-timelines 0 --tail --view-timelines 1"
     }
   }
 }
