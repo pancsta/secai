@@ -1,6 +1,7 @@
 version: 3
 
 vars:
+  AM_VER: 'v0.13.0'
   SECAI_DIR_ABS: '{{.USER_WORKING_DIR}}/{{.SECAI_AGENT_DIR}}/{{.SECAI_DIR}}'
   SECAI_DIR: '{{.SECAI_DIR | default "tmp"}}'
   SECAI_ID: '{{.SECAI_ID | default "myagent"}}'
@@ -16,11 +17,10 @@ tasks:
       - ./{{.SECAI_ID}} {{.CLI_ARGS}}
 
   start-agent:
-    desc: Start the agent within a deployment
+    desc: Start the agent within a prebuilt deployment
     dir: '{{.SECAI_AGENT_DIR}}'
     cmds:
       - mkdir -p {{.SECAI_DIR}}
-      - task: build
       - ./{{.SECAI_ID}} {{.CLI_ARGS}} > {{.SECAI_DIR}}/{{.SECAI_ID}}.jsonl
 
   release: goreleaser release --clean --skip-publish --skip-validate
@@ -54,8 +54,8 @@ tasks:
     cmds:
       - go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
       # TODO lock versions
-      - go install github.com/pancsta/asyncmachine-go/tools/cmd/arpc@6bc9125b89958bc39e1bdde90223ff8a864502d9
-      - go install github.com/pancsta/asyncmachine-go/tools/cmd/am-dbg@6bc9125b89958bc39e1bdde90223ff8a864502d9
+      - go install github.com/pancsta/asyncmachine-go/tools/cmd/arpc@{{.AM_VER}}
+      - go install github.com/pancsta/asyncmachine-go/tools/cmd/am-dbg@{{.AM_VER}}
       - go install github.com/mattn/goreman@latest
       - go install github.com/eliben/static-server@latest
       - echo "Install Zellij from:"
@@ -135,7 +135,7 @@ tasks:
     desc: Exit all dashboards
     cmd: zellij delete-session secai-dash-{{.SECAI_ID}} --force
 
-  start-agent-metrics:
+  start-metrics-agent:
     desc: Start docker-compose with Grafana and Jaeger for agents
     cmds:
       - docker-compose -f config/agent-metrics/docker-compose.yml up -d --force-recreate
@@ -143,7 +143,7 @@ tasks:
         echo Grafana: http://localhost:3000
         echo Jaeger: http://localhost:16686
 
-  start-docker-metrics:
+  start-metrics-docker:
     desc: Start docker-compose with Grafana for Docker
     cmds:
       - docker-compose -f config/docker-metrics/docker-compose.yml up -d --force-recreate

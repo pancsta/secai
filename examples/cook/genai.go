@@ -498,24 +498,17 @@ func (a *Agent) StepsReadyEnd(e *am.Event) {
 	// reset buttons
 	a.Stories[ss.StoryCookingStarted].Buttons = a.Stories[ss.StoryCookingStarted].Buttons[0:1]
 
-	// copy ingredients TODO extract as amhelp.CopySchema(states)
-	oldSchema := a.mem.Schema()
+	// copy ingredients
 	ingredientsStates := a.mem.StateNamesMatch(schema.MatchIngredients)
-
+	oldSchema := a.mem.Schema()
+	// start with an empty schema
 	err := a.initMem()
-	newSchema := a.mem.Schema()
 	if err != nil {
 		mach.EvAddErrState(e, ss.ErrMem, err, nil)
 		return
 	}
-	if len(ingredientsStates) == 0 {
-		return
-	}
-
-	for _, name := range ingredientsStates {
-		newSchema[name] = oldSchema[name]
-	}
-	err = a.mem.SetSchema(newSchema, slices.Concat(a.mem.StateNames(), ingredientsStates))
+	err = amhelp.CopySchema(oldSchema, a.mem, ingredientsStates)
+	// dont stop on err
 	mach.EvAddErrState(e, ss.ErrMem, err, nil)
 
 	// remove stories UI

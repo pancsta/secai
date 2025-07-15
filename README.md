@@ -5,6 +5,19 @@
 structured memory. It offers a dedicated set of devtools and is written in the Go programming language. By having
 graph-based flow, **secai** allows for precise behavior modeling of agents, including interruptions and fault tolerance.
 
+* [User Demo](#user-demo)
+* [Platform Demo](#platform-demo)
+* [Features](#features)
+* [Implementation](#implementation)
+* [Comparison](#comparison)
+* [Try It](#try-it)
+* [Example](#example)
+* [Screenshots](#screenshots)
+* [Documentation](#documentation)
+* [Getting Started](#getting-started)
+* [User Interfaces](#user-interfaces)
+* [Bash Scripts](#bash-scripts)
+
 ## User Demo
 
 [Screenshots](#screenshots-user-demo) and [YouTube](https://youtu.be/rbwXg64poBE) are also available.
@@ -298,7 +311,7 @@ type ResultCheckingInfo struct {
 }
 ```
 
-Read the [schema file in full](/examples/deepresearch/schema/sa_research.go).
+Read the [schema file in full](/examples/research/schema/sa_research.go).
 
 ## Screenshots
 

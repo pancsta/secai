@@ -878,7 +878,7 @@ func (a *Agent) StoryIngredientsPickingState(e *am.Event) {
 
 			// if enough, add ingredients to memory and finish
 			if len(res.Ingredients) >= a.Config.MinIngredients {
-				states := a.mem.Schema()
+				schema := a.mem.Schema()
 				names := a.mem.StateNames()
 				newNames := make([]string, len(res.Ingredients))
 				for i, ing := range res.Ingredients {
@@ -891,13 +891,13 @@ func (a *Agent) StoryIngredientsPickingState(e *am.Event) {
 					}
 
 					name := "Ingredient" + shared.PascalCase(ing.Name)
-					states[name] = am.State{}
+					schema[name] = am.State{}
 					names = append(names, name)
 					newNames[i] = name
 				}
 
 				// save mem and the list
-				err = a.mem.SetSchema(states, names)
+				err = a.mem.SetSchema(schema, names)
 				if err != nil {
 					mach.AddErrState(ss.ErrMem, err, nil)
 					return

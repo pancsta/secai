@@ -120,6 +120,8 @@ type Config struct {
 	ReqLimit       int    `arg:"env:SECAI_REQ_LIMIT" help:"Max LLM requests per session." default:"1000"`
 }
 
+// TODO shared secai config with everything from .env
+
 // ///// ///// /////
 
 // ///// AGENT

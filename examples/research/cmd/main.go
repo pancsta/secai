@@ -9,7 +9,7 @@ import (
 	"runtime/debug"
 
 	"github.com/alexflint/go-arg"
-
+	"github.com/joho/godotenv"
 	"github.com/pancsta/secai/examples/research"
 	"github.com/pancsta/secai/shared"
 )
@@ -20,6 +20,11 @@ var id = "research"
 var configFS embed.FS
 
 func init() {
+	if os.Getenv("SECAI_NO_DOTENV") == "" {
+		// TODO load agent.env?
+		godotenv.Load()
+	}
+
 	// TODO config
 	if os.Getenv("SECAI_DIR") == "" {
 		os.Setenv("SECAI_DIR", "tmp")

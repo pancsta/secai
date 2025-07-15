@@ -110,9 +110,6 @@ type CookStatesDef struct {
 	*llm.LLMAgentStatesDef
 }
 
-type StepsStatesDef struct {
-}
-
 // CookGroupsDef contains all the state groups Cook state machine.
 type CookGroupsDef struct {
 	// Group with all stories.
@@ -345,9 +342,7 @@ func NewPromptGenCharacter(agent secai.AgentAPI) *PromptGenCharacter {
 			2. Add some personality to the character.
 			3. Assign a more specific profession from the requested period.
 			4. Assign a name.
-		`, `
-			Stay 
-		`)
+		`, ``)
 }
 
 type ParamsGenCharacter struct {
