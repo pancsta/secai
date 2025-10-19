@@ -33,9 +33,9 @@ func New(ctx context.Context, id string, states am.S, machSchema am.Schema) *Age
 	}
 }
 
-func (a *Agent) Init(agent secai.AgentAPI) error {
+func (a *Agent) Init(agent secai.AgentAPI, groups any, states am.States) error {
 	// call super
-	err := a.Agent.Init(agent)
+	err := a.Agent.Init(agent, groups, states)
 	if err != nil {
 		return err
 	}

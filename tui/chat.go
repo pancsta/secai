@@ -15,11 +15,11 @@ import (
 	"github.com/navidys/tvxwidgets"
 	amhist "github.com/pancsta/asyncmachine-go/pkg/history"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
-	"github.com/pancsta/secai/tui/states"
 	"github.com/rivo/tview"
 
 	baseschema "github.com/pancsta/secai/schema"
 	"github.com/pancsta/secai/shared"
+	"github.com/pancsta/secai/tui/states"
 )
 
 // aliases
@@ -31,10 +31,11 @@ var ParseArgs = shared.ParseArgs
 var Pass = shared.Pass
 
 var ss = baseschema.AgentStates
+var ssChat = states.UIChatStates
 var placeholder = "Enter text here..."
 
 type Chat struct {
-	mach   *am.Machine
+	agent  *am.Machine
 	logger *slog.Logger
 	app    *tview.Application
 	msgs   []*shared.Msg
@@ -47,7 +48,7 @@ type Chat struct {
 	clockView  *tvxwidgets.Plot
 	buttonIntt *tview.Button
 	dispose    func() error
-	uiMach     *am.Machine
+	mach       *am.Machine
 }
 
 var _ shared.UI = &Chat{}
@@ -55,7 +56,7 @@ var _ shared.UI = &Chat{}
 func NewChat(mach *am.Machine, logger *slog.Logger, msgs []*shared.Msg) *Chat {
 
 	c := &Chat{
-		mach:   mach,
+		agent:  mach,
 		logger: logger,
 		app:    tview.NewApplication(),
 		msgs:   msgs,
@@ -66,12 +67,12 @@ func NewChat(mach *am.Machine, logger *slog.Logger, msgs []*shared.Msg) *Chat {
 
 // ///// ///// /////
 
-// ///// HANDLERS
+// ///// HANDLERS (AGENT)
 
 // ///// ///// /////
 
 func (c *Chat) UICleanOutputState(e *am.Event) {
-	c.mach.Remove1(ss.UICleanOutput, nil)
+	c.agent.Remove1(ss.UICleanOutput, nil)
 	c.msgs = nil
 	go c.app.QueueUpdateDraw(func() {
 		c.msgsView.SetText("")
@@ -79,20 +80,18 @@ func (c *Chat) UICleanOutputState(e *am.Event) {
 }
 
 func (c *Chat) UIButtonSendState(e *am.Event) {
-	c.mach.Remove1(ss.UIButtonSend, nil)
-
-	c.mach.EvAdd1(e, ss.Prompt, Pass(&A{Prompt: c.prompt.GetText()}))
+	c.agent.EvAdd1(e, ss.Prompt, Pass(&A{Prompt: c.prompt.GetText()}))
 	c.prompt.SetText("", false)
 	c.Redraw()
 }
 
 func (c *Chat) UIButtonInttState(e *am.Event) {
-	c.mach.Remove1(ss.UIButtonIntt, nil)
+	c.agent.EvRemove1(e, ss.UIButtonIntt, nil)
 
-	if c.mach.Is1(ss.Interrupted) {
-		c.mach.EvAdd1(e, ss.Resume, nil)
+	if c.agent.Is1(ss.Interrupted) {
+		c.agent.EvAdd1(e, ss.Resume, nil)
 	} else {
-		c.mach.EvAdd1(e, ss.Interrupted, nil)
+		c.agent.EvAdd1(e, ss.Interrupted, nil)
 	}
 	c.Redraw()
 }
@@ -194,13 +193,14 @@ func (c *Chat) PromptState(e *am.Event) {
 
 func (c *Chat) Init(sub shared.UI, screen tcell.Screen, name string) error {
 
-	id := "tui-chat-" + c.mach.Id() + "-" + name
-	uiMach, err := am.NewCommon(c.mach.NewStateCtx(ss.UIMode), id, states.UIStoriesSchema, ssui.Names(), nil, c.mach, nil)
+	id := "tui-chat-" + c.agent.Id() + "-" + name
+	uiMach, err := am.NewCommon(c.agent.NewStateCtx(ss.UIMode), id, states.UIChatSchema, ssChat.Names(), nil, c.agent, nil)
 	if err != nil {
 		return err
 	}
+	uiMach.SetGroups(states.UIChatGroups, states.UIChatStates)
 	shared.MachTelemetry(uiMach, nil)
-	c.uiMach = uiMach
+	c.mach = uiMach
 	mach := c.Mach()
 
 	// TODO cut better
@@ -223,11 +223,11 @@ func (c *Chat) Logger() *slog.Logger {
 }
 
 func (c *Chat) Mach() *am.Machine {
-	return c.mach
+	return c.agent
 }
 
 func (c *Chat) UIMach() *am.Machine {
-	return c.uiMach
+	return c.mach
 }
 
 // BindHandlers binds transition handlers to the state machine. Overwrite it to bind methods from a subclass.
@@ -256,7 +256,7 @@ func (c *Chat) InitComponents() {
 
 			// submit TODO UI state
 			case tcell.KeyEnter:
-				res := c.mach.Add1(ss.Prompt, Pass(&A{
+				res := c.agent.Add1(ss.Prompt, Pass(&A{
 					Prompt: c.prompt.GetText(),
 				}))
 				if res == am.Canceled {
@@ -274,13 +274,13 @@ func (c *Chat) InitComponents() {
 
 	c.buttonSend = tview.NewButton("Send Message").
 		SetSelectedFunc(func() {
-			c.mach.Add1(ss.UIButtonSend, nil)
+			c.agent.Add1(ss.UIButtonSend, nil)
 		})
 	c.buttonSend.SetBorder(true)
 
 	c.buttonIntt = tview.NewButton("Interrupt").
 		SetSelectedFunc(func() {
-			c.mach.Add1(ss.UIButtonIntt, nil)
+			c.agent.Add1(ss.UIButtonIntt, nil)
 		})
 	if c.Mach().Is1(ss.Interrupted) {
 		c.buttonIntt.SetLabel("Resume")
@@ -331,11 +331,11 @@ func (c *Chat) InitComponents() {
 func (c *Chat) Start(dispose func() error) error {
 	c.dispose = dispose
 	// start the UI loop
-	c.UIMach().Add(S{ssui.Start, ssui.Ready}, nil)
-	go c.mach.Add1(ss.UIReady, nil)
+	c.UIMach().Add(S{ssStories.Start, ssStories.Ready}, nil)
+	go c.agent.Add1(ss.UIReady, nil)
 	err := c.app.Run()
 	if err != nil && err.Error() != "EOF" {
-		c.mach.AddErrState(ss.ErrUI, err, nil)
+		c.agent.AddErrState(ss.ErrUI, err, nil)
 	}
 
 	return err

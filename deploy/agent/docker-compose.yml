@@ -15,7 +15,8 @@ services:
       - "${SECAI_WEB_MOBILE_PORT}:${SECAI_WEB_MOBILE_PORT}"
       - "${SECAI_WEB_LOGS_PORT}:${SECAI_WEB_LOGS_PORT}"
       - "${SECAI_WEB_DIR_PORT}:${SECAI_WEB_DIR_PORT}"
-    restart: unless-stopped
+#    restart: unless-stopped
+    restart: no
     depends_on:
       - am-dbg
     deploy:
@@ -23,6 +24,7 @@ services:
         limits:
           cpus: '0.5'
           memory: 300m
+
 
   am-dbg:
     image: asyncmachine/web-am-dbg

@@ -1,0 +1,26 @@
+version: '3'
+dotenv: ["agent.env"]
+vars:
+  SECAI_ID: '{{.SECAI_ID}}'
+  SECAI_ENV: '{{.SECAI_ENV}}'
+
+tasks:
+
+  start: docker-compose up -d --force-recreate
+
+  start-container: docker run -it secai/${SECAI_ID}${SECAI_ENV}
+
+  stop: docker-compose down
+
+  reboot:
+    cmds:
+      - task: stop
+      - task: start
+
+  reset:
+    cmds:
+      - task: stop
+      - sudo rm -Rf ./data
+      - mkdir data
+      - chown tob:tob data
+      - task: start

@@ -1,7 +1,7 @@
 version: 3
 
 vars:
-  AM_VER: 'v0.13.0'
+  AM_VER: 'v0.15.0'
   SECAI_DIR_ABS: '{{.USER_WORKING_DIR}}/{{.SECAI_AGENT_DIR}}/{{.SECAI_DIR}}'
   SECAI_DIR: '{{.SECAI_DIR | default "tmp"}}'
   SECAI_ID: '{{.SECAI_ID | default "myagent"}}'
@@ -138,17 +138,10 @@ tasks:
   start-metrics-agent:
     desc: Start docker-compose with Grafana and Jaeger for agents
     cmds:
-      - docker-compose -f config/agent-metrics/docker-compose.yml up -d --force-recreate
+      - docker-compose -f deploy/agent-metrics/docker-compose.yml up -d --force-recreate
       - |
         echo Grafana: http://localhost:3000
         echo Jaeger: http://localhost:16686
-
-  start-metrics-docker:
-    desc: Start docker-compose with Grafana for Docker
-    cmds:
-      - docker-compose -f config/docker-metrics/docker-compose.yml up -d --force-recreate
-      - |
-        echo Grafana: http://localhost:3001
 
   start-deploy:
     desc: Start a full deployment
@@ -239,7 +232,7 @@ tasks:
           --create
 
   tui-auto:
-    desc: Start the full desktop TUI and reconnect
+    desc: Start the full desktop TUI and keep reconnecting
     silent: false
     ignore_error: true
     cmds:
@@ -369,7 +362,7 @@ tasks:
 
   sync-configs:
 
-    desc: Pull the newest ./config and ./template
+    desc: Pull the newest `./template.env`, `./config`, and `./docker`1
     ignore_error: true
     cmd: |
       files=(
@@ -384,10 +377,12 @@ tasks:
         "./config/tui-mobile-auto.kdl"
         "./config/tui-mobile.kdl"
         "./config/tui.kdl"
-        "./deploy/docker-metrics/docker-compose.yml"
-        "./deploy/docker-metrics/prometheus.yml"
+        "./deploy/agent-metrics/docker-compose.yml"
+        "./deploy/agent-metrics/loki.yaml"
+        "./deploy/agent-metrics/otel-collector-config.yaml"
+        "./deploy/agent-metrics/prometheus.yml"
       )
-      mkdir -p deploy/docker-metrics
+      mkdir -p deploy/agent-metrics
       for file in "${files[@]}"; do
         rm -f "$file"
         wget -O "$file" "https://raw.githubusercontent.com/pancsta/secai/refs/heads/main${file:1}"

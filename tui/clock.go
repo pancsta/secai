@@ -20,14 +20,19 @@ import (
 	"github.com/rivo/tview"
 )
 
+var ssClock = states.UIClockStates
+
 // TODO re-render on resize
 
+// regexp for " \d+"
+var lineNumRe = regexp.MustCompile(`^(\s+)(\d+)`)
+
 type Clock struct {
-	mach      *am.Machine
+	agent     *am.Machine
 	logger    *slog.Logger
 	app       *tview.Application
 	msgs      []*shared.Msg
-	uiMach    *am.Machine
+	mach      *am.Machine
 	hist      *amhist.History
 	dispose   func() error
 	redrawing atomic.Bool
@@ -51,7 +56,7 @@ func NewClock(mach *am.Machine, logger *slog.Logger, clockStates am.S) *Clock {
 		HistSize:  10,
 		SeriesLen: 15,
 
-		mach:   mach,
+		agent:  mach,
 		logger: logger,
 		app:    tview.NewApplication(),
 	}
@@ -59,14 +64,17 @@ func NewClock(mach *am.Machine, logger *slog.Logger, clockStates am.S) *Clock {
 	return c
 }
 
+// ///// ///// /////
+
+// ///// HANDLERS (AGENT)
+
+// ///// ///// /////
+
 func (c *Clock) DisposingState(e *am.Event) {
 	// TODO
 	// c.Mach().EvAddErrState(e, ss.ErrUI,
 	// 	tty.Close(), nil)
 }
-
-// regexp for " \d+"
-var lineNumRe = regexp.MustCompile(`^(\s+)(\d+)`)
 
 func (c *Clock) AnyState(e *am.Event) {
 	c.Redraw()
@@ -124,7 +132,7 @@ func (c *Clock) Redraw() {
 		// 	}
 		//
 		// }
-		// lines[i] = ansi.String(result)
+		// lines[i] = ansi.MutString(result)
 
 		// limit to width
 		lines[i], err = ansi.Truncate(lines[i], size.Width)
@@ -153,14 +161,15 @@ func (c *Clock) Redraw() {
 
 func (c *Clock) Init(sub shared.UI, screen tcell.Screen, name string) error {
 
-	id := "tui-clock-" + c.mach.Id() + "-" + name
-	uiMach, err := am.NewCommon(c.mach.NewStateCtx(ss.UIMode), id, states.UIStoriesSchema, ssui.Names(), nil, c.mach, nil)
+	id := "tui-clock-" + c.agent.Id() + "-" + name
+	uiMach, err := am.NewCommon(c.agent.NewStateCtx(ss.UIMode), id, states.UIClockSchema, ssClock.Names(), nil, c.agent, nil)
 	if err != nil {
 		return err
 	}
-	c.screen = screen
+	uiMach.SetGroups(states.UIClockGroups, states.UIClockStates)
 	shared.MachTelemetry(uiMach, nil)
-	c.uiMach = uiMach
+	c.screen = screen
+	c.mach = uiMach
 	mach := c.Mach()
 
 	// TODO track whitelistChanged
@@ -188,11 +197,11 @@ func (c *Clock) Logger() *slog.Logger {
 }
 
 func (c *Clock) Mach() *am.Machine {
-	return c.mach
+	return c.agent
 }
 
 func (c *Clock) UIMach() *am.Machine {
-	return c.uiMach
+	return c.mach
 }
 
 // BindHandlers binds transition handlers to the state machine. Overwrite it to bind methods from a subclass.
@@ -252,6 +261,9 @@ func (c *Clock) Data() [][]float64 {
 		ticks := make(am.Time, amount)
 		// TODO Entries created for non tracked states?
 		for _, e := range *c.hist.Entries.Load() {
+			if len(e.MTimeDiff) < ser.To {
+				continue
+			}
 			ticks = ticks.Add(e.MTimeDiff[ser.From:ser.To])
 		}
 
@@ -275,11 +287,11 @@ func (c *Clock) Data() [][]float64 {
 func (c *Clock) Start(dispose func() error) error {
 	c.dispose = dispose
 	// start the U
-	c.UIMach().Add(S{ssui.Start, ssui.Ready}, nil)
-	go c.mach.Add1(ss.UIReady, nil)
+	c.UIMach().Add(S{ssStories.Start, ssStories.Ready}, nil)
+	go c.agent.Add1(ss.UIReady, nil)
 	err := c.app.Run()
 	if err != nil && err.Error() != "EOF" {
-		c.mach.AddErrState(ss.ErrUI, err, nil)
+		c.agent.AddErrState(ss.ErrUI, err, nil)
 	}
 
 	return err

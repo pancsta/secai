@@ -52,7 +52,7 @@ var mock = Mock{
 
 	FlowPromptIngredients: "I have 2 carrots, 3 eggs and rice",
 	FlowPromptRecipe:      "cake",
-	FlowPromptCooking:     "wipe your memory",
+	// FlowPromptCooking:     "wipe your memory",
 	// FlowPromptRecipe: "egg fried rice",
 
 	// TODO MockDump state for dumping mocked fields
@@ -225,17 +225,18 @@ func New(
 
 func (a *Agent) Init(agent secai.AgentAPI) error {
 	// call super
-	err := a.Agent.Init(agent)
+	err := a.Agent.Init(agent, schema.CookGroups, schema.CookStates)
 	if err != nil {
 		return err
 	}
 	mach := a.Mach()
 
-	a.Mach().AddBreakpoint(S{ss.StoryWakingUp}, nil)
-
 	// args mapper for logging
-	mach.SetLogArgs(LogArgs)
-	mach.AddBreakpoint(nil, S{ss.StoryRecipePicking})
+	mach.SemLogger().SetArgsMapper(LogArgs)
+	mach.AddBreakpoint(nil, S{ss.StoryRecipePicking}, true)
+
+	// loop guards
+	a.loop = amhelp.NewStateLoop(mach, ss.Loop, nil)
 
 	// init searxng - websearch tool
 	a.tSearxng, err = searxng.New(a)
@@ -401,8 +402,8 @@ func (a *Agent) initStories() {
 					Action: func() {
 						// TODO as TellJokeState
 						s := a.Stories[ss.StoryJoke]
-						// TODO check mach.CanAdd1(ss.StoryJoke, nil) once impl
-						if !a.canJoke() {
+
+						if !a.hasJokes() {
 							a.Output("The cook is working on new jokes.", shared.FromNarrator)
 						}
 						s.Epoch = a.MemCutoff.Load()
@@ -607,8 +608,7 @@ func (a *Agent) storiesButtons() []shared.StoryButton {
 	return buts
 }
 
-// TODO replace with machine.CanAdd
-func (a *Agent) canJoke() bool {
+func (a *Agent) hasJokes() bool {
 	j := a.jokes.Load()
 	return j != nil && len(j.Jokes) > 0
 }

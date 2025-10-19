@@ -8,14 +8,14 @@ includes:
 
 tasks:
 
-  docker:
+  docker-build:
     env:
       DOCKER_BUILDKIT: 1
     cmd: docker build -t secai/{{.SECAI_ID}}
       --build-arg SECAI_ID="{{.SECAI_ID}}"
       -f deploy/agent/Dockerfile ..
 
-  docker-compose:
+  docker-compose-start:
     dotenv: ["deploy/agent/agent.env"]
 #    cmd: env
     cmd: docker-compose -f ./deploy/agent/docker-compose.yml
@@ -26,14 +26,14 @@ tasks:
     cmd: docker-compose -f ./deploy/agent/docker-compose.yml
       down
 
-  dev-docker:
+  dev-docker-build:
     env:
       DOCKER_BUILDKIT: 1
     cmd: docker build -t secai/{{.SECAI_ID}}-dev
       --build-arg SECAI_ID="{{.SECAI_ID}}"
       -f deploy/agent/Dockerfile ..
 
-  dev-docker-compose:
+  dev-docker-compose-start:
     dotenv: ["deploy/agent/agent.env"]
     env:
       SECAI_ENV: "-dev"
@@ -153,3 +153,10 @@ tasks:
         --graph 3
         --clean-on-connect 
         {{.CLI_ARGS}}
+
+  start-metrics-docker:
+    desc: Start docker-compose with Grafana for Docker Engine
+    cmds:
+      - docker-compose -f deploy/docker-metrics/docker-compose.yml up -d --force-recreate
+      - |
+        echo Grafana: http://localhost:3001

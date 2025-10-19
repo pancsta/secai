@@ -215,22 +215,18 @@ func (t *Tool) DockerStartingState(e *am.Event) {
 			return // expired
 		}
 
-		// crate and clean
+		// create tmp dir TODO custom data dir
 		tmpDir := filepath.Join(os.TempDir(), "secai-tool-searxng")
-		tmpDirFiles, err := os.ReadDir(tmpDir)
-		if err == nil {
-			for _, f := range tmpDirFiles {
-				err := os.RemoveAll(filepath.Join(tmpDir, f.Name()))
-				if err != nil {
-					mach.EvAddErr(e, fmt.Errorf("docker cleanup failed: %w", err), nil)
-					return
-				}
+
+		// deploy configs, if missing
+		if _, err := os.Stat(tmpDir); !os.IsNotExist(err) {
+			if err := os.RemoveAll(tmpDir); err != nil {
+				mach.AddErr(fmt.Errorf("failed to remove tmp dir: %w", err), nil)
+				return
 			}
 		}
 
-		// deploy our configs
-		err = os.CopyFS(tmpDir, cfgFolder)
-		if err != nil {
+		if err := os.CopyFS(tmpDir, cfgFolder); err != nil {
 			mach.AddErr(fmt.Errorf("failed to copy docker files: %w", err), nil)
 			return
 		}

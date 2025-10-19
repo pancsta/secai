@@ -153,14 +153,11 @@ func NewUIStories(ctx context.Context) *am.Machine {
 
 // ///// CLOCK
 
-// ///// ///// /////
+// ///// ///// /////s
 
 // UIClockStatesDef contains all the states of the UIClock state-machine.
 type UIClockStatesDef struct {
 	*am.StatesBase
-
-	ReqReplaceButtons string
-	ReplaceButtons    string
 
 	// inherit from UIBaseStatesDef
 	*UIBaseStatesDef
@@ -175,9 +172,7 @@ var UIClockSchema = SchemaMerge(
 	// inherit from UIBase
 	UIBaseSchema,
 	am.Schema{
-
-		ssL.ReqReplaceButtons: {Multi: true},
-		ssL.ReplaceButtons:    {},
+		// clock states
 	})
 
 // EXPORTS AND GROUPS

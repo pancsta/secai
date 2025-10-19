@@ -224,8 +224,10 @@ func (a *Agent) CheckStoriesState(e *am.Event) {
 			continue
 		}
 
-		// add to the list
-		if mach.Is1(s.State) && !activate || mach.Not1(s.State) && activate {
+		// add to the list after a passed "impossibility check"
+		if mach.Is1(s.State) && !activate && !amhelp.CantRemove1(mach, s.State, nil) ||
+			mach.Not1(s.State) && activate && !amhelp.CantAdd1(mach, s.State, nil) {
+
 			if isDebug {
 				a.Log("story changed", "story", s.State)
 			}
@@ -264,7 +266,8 @@ func (a *Agent) StoryChangedState(e *am.Event) {
 		// deactivate
 		if mach.Is1(s.State) && !activate {
 			res := mach.EvRemove1(e, s.State, nil)
-			// TODO handle Queued? use CanRemove1, when available
+
+			// TODO handle Queued?
 			if res != am.Canceled {
 				s.Cook.TimeDeactivated = mach.Time(nil)
 				s.Memory.TimeDeactivated = a.mem.Time(nil)
@@ -276,7 +279,8 @@ func (a *Agent) StoryChangedState(e *am.Event) {
 			// activate
 		} else if mach.Not1(s.State) && activate {
 			res := mach.EvAdd1(e, s.State, nil)
-			// TODO handle Queued? use CanAdd1, when available
+
+			// TODO handle Queued?
 			if res != am.Canceled {
 				s.Cook.TimeActivated = mach.Time(nil)
 				s.Memory.TimeActivated = a.mem.Time(nil)
@@ -324,7 +328,7 @@ func (a *Agent) ReadyState(e *am.Event) {
 // TODO enter
 
 func (a *Agent) UISessConnState(e *am.Event) {
-	mach := e.Machine()
+	mach := a.Mach()
 	args := ParseArgs(e.Args)
 	sess := args.SSHSess
 	done := args.Done
@@ -658,7 +662,9 @@ func (a *Agent) OrientingState(e *am.Event) {
 	prompt := ParseArgs(e.Args).Prompt
 
 	// possible moves: all cooking steps, most stories and some states
-	moves := map[string]string{}
+
+	// moves from stories
+	movesStories := map[string]string{}
 	for _, name := range mach.StateNames() {
 		state := cookSchema[name]
 
@@ -671,18 +677,25 @@ func (a *Agent) OrientingState(e *am.Event) {
 			desc = a.Stories[name].Desc
 		}
 
-		// TODO check CanAdd1 for the stories
 		if isTrigger || (isStory && !isManual) {
-			moves[name] = desc
+			impossible := amhelp.CantAdd1(mach, name, nil)
+			if !impossible {
+				movesStories[name] = desc
+			}
 		}
 	}
 
+	// collect and filter cooking moves
+	movesCooking := a.mem.StateNamesMatch(schema.MatchSteps)
+	movesCooking = slices.DeleteFunc(movesCooking, func(state string) bool {
+		return amhelp.CantAdd1(a.mem, state, nil)
+	})
+
 	// build params
 	params := schema.ParamsOrienting{
-		Prompt: prompt,
-		// TODO check CanAdd1 for the steps
-		MovesCooking: a.mem.StateNamesMatch(schema.MatchSteps),
-		MovesStories: moves,
+		Prompt:       prompt,
+		MovesCooking: movesCooking,
+		MovesStories: movesStories,
 	}
 
 	// unblock
@@ -1142,7 +1155,7 @@ func (a *Agent) StoryCookingStartedEnd(e *am.Event) {
 }
 
 func (a *Agent) StoryJokeEnter(e *am.Event) bool {
-	return a.canJoke()
+	return a.hasJokes()
 }
 
 func (a *Agent) StoryJokeState(e *am.Event) {

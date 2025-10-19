@@ -10,24 +10,25 @@ import (
 	"code.rocketnine.space/tslocum/cbind"
 	"github.com/gdamore/tcell/v2"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
+
 	"github.com/pancsta/cview"
 	"github.com/pancsta/secai/shared"
 	"github.com/pancsta/secai/tui/states"
 )
 
-var ssui = states.UIStoriesStates
+var ssStories = states.UIStoriesStates
 
 const clickDelay = time.Second
 
 type Stories struct {
-	mach           *am.Machine
+	agent          *am.Machine
 	logger         *slog.Logger
 	app            *cview.Application
 	storiesList    *cview.TextView
 	layout         *cview.Flex
 	buttonsView    *cview.ScrollView
 	dispose        func() error
-	uiMach         *am.Machine
+	mach           *am.Machine
 	replacePending bool
 	buttons        []shared.StoryButton
 	stories        []shared.StoryInfo
@@ -43,7 +44,7 @@ func NewStories(
 	mach *am.Machine, logger *slog.Logger, buttons []shared.StoryButton, stories []shared.StoryInfo,
 ) *Stories {
 	return &Stories{
-		mach:    mach,
+		agent:   mach,
 		logger:  logger,
 		buttons: buttons,
 		stories: stories,
@@ -52,7 +53,7 @@ func NewStories(
 
 // ///// ///// /////
 
-// ///// HANDLERS
+// ///// HANDLERS (STORIES)
 
 // ///// ///// /////
 
@@ -61,7 +62,7 @@ func (s *Stories) ReqReplaceContentState(e *am.Event) {
 	s.replacePending = true
 	s.buttons = args.Buttons
 	s.stories = args.Stories
-	s.uiMach.Add1(ssui.ReplaceContent, nil)
+	s.mach.Add1(ssStories.ReplaceContent, nil)
 }
 
 func (s *Stories) ReplaceContentState(e *am.Event) {
@@ -90,7 +91,7 @@ func (s *Stories) ReplaceContentState(e *am.Event) {
 
 		// deactivate after drawing
 		s.app.SetAfterDrawFunc(func(_ tcell.Screen) {
-			s.uiMach.Remove1(ssui.ReplaceContent, nil)
+			s.mach.Remove1(ssStories.ReplaceContent, nil)
 			s.app.SetAfterDrawFunc(nil)
 		})
 	})
@@ -98,7 +99,7 @@ func (s *Stories) ReplaceContentState(e *am.Event) {
 
 func (s *Stories) ReplaceContentEnd(e *am.Event) {
 	if s.replacePending {
-		s.uiMach.Add1(ssui.ReplaceContent, nil)
+		s.mach.Add1(ssStories.ReplaceContent, nil)
 	}
 }
 
@@ -110,13 +111,14 @@ func (s *Stories) ReplaceContentEnd(e *am.Event) {
 
 func (s *Stories) Init(sub shared.UI, screen tcell.Screen, name string) error {
 
-	id := "tui-stories-" + s.mach.Id() + "-" + name
-	uiMach, err := am.NewCommon(s.mach.NewStateCtx(ss.UIMode), id, states.UIStoriesSchema,
-		ssui.Names(), nil, s.mach, nil)
+	id := "tui-stories-" + s.agent.Id() + "-" + name
+	uiMach, err := am.NewCommon(s.agent.NewStateCtx(ss.UIMode), id, states.UIStoriesSchema,
+		ssStories.Names(), nil, s.agent, nil)
 	if err != nil {
 		return err
 	}
-	s.uiMach = uiMach
+	uiMach.SetGroups(states.UIStoriesGroups, states.UIStoriesStates)
+	s.mach = uiMach
 
 	s.InitComponents()
 	if screen != nil {
@@ -146,11 +148,11 @@ func (s *Stories) Logger() *slog.Logger {
 func (s *Stories) Start(dispose func() error) error {
 	s.dispose = dispose
 	// start the UI loop
-	s.UIMach().Add(S{ssui.Start, ssui.Ready}, nil)
-	go s.UIMach().Add1(ssui.Ready, nil)
+	s.UIMach().Add(S{ssStories.Start, ssStories.Ready}, nil)
+	go s.UIMach().Add1(ssStories.Ready, nil)
 	err := s.app.Run()
 	if err != nil && err.Error() != "EOF" {
-		s.mach.AddErrState(ss.ErrUI, err, nil)
+		s.agent.AddErrState(ss.ErrUI, err, nil)
 	}
 
 	return err
@@ -164,16 +166,16 @@ func (s *Stories) Stop() error {
 }
 
 func (s *Stories) Mach() *am.Machine {
-	return s.mach
+	return s.agent
 }
 
 func (s *Stories) UIMach() *am.Machine {
-	return s.uiMach
+	return s.mach
 }
 
 // BindHandlers binds transition handlers to the state machine. Overwrite it to bind methods from a subclass.
 func (s *Stories) BindHandlers() error {
-	return s.uiMach.BindHandlers(s)
+	return s.mach.BindHandlers(s)
 }
 
 func (s *Stories) Redraw() {
@@ -401,7 +403,7 @@ func (s *Stories) renderStories() string {
 
 // ///// ///// /////
 
-// ///// AGENT HANDLERS
+// ///// HANDLERS (AGENT)
 
 // ///// ///// /////
 
@@ -412,8 +414,8 @@ type StoriesHandlers struct {
 }
 
 func (h *StoriesHandlers) UICleanOutputState(e *am.Event) {
-	h.s.mach.Remove1(ss.UICleanOutput, nil)
+	h.s.agent.Remove1(ss.UICleanOutput, nil)
 	h.s.stories = nil
 	h.s.buttons = nil
-	h.s.uiMach.EvAdd1(e, ssui.ReplaceContent, nil)
+	h.s.mach.EvAdd1(e, ssStories.ReplaceContent, nil)
 }

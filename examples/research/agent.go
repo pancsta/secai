@@ -113,14 +113,14 @@ func New(
 
 func (a *Agent) Init(agent secai.AgentAPI) error {
 	// call super
-	err := a.Agent.Init(agent)
+	err := a.Agent.Init(agent, schema.ResearchGroups, schema.ResearchStates)
 	if err != nil {
 		return err
 	}
 	mach := a.Mach()
 
 	// args mapper for logging
-	mach.SetLogArgs(LogArgs)
+	mach.SemLogger().SetArgsMapper(LogArgs)
 
 	// create a date tool
 	a.tDate, _ = getter.New(a, "date", "Current date", func() (string, error) {

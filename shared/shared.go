@@ -100,10 +100,11 @@ type A struct {
 	// List of choices
 	Choices []string
 	// Buttons are a list of buttons to be displayed in the UI.
-	Buttons      []StoryButton `log:"buttons"`
-	Stories      []StoryInfo   `log:"stories"`
-	StatesList   []string      `log:"states_list"`
-	ActivateList []bool        `log:"activate_list"`
+	Buttons    []StoryButton `log:"buttons"`
+	Stories    []StoryInfo   `log:"stories"`
+	StatesList []string      `log:"states_list"`
+	// ActivateList is a list of booleans for StatesList, indicating an active state at the given index.
+	ActivateList []bool `log:"activate_list"`
 
 	// non-RPC fields
 
@@ -215,15 +216,17 @@ func Sj(parts ...string) string {
 	return strings.Join(parts, " ")
 }
 
-func MachTelemetry(mach *am.Machine, logArgs am.LogArgsMapper) {
+func MachTelemetry(mach *am.Machine, logArgs am.LogArgsMapperFn) {
+	semLogger := mach.SemLogger()
+
 	// default (non-debug) log level
-	mach.SetLogLevel(am.LogChanges)
+	semLogger.SetLevel(am.LogChanges)
 	// dedicated args mapper
 	if logArgs != nil {
-		mach.SetLogArgs(logArgs)
+		semLogger.SetArgsMapper(logArgs)
 	} else {
 		// default args mapper
-		mach.SetLogArgs(am.NewArgsMapper(am.LogArgs, 0))
+		semLogger.SetArgsMapper(am.NewArgsMapper(am.LogArgs, 0))
 	}
 
 	// env-based telemetry

@@ -21,7 +21,7 @@ services:
         max-file: "1"
 
   searxng:
-    image: docker.io/searxng/searxng:latest
+    image: docker.io/searxng/searxng:2025.10.18-ee6d4f322
     restart: unless-stopped
     networks:
       - searxng

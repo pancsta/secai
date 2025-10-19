@@ -450,7 +450,7 @@ func NewAgent(
 // METHODS
 
 // Init initializes the Agent and returns an error. It does not block.
-func (a *Agent) Init(agent AgentAPI) error {
+func (a *Agent) Init(agent AgentAPI, groups any, states am.States) error {
 	// validate states schema
 	if err := amhelp.Implements(a.states, schema.AgentStates.Names()); err != nil {
 		return fmt.Errorf("AgentStates not implemented: %w", err)
@@ -466,6 +466,7 @@ func (a *Agent) Init(agent AgentAPI) error {
 		return err
 	}
 	a.mach = mach
+	mach.SetGroups(groups, states)
 	shared.MachTelemetry(mach, nil)
 
 	// LLM clients

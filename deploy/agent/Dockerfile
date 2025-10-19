@@ -43,3 +43,4 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 EXPOSE 7000-8000
 ENTRYPOINT ["task", "start-deploy"]
+#ENTRYPOINT ["/usr/sbin/bash"]
