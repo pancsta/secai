@@ -274,7 +274,7 @@ func (a *Agent) initMem() error {
 	var err error
 	mach := a.Mach()
 	if a.mem != nil {
-		a.MemCutoff.Add(a.mem.TimeSum(nil))
+		a.MemCutoff.Add(a.mem.Time(nil).Sum(nil))
 	}
 
 	a.mem, err = am.NewCommon(mach.Ctx(), "memory-cook", baseschema.MemSchema,
@@ -377,7 +377,7 @@ func (a *Agent) initStories() {
 					Label: "Waking up",
 					Desc:  "This button shows the progress of waking up",
 					Value: func() int {
-						return mach.CountActive(schema.CookGroups.BootGenReady)
+						return len(mach.ActiveStates(schema.CookGroups.BootGenReady))
 					},
 					ValueEnd: func() int {
 						return len(schema.CookGroups.BootGen)
@@ -451,12 +451,12 @@ func (a *Agent) initStories() {
 			Buttons: []shared.StoryButton{
 				{
 					Value: func() int {
-						return a.mem.CountActive(a.allSteps())
+						return len(a.mem.ActiveStates(a.allSteps()))
 					},
 					ValueEnd: func() int {
 						// fix the progress for optional steps
 						if mach.Is1(ss.StoryMealReady) {
-							return a.mem.CountActive(a.allSteps())
+							return len(a.mem.ActiveStates(a.allSteps()))
 						}
 
 						return len(a.allSteps())

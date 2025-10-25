@@ -756,7 +756,7 @@ var StoryJoke = &Story{
 		CanActivate: func(s *Story) bool {
 			mem := s.Memory.Mach
 			stepStates := mem.StateNamesMatch(MatchSteps)
-			stepsNow := mem.TimeSum(stepStates) + s.Epoch
+			stepsNow := mem.Time(stepStates).Sum(nil) + s.Epoch
 			freq := 1.5
 			// freq := 2.0
 

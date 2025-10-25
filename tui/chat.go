@@ -44,7 +44,7 @@ type Chat struct {
 	buttonSend *tview.Button
 	layout     *tview.Flex
 	prompt     *tview.TextArea
-	hist       *amhist.History
+	hist       *amhist.Memory
 	clockView  *tvxwidgets.Plot
 	buttonIntt *tview.Button
 	dispose    func() error

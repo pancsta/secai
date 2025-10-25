@@ -226,7 +226,7 @@ func (p *Prompt[P, R]) Run(e *am.Event, params P, model string) (*R, error) {
 				HistoryLen:  int64(len(msgs) - 1),
 				Request:     contentStr,
 				CreatedAt:   time.Now(),
-				MachTimeSum: int64(mach.TimeSum(nil)),
+				MachTimeSum: int64(mach.Time(nil).Sum(nil)),
 				MachTime:    fmt.Sprintf("%v", mach.Time(nil)),
 			})
 			if err != nil {

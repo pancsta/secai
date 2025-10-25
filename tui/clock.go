@@ -33,7 +33,7 @@ type Clock struct {
 	app       *tview.Application
 	msgs      []*shared.Msg
 	mach      *am.Machine
-	hist      *amhist.History
+	hist      *amhist.Memory
 	dispose   func() error
 	redrawing atomic.Bool
 
@@ -160,9 +160,11 @@ func (c *Clock) Redraw() {
 // ///// ///// /////
 
 func (c *Clock) Init(sub shared.UI, screen tcell.Screen, name string) error {
+	ctx := c.agent.NewStateCtx(ss.UIMode)
 
+	// init the UI machine
 	id := "tui-clock-" + c.agent.Id() + "-" + name
-	uiMach, err := am.NewCommon(c.agent.NewStateCtx(ss.UIMode), id, states.UIClockSchema, ssClock.Names(), nil, c.agent, nil)
+	uiMach, err := am.NewCommon(ctx, id, states.UIClockSchema, ssClock.Names(), nil, c.agent, nil)
 	if err != nil {
 		return err
 	}
@@ -170,10 +172,18 @@ func (c *Clock) Init(sub shared.UI, screen tcell.Screen, name string) error {
 	shared.MachTelemetry(uiMach, nil)
 	c.screen = screen
 	c.mach = uiMach
-	mach := c.Mach()
 
-	// TODO track whitelistChanged
-	c.hist = amhist.Track(mach, c.States, c.HistSize)
+	// start tracking the agent
+	c.hist, err = amhist.NewMemory(ctx, nil, c.agent, amhist.BaseConfig{
+		TrackedStates: c.States,
+		Changed:       c.States,
+		MaxRecords:    c.HistSize,
+	}, func(err error) {
+		uiMach.AddErr(err, nil)
+	})
+	if err != nil {
+		return err
+	}
 	c.InitComponents()
 	if screen != nil {
 		screen.EnableMouse(tcell.MouseMotionEvents)
@@ -248,6 +258,14 @@ func (c *Clock) Data() [][]float64 {
 	maxLen := lastState
 	maxWidth := size.Width + 1
 
+	// query history
+	rows, err := c.hist.FindLatest(c.UIMach().Ctx(), false, 0, amhist.Query{})
+	if err != nil {
+		c.UIMach().AddErr(err, nil)
+		// TODO proper defaults, panic
+		return [][]float64{make([]float64, len(series))}
+	}
+
 	// plot recent clocks
 	for iser, ser := range series {
 		// cut to max width
@@ -255,16 +273,17 @@ func (c *Clock) Data() [][]float64 {
 			ser.To = ser.From + maxWidth
 		}
 
+		// init data
 		amount := ser.To - ser.From
-
 		plots[iser] = make([]float64, min(maxWidth, maxLen))
 		ticks := make(am.Time, amount)
-		// TODO Entries created for non tracked states?
-		for _, e := range *c.hist.Entries.Load() {
-			if len(e.MTimeDiff) < ser.To {
+
+		for _, r := range rows {
+			diff := r.Time.MTimeTrackedDiff
+			if len(diff) < ser.To {
 				continue
 			}
-			ticks = ticks.Add(e.MTimeDiff[ser.From:ser.To])
+			ticks = ticks.Add(diff[ser.From:ser.To])
 		}
 
 		var maxC uint64

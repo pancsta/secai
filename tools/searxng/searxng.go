@@ -17,10 +17,11 @@ import (
 	"time"
 
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
+	"golang.org/x/sync/errgroup"
+
 	"github.com/pancsta/secai"
 	baseschema "github.com/pancsta/secai/schema"
 	"github.com/pancsta/secai/tools/searxng/schema"
-	"golang.org/x/sync/errgroup"
 )
 
 var ss = schema.States

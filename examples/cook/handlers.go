@@ -149,7 +149,7 @@ func (a *Agent) LoopState(e *am.Event) {
 func (a *Agent) AnyState(e *am.Event) {
 	mach := a.Mach()
 	tx := e.Transition()
-	mtime := mach.TimeSum(nil)
+	mtime := mach.Time(nil).Sum(nil)
 
 	// refresh stories on state changes but avoid recursion and DUPs
 	// TODO bind each story directly via wait methods
@@ -272,8 +272,8 @@ func (a *Agent) StoryChangedState(e *am.Event) {
 				s.Cook.TimeDeactivated = mach.Time(nil)
 				s.Memory.TimeDeactivated = a.mem.Time(nil)
 				s.DeactivatedAt = time.Now()
-				s.LastActiveTicks = s.Cook.TimeDeactivated.Sum() -
-					s.Cook.TimeActivated.Sum()
+				s.LastActiveTicks = s.Cook.TimeDeactivated.Sum(nil) -
+					s.Cook.TimeActivated.Sum(nil)
 			}
 
 			// activate
@@ -499,7 +499,7 @@ func (a *Agent) PromptState(e *am.Event) {
 	ctx := mach.NewStateCtx(ss.Prompt)
 
 	// TODO extract to a state
-	if int(mach.TimeSum(S{ss.RequestingLLM})) > a.Config.ReqLimit {
+	if int(mach.Time(S{ss.RequestingLLM}).Sum(nil)) > a.Config.ReqLimit {
 		_ = a.OutputPhrase("ReqLimitReached", a.Config.ReqLimit)
 		a.reqLimitOk.Store(false)
 		a.UserInput = ""
@@ -811,7 +811,7 @@ func (a *Agent) IngredientsReadyEnd(e *am.Event) {
 func (a *Agent) StoryWakingUpState(e *am.Event) {
 	mach := a.Mach()
 	ctx := mach.NewStateCtx(ss.StoryWakingUp)
-	a.preWakeupSum = mach.Time(schema.CookGroups.BootGen).Sum()
+	a.preWakeupSum = mach.Time(schema.CookGroups.BootGen).Sum(nil)
 
 	// loop guards
 	a.loop = amhelp.NewStateLoop(mach, ss.Loop, nil)
@@ -839,8 +839,8 @@ func (a *Agent) StoryWakingUpState(e *am.Event) {
 
 func (a *Agent) StoryWakingUpEnd(e *am.Event) {
 	// announce only if waking up took some time (any related Gen* was triggered)
-	postWakeupSum := a.Mach().Time(schema.CookGroups.BootGen).Sum
-	if postWakeupSum() > a.preWakeupSum {
+	postWakeupSum := a.Mach().Time(schema.CookGroups.BootGen).Sum(nil)
+	if postWakeupSum > a.preWakeupSum {
 		_ = a.OutputPhrase("WokenUp")
 	}
 }

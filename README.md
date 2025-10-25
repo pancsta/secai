@@ -526,6 +526,10 @@ Example: `arpc -f tmp/research.addr -- when . Requesting && echo "REQUESTING"`
 2. When the last connected agent (`.`) goes into state `Requesting`
 3. Print "REQUESTING" and exit
 
+## License
+
+To help keep AI open, this project migrated to **GPL** starting from `v0.3.0`.
+
 ## Acknowledgements
 
 - [AtomicAgents](https://github.com/BrainBlend-AI/atomic-agents)

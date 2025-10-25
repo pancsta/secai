@@ -42,7 +42,7 @@ tasks:
     dir: '{{.SECAI_AGENT_DIR}}'
     cmd: arpc -d {{.SECAI_DIR}}
 
-  lazysql:
+  lazysql: # TODO squall
     desc: Start lazysql for {{.SECAI_DIR}}/db.sqlite
     dir: '{{.SECAI_AGENT_DIR}}'
     cmd: lazysql {{.SECAI_DIR}}/db.sqlite
