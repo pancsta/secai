@@ -3,7 +3,6 @@ package shared
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"regexp"
 	"slices"
 	"strconv"
@@ -12,7 +11,6 @@ import (
 	"unicode"
 
 	"github.com/BooleanCat/go-functional/v2/it"
-	"github.com/gdamore/tcell/v2"
 	"github.com/gliderlabs/ssh"
 	"github.com/lithammer/dedent"
 	"github.com/orsinium-labs/enum"
@@ -22,6 +20,14 @@ import (
 	amtele "github.com/pancsta/asyncmachine-go/pkg/telemetry"
 	amprom "github.com/pancsta/asyncmachine-go/pkg/telemetry/prometheus"
 	amgen "github.com/pancsta/asyncmachine-go/tools/generator"
+	"github.com/sashabaranov/go-openai"
+)
+
+const (
+	// config location
+	EnvConfig = "SECAI_CONFIG"
+	// secai monorepo dir
+	EnvAgentDir = "SECAI_AGENT_DIR"
 )
 
 // From enum
@@ -33,7 +39,8 @@ var (
 	FromSystem    = From{"system"}
 	FromUser      = From{"user"}
 	FromNarrator  = From{"narrator"}
-	FromKind      = enum.New(FromAssistant, FromSystem, FromUser)
+
+	FromEnum = enum.New(FromAssistant, FromSystem, FromUser)
 	// TODO FromNarrator
 )
 
@@ -59,18 +66,6 @@ func NewMsg(text string, from From) *Msg {
 
 func (m *Msg) String() string {
 	return m.Text
-}
-
-// UI is the common interface for all UI implementations.
-type UI interface {
-	Start(dispose func() error) error
-	Stop() error
-	Mach() *am.Machine
-	UIMach() *am.Machine
-	Init(ui UI, screen tcell.Screen, name string) error
-	BindHandlers() error
-	Redraw()
-	Logger() *slog.Logger
 }
 
 // ///// ///// /////
@@ -99,8 +94,8 @@ type A struct {
 	CheckLLM bool `log:"check_llm"`
 	// List of choices
 	Choices []string
-	// Buttons are a list of buttons to be displayed in the UI.
-	Buttons    []StoryButton `log:"buttons"`
+	// Actions are a list of buttons to be displayed in the UI.
+	Actions    []StoryAction `log:"actions"`
 	Stories    []StoryInfo   `log:"stories"`
 	StatesList []string      `log:"states_list"`
 	// ActivateList is a list of booleans for StatesList, indicating an active state at the given index.
@@ -116,8 +111,6 @@ type A struct {
 	RetOfferRef chan<- *OfferRef
 	SSHServer   *ssh.Server
 	SSHSess     ssh.Session
-	// UI is a UI implementation.
-	UI UI
 	// Done is a buffered channel to be closed by the receiver
 	Done chan<- struct{}
 }
@@ -141,7 +134,7 @@ type ARpc struct {
 	// List of choices
 	Choices []string
 	// Buttons are a list of buttons to be displayed in the UI.
-	Buttons      []StoryButton `log:"buttons"`
+	Buttons      []StoryAction `log:"buttons"`
 	Stories      []StoryInfo   `log:"stories"`
 	StatesList   []string      `log:"states_list"`
 	ActivateList []bool        `log:"activate_list"`
@@ -339,7 +332,7 @@ type StoryInfo struct {
 
 	// The story was last deactivated at this human time.
 	DeactivatedAt time.Time
-	// The story was last active for this many ticks of the Agent machine.
+	// The story was last active for this many ticks of the AgentLLM machine.
 	LastActiveTicks uint64
 }
 
@@ -390,7 +383,7 @@ type StoryActor struct {
 	Trigger amhelp.Cond
 }
 
-type StoryButton struct {
+type StoryAction struct {
 
 	// state
 
@@ -424,20 +417,159 @@ type StoryButton struct {
 	PosInferred bool
 }
 
-func (s StoryButton) String() string {
+func (s StoryAction) String() string {
 	return s.Label
 }
 
 // sorting stories
 
-type StoryButsByIdx []StoryButton
+type StoryActionsByIdx []StoryAction
 
-func (s StoryButsByIdx) Len() int { return len(s) }
-func (s StoryButsByIdx) Less(i, j int) bool {
+func (s StoryActionsByIdx) Len() int { return len(s) }
+func (s StoryActionsByIdx) Less(i, j int) bool {
 	if s[i].Pos != s[j].Pos {
 		return s[i].Pos < s[j].Pos
 	}
 
 	return !s[i].PosInferred && s[j].PosInferred
 }
-func (s StoryButsByIdx) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
+func (s StoryActionsByIdx) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
+
+// ///// ///// /////
+
+// ///// CONFIG
+
+// ///// ///// /////
+
+type Config struct {
+	AI    ConfigAI
+	Agent ConfigAgent
+	TUI   ConfigTUI
+	Debug ConfigDebug
+}
+
+type ConfigAI struct {
+	OpenAI []ConfigAIOpenAI `kdl:"OpenAI,multiple"`
+	Gemini []ConfigAIGemini `kdl:"Gemini,multiple"`
+	// Max LLM requests per session.
+	ReqLimit int
+}
+
+type ConfigAIOpenAI struct {
+	Key      string
+	Disabled bool
+	URL      string
+	Model    string
+	Tags     []string
+	Retries  int
+}
+
+type ConfigAIGemini struct {
+	Key      string
+	Disabled bool
+	Model    string
+	Tags     []string
+	Retries  int
+}
+
+type ConfigAgent struct {
+	// bot ID
+	ID    string
+	Label string
+	// // dir for tmp files, defaults to CWD
+	Dir     string
+	Intro   string
+	Log     ConfigAgentLog
+	History ConfigAgentHistory
+}
+
+type ConfigAgentLog struct {
+	// duplicate to state-machine log
+	Machine bool
+	// path to log file
+	File    string
+	Prompts bool
+}
+
+type ConfigAgentHistory struct {
+	Backend string
+	// TODO BackendParsed enum
+	Max int
+}
+
+type ConfigTUI struct {
+	// SSH port
+	Port int
+	// SSH host
+	Host string
+	// Number of transitions to show on the clock
+	ClockRange int
+}
+
+type ConfigDebug struct {
+	// display extra info about these stories in the machine log
+	Story []string `kdl:",multiple"`
+	// Run the mock scenarios (if any)
+	Mock bool
+	// Enable misc debugging modes (eg SQL history)
+	Misc bool
+}
+
+// defaults
+
+func ConfigDefault() Config {
+	return Config{
+		Agent: ConfigAgent{
+			Dir: "./tmp",
+			History: ConfigAgentHistory{
+				Backend: "memory",
+				Max:     1_000_000,
+			},
+		},
+		TUI: ConfigTUI{
+			Port:       7855,
+			Host:       "localhost",
+			ClockRange: 10,
+		},
+	}
+}
+
+func ConfigDefaultOpenAI() ConfigAIOpenAI {
+	return ConfigAIOpenAI{
+		Retries: 3,
+		Model:   openai.GPT4o,
+	}
+}
+
+func ConfigDefaultGemini() ConfigAIGemini {
+	return ConfigAIGemini{
+		Retries: 3,
+		// TODO link from genai pkg
+		Model: "gemini-2.5-flash",
+	}
+}
+
+// TODO dump SQL queries
+// // LogDB wraps a standard sql.DB or sql.Tx
+// type LogDB struct {
+//	DB *sql.DB
+// }
+//
+// func (l *LogDB) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+//	log.Printf("[DUMP] Exec: %s | Args: %v", query, args)
+//	return l.DB.ExecContext(ctx, query, args...)
+// }
+//
+// func (l *LogDB) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+//	log.Printf("[DUMP] Query: %s | Args: %v", query, args)
+//	return l.DB.QueryContext(ctx, query, args...)
+// }
+//
+// func (l *LogDB) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
+//	log.Printf("[DUMP] QueryRow: %s | Args: %v", query, args)
+//	return l.DB.QueryRowContext(ctx, query, args...)
+// }
+//
+// // Usage:
+// // realDB, _ := sql.Open(...)
+// // queries := db.New(&LogDB{DB: realDB})

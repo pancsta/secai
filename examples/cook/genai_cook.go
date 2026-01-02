@@ -14,10 +14,10 @@ import (
 	"github.com/brianvoe/gofakeit/v7"
 	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
+	"github.com/pancsta/secai/examples/cook/db/sqlc"
 	"gopkg.in/yaml.v3"
 
 	"github.com/pancsta/secai"
-	"github.com/pancsta/secai/examples/cook/db"
 	"github.com/pancsta/secai/examples/cook/schema"
 	"github.com/pancsta/secai/shared"
 )
@@ -76,7 +76,7 @@ func (a *Agent) GenCharacterState(e *am.Event) {
 			CharacterProfession: gofakeit.JobTitle(),
 			CharacterYear:       rand.Intn(120) + 1900,
 		}
-		res, err := llm.Run(e, params, "")
+		res, err := llm.Exec(e, params)
 		if ctx.Err() != nil {
 			return // expired
 		}
@@ -100,7 +100,7 @@ func (a *Agent) GenCharacterState(e *am.Event) {
 }
 
 func (a *Agent) GenCharacterEnd(e *am.Event) {
-	a.pGenCharacter.HistCleanOpenAI()
+	a.pGenCharacter.HistClean()
 }
 
 func (a *Agent) CharacterReadyEnter(e *am.Event) bool {
@@ -164,7 +164,7 @@ func (a *Agent) GenJokesState(e *am.Event) {
 	llm := a.pGenJokes
 
 	params := schema.ParamsGenJokes{
-		Amount: a.Config.GenJokesAmount,
+		Amount: a.Config.Cook.GenJokesAmount,
 	}
 
 	// unblock
@@ -174,7 +174,7 @@ func (a *Agent) GenJokesState(e *am.Event) {
 		}
 
 		// run the prompt (checks ctx)
-		res, err := llm.Run(e, params, "")
+		res, err := llm.Exec(e, params)
 		if ctx.Err() != nil {
 			return // expired
 		}
@@ -200,7 +200,7 @@ func (a *Agent) GenJokesState(e *am.Event) {
 }
 
 func (a *Agent) GenJokesEnd(e *am.Event) {
-	a.pGenJokes.HistCleanOpenAI()
+	a.pGenJokes.HistClean()
 }
 
 func (a *Agent) RestoreResourcesState(e *am.Event) {
@@ -255,7 +255,7 @@ func (a *Agent) GenResourcesState(e *am.Event) {
 		}
 
 		// run the prompt (checks ctx)
-		res, err := llm.Run(e, params, "")
+		res, err := llm.Exec(e, params)
 		if ctx.Err() != nil {
 			return // expired
 		}
@@ -267,7 +267,7 @@ func (a *Agent) GenResourcesState(e *am.Event) {
 		// persist
 		for key, phrases := range res.Phrases {
 			for _, p := range phrases {
-				_, err := a.Queries().AddResource(ctx, db.AddResourceParams{
+				_, err := a.Queries().AddResource(ctx, sqlc.AddResourceParams{
 					Key:   key,
 					Value: p,
 				})
@@ -285,7 +285,7 @@ func (a *Agent) GenResourcesState(e *am.Event) {
 }
 
 func (a *Agent) GenResourcesEnd(e *am.Event) {
-	a.pGenResources.HistCleanOpenAI()
+	a.pGenResources.HistClean()
 }
 
 func (a *Agent) GenStepCommentsState(e *am.Event) {
@@ -317,7 +317,7 @@ func (a *Agent) GenStepCommentsState(e *am.Event) {
 
 			// run the prompt (checks ctx)
 		} else {
-			res, err = llm.Run(e, params, "")
+			res, err = llm.Exec(e, params)
 			if ctx.Err() != nil {
 				return // expired
 			}
@@ -335,7 +335,7 @@ func (a *Agent) GenStepCommentsState(e *am.Event) {
 }
 
 func (a *Agent) GenStepCommentsEnd(e *am.Event) {
-	a.pGenStepComments.HistCleanOpenAI()
+	a.pGenStepComments.HistClean()
 }
 
 func (a *Agent) GenStepsState(e *am.Event) {
@@ -348,70 +348,80 @@ func (a *Agent) GenStepsState(e *am.Event) {
 
 	// unblock
 	go func() {
-		// i := 1
-		// TODO amhelp.Loop()
-		// for {
-		res := &schema.ResultGenSteps{}
-		var err error
+		// try 5 times TODO config
+		for i := range 5 {
+			res := &schema.ResultGenSteps{}
+			var err error
 
-		// mock schema
-		if mock.GenStepsRes != "" {
-			err := json.Unmarshal([]byte(mock.GenStepsRes), res)
-			if err != nil {
-				mach.EvAddErr(e, err, nil)
+			// mock schema
+			if mock.GenStepsRes != "" {
+				err := json.Unmarshal([]byte(mock.GenStepsRes), res)
+				if err != nil {
+					mach.EvAddErr(e, err, nil)
+					return
+				}
+
+				// live schema
+			} else {
+				// run the prompt (checks ctx)
+				res, err = llm.Exec(e, params)
+				if ctx.Err() != nil {
+					return // expired
+				}
+				if err != nil {
+					mach.EvAddErrState(e, ss.ErrLLM, err, nil)
+					return
+				}
+			}
+
+			// prefix and checksum the schema
+			cBefore := 0
+			cAfter := 0
+			for _, state := range res.Schema {
+				cBefore += amhelp.CountRelations(&state)
+			}
+			// prefix state names
+			res.Schema = amhelp.PrefixStates(res.Schema, "Step", true, nil, nil)
+			for _, state := range res.Schema {
+				cAfter += amhelp.CountRelations(&state)
+			}
+
+			if cBefore != cAfter {
+				mach.EvAddErr(e, fmt.Errorf("%w: %d before, %d after", am.ErrSchema, cBefore, cAfter), nil)
 				return
 			}
 
-			// live schema
-		} else {
-			// run the prompt (checks ctx)
-			res, err = llm.Run(e, params, "")
-			if ctx.Err() != nil {
-				return // expired
-			}
+			// merge steps schema into memory
+			memSchema := am.SchemaMerge(a.mem.Schema(), res.Schema)
+			stateNames := sortSteps(memSchema)
+			err = a.mem.SetSchema(memSchema, slices.Concat(a.mem.StateNames(), stateNames))
 			if err != nil {
-				mach.EvAddErrState(e, ss.ErrLLM, err, nil)
+				mach.EvAddErrState(e, ss.ErrMem, err, nil)
+				a.Err("GenSteps_bad_schema", err, "memSchema", memSchema)
+
+				// redo or exit
+				if i < 5 {
+					continue
+				}
+
+				a.Err("GenSteps_too_many_errs", err, "memSchema", memSchema)
+				// TODO phrase resource +config
+				a.Output("Unable to generate cooking steps after 5 tries :(", shared.FromAssistant)
 				return
 			}
-		}
 
-		// prefix and checksum the schema
-		cBefore := 0
-		cAfter := 0
-		for _, state := range res.Schema {
-			cBefore += amhelp.CountRelations(&state)
-		}
-		// prefix state names
-		res.Schema = amhelp.PrefixStates(res.Schema, "Step", true, nil, nil)
-		for _, state := range res.Schema {
-			cAfter += amhelp.CountRelations(&state)
-		}
+			mach.Add1(ss.StepsReady, nil)
+			// 	break
+			// }
 
-		if cBefore != cAfter {
-			mach.EvAddErr(e, fmt.Errorf("%w: %d before, %d after", am.ErrSchema, cBefore, cAfter), nil)
-			return
+			// re-render and wait for completed
+			mach.Add1(ss.CheckStories, nil)
 		}
-
-		// merge steps schema into memory
-		memSchema := am.SchemaMerge(a.mem.Schema(), res.Schema)
-		stateNames := sortSteps(memSchema)
-		err = a.mem.SetSchema(memSchema, slices.Concat(a.mem.StateNames(), stateNames))
-		if err != nil {
-			mach.EvAddErrState(e, ss.ErrMem, err, nil)
-			return
-		}
-
-		mach.Add1(ss.StepsReady, nil)
-		// 	break
-		// }
-
-		// re-render and wait for completed
-		mach.Add1(ss.CheckStories, nil)
 	}()
 }
 
 func (a *Agent) GenStepsEnd(e *am.Event) {
-	a.pGenSteps.HistCleanOpenAI()
+	a.pGenSteps.HistClean()
 }
 
 func (a *Agent) StepsReadyState(e *am.Event) {
@@ -419,10 +429,10 @@ func (a *Agent) StepsReadyState(e *am.Event) {
 	memResolve := a.mem.Resolver()
 
 	// add step buttons, keeping the progress bar (1st button)
-	buts := a.Stories[ss.StoryCookingStarted].Buttons[0:1]
+	buts := a.Stories[ss.StoryCookingStarted].Actions[0:1]
 	for _, name := range a.mem.StateNamesMatch(schema.MatchSteps) {
 		s := memSchema[name]
-		but := shared.StoryButton{}
+		but := shared.StoryAction{}
 
 		// step number
 		num := amhelp.TagValue(s.Tags, "idx")
@@ -485,10 +495,10 @@ func (a *Agent) StepsReadyState(e *am.Event) {
 	}
 
 	// sort buttons by idx:\d
-	sort.Sort(shared.StoryButsByIdx(buts))
+	sort.Sort(shared.StoryActionsByIdx(buts))
 
 	// update the story with new buttons
-	a.Stories[ss.StoryCookingStarted].Buttons = buts
+	a.Stories[ss.StoryCookingStarted].Actions = buts
 	a.renderStories(e)
 }
 
@@ -496,7 +506,7 @@ func (a *Agent) StepsReadyEnd(e *am.Event) {
 	mach := a.Mach()
 
 	// reset buttons
-	a.Stories[ss.StoryCookingStarted].Buttons = a.Stories[ss.StoryCookingStarted].Buttons[0:1]
+	a.Stories[ss.StoryCookingStarted].Actions = a.Stories[ss.StoryCookingStarted].Actions[0:1]
 
 	// copy ingredients
 	ingredientsStates := a.mem.StateNamesMatch(schema.MatchIngredients)

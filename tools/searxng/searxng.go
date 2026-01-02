@@ -65,7 +65,7 @@ func (t *Tool) Document() *secai.Document {
 		return &doc
 	}
 
-	doc.AddPart("BaseQueries: " + strings.Join(t.queries, "; "))
+	doc.AddPart("QueriesBase: " + strings.Join(t.queries, "; "))
 	// TODO config
 	for _, r := range t.result.Results[:min(30, len(t.result.Results))] {
 		doc.AddPart("- " + r.Title)
@@ -232,7 +232,7 @@ func (t *Tool) DockerStartingState(e *am.Event) {
 			return
 		}
 
-		// start
+		// start TODO correct mount perms UID=$(id -u) GID=$(id -g)
 		cmd := exec.Command("docker", "compose", "-p", "secai-tool-searxng", "up", "-d")
 		cmd.Dir = filepath.Join(tmpDir, "config")
 		out, err := cmd.CombinedOutput()

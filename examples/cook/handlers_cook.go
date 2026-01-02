@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,9 +15,10 @@ import (
 	"github.com/gliderlabs/ssh"
 	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
+
 	"github.com/pancsta/secai/examples/cook/db"
-	"github.com/pancsta/secai/examples/cook/schema"
-	baseschema "github.com/pancsta/secai/schema"
+	sa "github.com/pancsta/secai/examples/cook/schema"
+	sabase "github.com/pancsta/secai/schema"
 	"github.com/pancsta/secai/shared"
 	"github.com/pancsta/secai/tui"
 )
@@ -42,7 +44,7 @@ func (a *Agent) ExceptionState(e *am.Event) {
 
 func (a *Agent) StartState(e *am.Event) {
 	// parent handler
-	a.Agent.StartState(e)
+	a.AgentLLM.StartState(e)
 
 	// collect
 	mach := a.Mach()
@@ -55,7 +57,7 @@ func (a *Agent) StartState(e *am.Event) {
 
 	// start Heartbeat
 	go func() {
-		tick := time.NewTicker(a.Config.HeartbeatFreq)
+		tick := time.NewTicker(a.Config.Cook.HeartbeatFreq)
 		defer tick.Stop()
 		for {
 			select {
@@ -69,7 +71,7 @@ func (a *Agent) StartState(e *am.Event) {
 }
 
 func (a *Agent) MockEnter(e *am.Event) bool {
-	return a.Config.Mock && mock.Active
+	return a.Config.Debug.Mock && mock.Active
 }
 
 func (a *Agent) MockState(e *am.Event) {
@@ -107,7 +109,7 @@ func (a *Agent) LoopState(e *am.Event) {
 	ctx := mach.NewStateCtx(ss.Loop)
 
 	// global session timeout TODO handle better
-	timeout := a.Config.SessionTimeout
+	timeout := a.Config.Cook.SessionTimeout
 	if amhelp.IsDebug() {
 		timeout *= 10
 		// timeout = time.Second * 3
@@ -166,6 +168,8 @@ func (a *Agent) HeartbeatState(e *am.Event) {
 	mach := a.Mach()
 	mach.Remove1(ss.Heartbeat, nil)
 
+	mach.AddErr(
+		a.Hist().Sync(), nil)
 	// TODO check orienting
 }
 
@@ -178,6 +182,7 @@ func (a *Agent) CheckStoriesState(e *am.Event) {
 	var stateList S
 	var activateList []bool
 	for _, s := range a.Stories {
+		// TODO env const
 		isDebug := os.Getenv("SECAI_DEBUG_STORY") == s.State
 		if isDebug {
 			a.Log("checking", "story", s.State)
@@ -293,10 +298,10 @@ func (a *Agent) StoryChangedState(e *am.Event) {
 
 func (a *Agent) InterruptedState(e *am.Event) {
 	// call super
-	a.Agent.InterruptedState(e)
+	a.AgentLLM.InterruptedState(e)
 
 	mach := a.Mach()
-	switch mach.Switch(schema.CookGroups.Interruptable) {
+	switch mach.Switch(sa.CookGroups.Interruptable) {
 	case ss.StoryWakingUp:
 		a.Output("not waking up", shared.FromAssistant)
 	}
@@ -310,13 +315,13 @@ func (a *Agent) ReadyEnter(e *am.Event) bool {
 
 // ReadyState is a test mocking handler.
 func (a *Agent) ReadyState(e *am.Event) {
-	if mock.GenStepsRes == "" || mock.Recipe == "" || !a.Config.Mock || !mock.Active {
+	if mock.GenStepsRes == "" || mock.Recipe == "" || !a.Config.Debug.Mock || !mock.Active {
 		return
 	}
 	mach := a.Mach()
 
 	// store the recipe and to activate cooking
-	recipe := schema.Recipe{}
+	recipe := sa.Recipe{}
 	if err := json.Unmarshal([]byte(mock.Recipe), &recipe); err != nil {
 		mach.EvAddErr(e, err, nil)
 		return
@@ -331,13 +336,9 @@ func (a *Agent) UISessConnState(e *am.Event) {
 	mach := a.Mach()
 	args := ParseArgs(e.Args)
 	sess := args.SSHSess
+	// user := sess.User() TODO desktop / mobile for various UIs
 	done := args.Done
 	ctx := mach.NewStateCtx(ss.UIMode)
-	var ui shared.UI
-	uiType := sess.User()
-
-	// wait for the new UI for UIReady
-	mach.Remove1(ss.UIReady, nil)
 
 	screen, err := tui.NewSessionScreen(sess)
 	if err != nil {
@@ -346,51 +347,29 @@ func (a *Agent) UISessConnState(e *am.Event) {
 		return
 	}
 
-	// TODO enum
-	switch uiType {
-	case "stories":
-		// screen init is required for cview, but not for tview
-		if err := screen.Init(); err != nil {
-			_, _ = fmt.Fprintln(sess.Stderr(), "unable to init screen:", err)
-			return
-		}
+	// new UI will add UIReady
+	mach.Remove1(ss.UIReady, nil)
+	uiMain := tui.NewTui(mach, a.Logger(), &a.Config.Config)
 
-		// init the UI
-		mach.Remove1(ss.UIReady, nil)
-		ui = tui.NewStories(mach, a.Logger(), a.storiesButtons(), a.storiesInfo())
-		err := ui.Init(ui, screen, a.nextUIName(uiType))
-		if err != nil {
-			mach.EvAddErr(e, err, nil)
-			return
-		}
+	// screen init is required for cview, but not for tview TODO still?
+	if err := screen.Init(); err != nil {
+		_, _ = fmt.Fprintln(sess.Stderr(), "unable to init screen:", err)
+		return
+	}
 
-	case "chat":
-		// init the UI
-		mach.Remove1(ss.UIReady, nil)
-		ui = tui.NewChat(mach, a.Logger(), slices.Clone(a.Msgs))
-		err := ui.Init(ui, screen, a.nextUIName(uiType))
-		if err != nil {
-			mach.EvAddErr(e, err, nil)
-			return
-		}
+	// init the UI
+	stories := tui.NewStories(uiMain, a.storiesButtons(), a.storiesInfo())
+	chat := tui.NewChat(uiMain, slices.Clone(a.Msgs))
+	clock := tui.NewClock(uiMain, a.Hist)
 
-	case "clock":
-		// init the UI
-		mach.Remove1(ss.UIReady, nil)
-		ui = tui.NewClock(mach, a.Logger(), a.clockStates())
-		err := ui.Init(ui, screen, a.nextUIName(uiType))
-		if err != nil {
-			mach.EvAddErr(e, err, nil)
-			return
-		}
-
-	default:
-		mach.EvAddErrState(e, ss.ErrUI, fmt.Errorf("unknown user: %s", uiType), nil)
+	err = uiMain.Init(screen, a.nextUIName(), stories, clock, chat)
+	if err != nil {
+		a.Mach().EvAddErrState(e, ss.ErrUI, err, nil)
 		return
 	}
 
 	// register
-	a.TUIs = append(a.TUIs, ui)
+	a.UIs = append(a.UIs, uiMain)
 
 	// start the UI
 	go func() {
@@ -398,20 +377,18 @@ func (a *Agent) UISessConnState(e *am.Event) {
 			return // expired
 		}
 
-		err = ui.Start(sess.Close)
+		err = uiMain.Start(sess.Close)
 		// TODO log err if not EOF?
 
 		close(done)
-		mach.EvAdd1(e, ss.UISessDisconn, PassAA(&AA{
-			UI: ui,
-		}))
+		mach.EvAdd1(e, ss.UISessDisconn, nil)
 	}()
 }
 
 func (a *Agent) UISessDisconnState(e *am.Event) {
-	ui := ParseArgs(e.Args).UI
+	ui := ParseArgs(e.Args).TUI
 
-	a.TUIs = shared.SlicesWithout(a.TUIs, ui)
+	a.UIs = shared.SlicesWithout(a.UIs, ui)
 }
 
 func (a *Agent) UIModeState(e *am.Event) {
@@ -449,7 +426,7 @@ func (a *Agent) UIModeState(e *am.Event) {
 			return nil
 		}
 
-		addr := a.Config.TUIHost + ":" + strconv.Itoa(a.Config.TUIPort)
+		addr := a.Config.TUI.Host + ":" + strconv.Itoa(a.Config.TUI.Port)
 		a.Log("SSH UI listening", "addr", addr)
 		err := ssh.ListenAndServe(addr, handlerFn, optSrv)
 		if err != nil {
@@ -460,10 +437,10 @@ func (a *Agent) UIModeState(e *am.Event) {
 
 func (a *Agent) UIModeEnd(e *am.Event) {
 	// TUIs
-	for _, ui := range a.TUIs {
+	for _, ui := range a.UIs {
 		_ = ui.Stop()
 	}
-	a.TUIs = nil
+	a.UIs = nil
 
 	// SSHs
 	if a.srvUI != nil {
@@ -485,22 +462,22 @@ func (a *Agent) MsgState(e *am.Event) {
 
 func (a *Agent) PromptEnter(e *am.Event) bool {
 	// call super
-	if !a.Agent.PromptEnter(e) {
+	if !a.AgentLLM.PromptEnter(e) {
 		return false
 	}
 
 	p := ParseArgs(e.Args).Prompt
 	// long enough or a reference
-	return len(p) >= a.Config.MinPromptLen || shared.NumRef(p) != -1
+	return len(p) >= a.Config.Cook.MinPromptLen || shared.NumRef(p) != -1
 }
 
 func (a *Agent) PromptState(e *am.Event) {
 	mach := a.Mach()
 	ctx := mach.NewStateCtx(ss.Prompt)
 
-	// TODO extract to a state
-	if int(mach.Time(S{ss.RequestingLLM}).Sum(nil)) > a.Config.ReqLimit {
-		_ = a.OutputPhrase("ReqLimitReached", a.Config.ReqLimit)
+	limit := a.Config.AI.ReqLimit
+	if int(mach.Time(S{ss.RequestingLLM}).Sum(nil)) > limit {
+		_ = a.OutputPhrase("ReqLimitReached", limit)
 		a.reqLimitOk.Store(false)
 		a.UserInput = ""
 		return
@@ -512,7 +489,7 @@ func (a *Agent) PromptState(e *am.Event) {
 	}
 
 	// call super
-	a.Agent.PromptState(e)
+	a.AgentLLM.PromptState(e)
 
 	// start orienting if the input wasnt expected
 	wasPending := !slices.Contains(e.Transition().StatesBefore(), ss.InputPending)
@@ -544,7 +521,7 @@ func (a *Agent) PromptState(e *am.Event) {
 
 // InputPendingState is a test mocking handler.
 func (a *Agent) InputPendingState(e *am.Event) {
-	if !a.Config.Mock || !mock.Active {
+	if !a.Config.Debug.Mock || !mock.Active {
 		return
 	}
 
@@ -570,9 +547,10 @@ func (a *Agent) DisposedState(e *am.Event) {
 	os.Exit(0)
 }
 
+// TODO bind
 func (a *Agent) UIReadyEnter(e *am.Event) bool {
-	for _, ui := range a.TUIs {
-		if ui.UIMach().Not1(ss.Ready) {
+	for _, ui := range a.UIs {
+		if ui.MachTUI.Not1(ss.Ready) {
 			return false
 		}
 	}
@@ -586,8 +564,8 @@ func (a *Agent) DBStartingState(e *am.Event) {
 
 	// TODO flaky - timeout & redo
 	go func() {
-		// TODO config
-		conn, err := db.Open(os.Getenv("SECAI_DIR"))
+		dbFile := filepath.Join(a.Config.Agent.Dir, "cook.sqlite")
+		conn, _, err := db.Open(dbFile)
 		if ctx.Err() != nil {
 			return // expired
 		}
@@ -596,23 +574,6 @@ func (a *Agent) DBStartingState(e *am.Event) {
 			return
 		}
 		a.dbConn = conn
-
-		// truncate
-		// TODO DEBUG
-		// if err := a.BaseQueries().DropPrompts(ctx); err != nil {
-		// 	a.Mach().AddErr(err, nil)
-		// 	return
-		// }
-
-		// create tables
-		_, err = a.dbConn.ExecContext(ctx, db.Schema())
-		if ctx.Err() != nil {
-			return // expired
-		}
-		if err != nil && !strings.Contains(err.Error(), "already exists") {
-			mach.EvAddErrState(e, ss.ErrDB, err, nil)
-			return
-		}
 
 		if ctx.Err() != nil {
 			return // expired
@@ -628,7 +589,7 @@ func (a *Agent) DBStartingState(e *am.Event) {
 
 func (a *Agent) StepCompletedState(e *am.Event) {
 	step := ParseArgs(e.Args).ID
-	if rand.Intn(a.Config.StepCommentFreq) != 0 && a.mem.Has1(step) {
+	if rand.Intn(a.Config.Cook.StepCommentFreq) != 0 && a.mem.Has1(step) {
 		return
 	}
 
@@ -637,18 +598,44 @@ func (a *Agent) StepCompletedState(e *am.Event) {
 		return
 	}
 
-	coll := a.stepComments.Load()
-	steps := a.mem.StateNamesMatch(schema.MatchSteps)
+	schema := a.mem.Schema()
+	comments := a.stepComments.Load()
+	if comments == nil {
+		a.Log("step comments missing")
+		return
+	}
+
+	// max index
+	idxMax := 0
+	for name, state := range schema {
+		// TODO enum
+		if !strings.HasPrefix(name, "Step") {
+			continue
+		}
+		// TODO enum
+		idxMax = max(idxMax, amhelp.TagValueInt(state.Tags, "idx:"))
+	}
 
 	// match the index of the step to comments
-	idx := slices.Index(steps, step)
-	if idx >= len(coll.Comments) {
-		// TODO shouldnt happen?
+	state := schema[step]
+	idx := -1
+	for _, t := range state.Tags {
+		if strings.HasPrefix(t, "idx:") {
+			var err error
+			idx, err = strconv.Atoi(t[4:])
+			if err != nil {
+				a.Log("invalid idx tag", "tag", t)
+				return
+			}
+			break
+		}
+	}
+	if idx != idxMax && idx >= len(comments.Comments) {
 		a.Log("no step comment", "step", step)
 		return
 	}
 
-	a.Output(coll.Comments[idx], shared.FromAssistant)
+	a.Output(comments.Comments[idx], shared.FromAssistant)
 	// TODO add to the CookingStarted prompt history
 }
 
@@ -669,8 +656,8 @@ func (a *Agent) OrientingState(e *am.Event) {
 		state := cookSchema[name]
 
 		isStory := strings.HasPrefix(name, "Story") && name != ss.StoryChanged
-		isTrigger := amhelp.TagValue(state.Tags, baseschema.TagTrigger) != ""
-		isManual := amhelp.TagValue(state.Tags, baseschema.TagManual) != ""
+		isTrigger := amhelp.TagValue(state.Tags, sabase.TagTrigger) != ""
+		isManual := amhelp.TagValue(state.Tags, sabase.TagManual) != ""
 		// TODO reflect godoc?
 		desc := ""
 		if s := a.Stories[name]; s != nil && isStory {
@@ -686,13 +673,13 @@ func (a *Agent) OrientingState(e *am.Event) {
 	}
 
 	// collect and filter cooking moves
-	movesCooking := a.mem.StateNamesMatch(schema.MatchSteps)
+	movesCooking := a.mem.StateNamesMatch(sa.MatchSteps)
 	movesCooking = slices.DeleteFunc(movesCooking, func(state string) bool {
 		return amhelp.CantAdd1(a.mem, state, nil)
 	})
 
 	// build params
-	params := schema.ParamsOrienting{
+	params := sa.ParamsOrienting{
 		Prompt:       prompt,
 		MovesCooking: movesCooking,
 		MovesStories: movesStories,
@@ -712,7 +699,7 @@ func (a *Agent) OrientingState(e *am.Event) {
 		}()
 
 		// run the prompt (checks ctx)
-		resp, err := llm.Run(e, params, "")
+		resp, err := llm.Exec(e, params)
 		if ctx.Err() != nil {
 			return // expired
 		}
@@ -793,11 +780,11 @@ func (a *Agent) ResourcesReadyEnd(e *am.Event) {
 }
 
 func (a *Agent) JokesReadyEnd(e *am.Event) {
-	a.jokes.Store(&schema.ResultGenJokes{})
+	a.jokes.Store(&sa.ResultGenJokes{})
 }
 
 func (a *Agent) IngredientsReadyEnd(e *am.Event) {
-	a.ingredients.Store(&[]schema.Ingredient{})
+	a.ingredients.Store(&[]sa.Ingredient{})
 	err := a.initMem()
 	a.Mach().EvAddErrState(e, ss.ErrMem, err, nil)
 }
@@ -811,7 +798,7 @@ func (a *Agent) IngredientsReadyEnd(e *am.Event) {
 func (a *Agent) StoryWakingUpState(e *am.Event) {
 	mach := a.Mach()
 	ctx := mach.NewStateCtx(ss.StoryWakingUp)
-	a.preWakeupSum = mach.Time(schema.CookGroups.BootGen).Sum(nil)
+	a.preWakeupSum = mach.Time(sa.CookGroups.BootGen).Sum(nil)
 
 	// loop guards
 	a.loop = amhelp.NewStateLoop(mach, ss.Loop, nil)
@@ -821,7 +808,7 @@ func (a *Agent) StoryWakingUpState(e *am.Event) {
 		<-mach.When1(ss.DBReady, ctx)
 
 		a.Output("...", shared.FromAssistant)
-		genStates := schema.CookGroups.BootGen
+		genStates := sa.CookGroups.BootGen
 		chans := make([]<-chan struct{}, len(genStates))
 		for i, s := range genStates {
 			chans[i] = mach.WhenTime1(s, 1, ctx)
@@ -839,7 +826,7 @@ func (a *Agent) StoryWakingUpState(e *am.Event) {
 
 func (a *Agent) StoryWakingUpEnd(e *am.Event) {
 	// announce only if waking up took some time (any related Gen* was triggered)
-	postWakeupSum := a.Mach().Time(schema.CookGroups.BootGen).Sum(nil)
+	postWakeupSum := a.Mach().Time(sa.CookGroups.BootGen).Sum(nil)
 	if postWakeupSum > a.preWakeupSum {
 		_ = a.OutputPhrase("WokenUp")
 	}
@@ -850,8 +837,8 @@ func (a *Agent) StoryIngredientsPickingState(e *am.Event) {
 	ctx := mach.NewStateCtx(ss.StoryIngredientsPicking)
 	llm := a.pIngredientsPicking
 
-	params := schema.ParamsIngredientsPicking{
-		MinIngredients: a.Config.MinIngredients,
+	params := sa.ParamsIngredientsPicking{
+		MinIngredients: a.Config.Cook.MinIngredients,
 	}
 
 	// clean up
@@ -859,13 +846,15 @@ func (a *Agent) StoryIngredientsPickingState(e *am.Event) {
 		return
 	}
 
-	_ = a.OutputPhrase("IngredientsPicking", a.Config.MinIngredients)
+	_ = a.OutputPhrase("IngredientsPicking", a.Config.Cook.MinIngredients)
 	a.loopIngredients = amhelp.NewStateLoop(mach, ss.StoryIngredientsPicking, func() bool {
 		return a.reqLimitOk.Load()
 	})
 
 	// unblock
 	go func() {
+		defer a.Mach().PanicToErr(nil)
+
 		for a.loopIngredients.Ok(nil) {
 
 			// wait for the prompt
@@ -877,7 +866,7 @@ func (a *Agent) StoryIngredientsPickingState(e *am.Event) {
 			params.Prompt = a.UserInput
 
 			// run the prompt (checks ctx)
-			res, err := llm.Run(e, params, "")
+			res, err := llm.Exec(e, params)
 			if ctx.Err() != nil {
 				return // expired
 			}
@@ -890,7 +879,7 @@ func (a *Agent) StoryIngredientsPickingState(e *am.Event) {
 			a.ingredients.Store(&res.Ingredients)
 
 			// if enough, add ingredients to memory and finish
-			if len(res.Ingredients) >= a.Config.MinIngredients {
+			if len(res.Ingredients) >= a.Config.Cook.MinIngredients {
 				schema := a.mem.Schema()
 				names := a.mem.StateNames()
 				newNames := make([]string, len(res.Ingredients))
@@ -923,7 +912,7 @@ func (a *Agent) StoryIngredientsPickingState(e *am.Event) {
 				return
 			}
 
-			msg := fmt.Sprintf("I need at least %d ingredients to continue.", a.Config.MinIngredients)
+			msg := fmt.Sprintf("I need at least %d ingredients to continue.", a.Config.Cook.MinIngredients)
 			if res.RedoMsg == "" {
 				mach.EvAddErr(e, fmt.Errorf("not enough ingredients, but redo msg empty"), nil)
 			} else {
@@ -946,7 +935,7 @@ func (a *Agent) storyIngredientsPickingCleanup(e *am.Event) bool {
 }
 
 func (a *Agent) StoryIngredientsPickingEnd(e *am.Event) {
-	a.pIngredientsPicking.HistCleanOpenAI()
+	a.pIngredientsPicking.HistClean()
 }
 
 func (a *Agent) StoryRecipePickingEnter(e *am.Event) bool {
@@ -958,8 +947,8 @@ func (a *Agent) StoryRecipePickingState(e *am.Event) {
 	mach := a.Mach()
 	ctx := mach.NewStateCtx(ss.StoryRecipePicking)
 	llm := a.pRecipePicking
-	params := schema.ParamsRecipePicking{
-		Amount:      a.Config.GenRecipes,
+	params := sa.ParamsRecipePicking{
+		Amount:      a.Config.Cook.GenRecipes,
 		Ingredients: *a.ingredients.Load(),
 	}
 
@@ -980,7 +969,7 @@ func (a *Agent) StoryRecipePickingState(e *am.Event) {
 		for a.loopRecipe.Ok(nil) {
 
 			// run the prompt (checks ctx)
-			res, err := llm.Run(e, params, "")
+			res, err := llm.Exec(e, params)
 			if ctx.Err() != nil {
 				return // expired
 			}
@@ -995,8 +984,8 @@ func (a *Agent) StoryRecipePickingState(e *am.Event) {
 			// build the offer list and the msg
 			lenRecipes := len(res.Recipes)
 			a.OfferList = make([]string, lenRecipes+1)
-			tmpl := func(r *schema.Recipe) string {
-				return fmt.Sprintf("[:::%s]%s[:::-]", imgUrl, r.Name)
+			tmpl := func(r *sa.Recipe) string {
+				return fmt.Sprintf("%s\n   %s", r.Name, imgUrl)
 			}
 			for i, rec := range res.Recipes {
 				a.OfferList[i] = tmpl(&rec)
@@ -1032,7 +1021,7 @@ func (a *Agent) StoryRecipePickingState(e *am.Event) {
 			}
 
 			// pick the recipe
-			var recipe schema.Recipe
+			var recipe sa.Recipe
 			if offerIdx == len(res.Recipes) {
 				recipe = res.ExtraRecipe
 			} else {
@@ -1057,7 +1046,7 @@ func (a *Agent) storyRecipePickingCleanup(e *am.Event) bool {
 }
 
 func (a *Agent) StoryRecipePickingEnd(e *am.Event) {
-	a.pRecipePicking.HistCleanOpenAI()
+	a.pRecipePicking.HistClean()
 }
 
 func (a *Agent) StoryCookingStartedEnter(e *am.Event) bool {
@@ -1068,7 +1057,7 @@ func (a *Agent) StoryCookingStartedState(e *am.Event) {
 	mach := a.Mach()
 	ctx := mach.NewStateCtx(ss.StoryCookingStarted)
 	llm := a.pCookingStarted
-	params := schema.ParamsCookingStarted{
+	params := sa.ParamsCookingStarted{
 		Recipe: *a.recipe.Load(),
 	}
 
@@ -1099,10 +1088,10 @@ func (a *Agent) StoryCookingStartedState(e *am.Event) {
 			mach.EvAddErr(e, err, nil)
 			return
 		}
-		params.ExtractedSteps = a.mem.StateNamesMatch(schema.MatchSteps)
+		params.ExtractedSteps = a.mem.StateNamesMatch(sa.MatchSteps)
 
 		for a.loopCooking.Ok(nil) {
-			res := &schema.ResultCookingStarted{}
+			res := &sa.ResultCookingStarted{}
 			var err error
 
 			// wait for a prompt TODO use amhelp?
@@ -1112,7 +1101,7 @@ func (a *Agent) StoryCookingStartedState(e *am.Event) {
 			a.runOrienting(ctx, e)
 
 			// run the prompt (checks ctx)
-			res, err = llm.Run(e, params, "")
+			res, err = llm.Exec(e, params)
 			if ctx.Err() != nil {
 				return // expired
 			}
@@ -1151,7 +1140,7 @@ func (a *Agent) storyCookingStartedCleanup(e *am.Event) bool {
 }
 
 func (a *Agent) StoryCookingStartedEnd(e *am.Event) {
-	a.pCookingStarted.HistCleanOpenAI()
+	a.pCookingStarted.HistClean()
 }
 
 func (a *Agent) StoryJokeEnter(e *am.Event) bool {
@@ -1160,10 +1149,15 @@ func (a *Agent) StoryJokeEnter(e *am.Event) bool {
 
 func (a *Agent) StoryJokeState(e *am.Event) {
 	mach := a.Mach()
-	// deactivate via ChangeStories, not directly
-	defer a.StoryDeactivate(e, ss.StoryJoke)
-	defer mach.Add1(ss.CheckStories, nil)
 	ctx := mach.NewStateCtx(ss.StoryJoke)
+	// deactivate via ChangeStories, not directly TODO use mach.Schedule
+	go func() {
+		if ctx.Err() != nil {
+			return // expired
+		}
+		time.Sleep(3 * time.Second)
+		a.StoryDeactivate(e, ss.StoryJoke)
+	}()
 
 	// untick no-joke-msg
 	a.jokeRefusedMsg = false
@@ -1210,10 +1204,10 @@ func (a *Agent) StoryMemoryWipeState(e *am.Event) {
 
 		// unset mem and boot again
 		mach.EvRemove(e, SAdd(
-			schema.CookGroups.BootGenReady,
+			sa.CookGroups.BootGenReady,
 			S{ss.StepsReady, ss.StepCommentsReady, ss.RecipeReady, ss.IngredientsReady},
 			// TODO tmp fix for no stories unsetting
-			am.SRem(schema.CookGroups.Stories, S{ss.StoryMemoryWipe}),
+			am.SRem(sa.CookGroups.Stories, S{ss.StoryMemoryWipe}),
 		), nil)
 		mach.EvAdd1(e, ss.UICleanOutput, nil)
 	}()

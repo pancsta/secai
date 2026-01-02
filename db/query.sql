@@ -5,8 +5,8 @@ WHERE session_id = ?
 LIMIT 1;
 
 -- name: AddPrompt :one
-INSERT INTO prompts (session_id, agent, state, history_len, system, request, created_at, mach_time_sum, mach_time)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO prompts (session_id, agent, state, history_len, system, request, provider, model, created_at, mach_time_sum, mach_time)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING id;
 
 -- name: AddPromptResponse :exec

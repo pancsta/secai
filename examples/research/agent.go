@@ -16,8 +16,8 @@ import (
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
 
 	"github.com/pancsta/secai"
+	llmagent "github.com/pancsta/secai/agent_llm"
 	"github.com/pancsta/secai/examples/research/schema"
-	llmagent "github.com/pancsta/secai/llm_agent"
 	baseschema "github.com/pancsta/secai/schema"
 	"github.com/pancsta/secai/shared"
 	"github.com/pancsta/secai/tools/colly"
@@ -61,8 +61,8 @@ type Config struct {
 }
 
 type Agent struct {
-	// inherit from LLM Agent
-	*llmagent.Agent
+	// inherit from LLM AgentLLM
+	*llmagent.AgentLLM
 
 	Config Config
 	TUIs   []shared.UI
@@ -99,7 +99,7 @@ func New(
 ) *Agent {
 
 	a := &Agent{
-		Agent: llmagent.New(ctx, id, states, machSchema),
+		AgentLLM: llmagent.New(ctx, id, states, machSchema),
 	}
 
 	// predefined msgs
@@ -113,7 +113,7 @@ func New(
 
 func (a *Agent) Init(agent secai.AgentAPI) error {
 	// call super
-	err := a.Agent.Init(agent, schema.ResearchGroups, schema.ResearchStates)
+	err := a.AgentLLM.Init(agent, schema.ResearchGroups, schema.ResearchStates)
 	if err != nil {
 		return err
 	}
@@ -200,7 +200,7 @@ func (a *Agent) ExceptionState(e *am.Event) {
 
 func (a *Agent) StartState(e *am.Event) {
 	// parent handler
-	a.Agent.StartState(e)
+	a.AgentLLM.StartState(e)
 
 	// collect
 	mach := a.Mach()
@@ -279,7 +279,7 @@ func (a *Agent) LoopState(e *am.Event) {
 
 func (a *Agent) InterruptedState(e *am.Event) {
 	// call super
-	a.Agent.InterruptedState(e)
+	a.AgentLLM.InterruptedState(e)
 
 	// TODO typed args
 	timeout, _ := e.Args["timeout"].(bool)
@@ -297,7 +297,7 @@ func (a *Agent) ReadyEnter(e *am.Event) bool {
 	return a.tSearxng.Mach().Is1(ss.Ready) && a.tDate.Mach().Is1(ss.Ready)
 }
 
-// func (a *Agent) CheckingInfoEnter(e *am.Event) bool {
+// func (a *AgentLLM) CheckingInfoEnter(e *am.Event) bool {
 // 	return a.Mach().Is1(ss.Prompt)
 // }
 
@@ -404,7 +404,7 @@ func (a *Agent) UISessConnState(e *am.Event) {
 	case "clock":
 		// init the UI
 		mach.Remove1(ss.UIReady, nil)
-		ui = tui.NewClock(mach, a.Logger(), a.clockStates())
+		ui = tui.NewClock(mach, nil)
 		err := ui.Init(ui, screen, a.nextUIName(uiType))
 		if err != nil {
 			mach.EvAddErr(e, err, nil)
@@ -473,14 +473,14 @@ func (a *Agent) CheckingInfoState(e *am.Event) {
 		a.Output("Checking...", shared.FromAssistant)
 
 		// run the prompt (checks ctx)
-		res, err := llm.Run(e, schema.ParamsCheckingInfo{
+		res, err := llm.Exec(e, schema.ParamsCheckingInfo{
 			UserMessage: prompt,
 			DecisionType: Sp(`
 				Should we perform a new web search? TRUE if we need new or updated information, FALSE if existing 
 				context is sufficient. Consider: 1) Is the context empty? 2) Is the existing information relevant? 
 				3) Is the information recent enough?
 			`),
-		}, "")
+		})
 		if ctx.Err() != nil {
 			return // expired
 		}
@@ -516,10 +516,10 @@ func (a *Agent) SearchingLLMState(e *am.Event) {
 		mach.EvAdd1(e, ss.RequestingLLM, nil)
 
 		// ask LLM for relevant links
-		res, err := llm.Run(e, schema.ParamsSearching{
+		res, err := llm.Exec(e, schema.ParamsSearching{
 			Instruction: input,
 			NumQueries:  3,
-		}, "")
+		})
 		if ctx.Err() != nil {
 			return // expired
 		}
@@ -528,7 +528,7 @@ func (a *Agent) SearchingLLMState(e *am.Event) {
 			return
 		}
 
-		mach.Log("BaseQueries: %s", strings.Join(res.Queries, ";"))
+		mach.Log("QueriesBase: %s", strings.Join(res.Queries, ";"))
 
 		// show results to the user
 		msg := Sl("[green::b]🔍 Generated search queries:[-::-]")
@@ -642,7 +642,7 @@ func (a *Agent) AnsweringState(e *am.Event) {
 	// unblock
 	go func() {
 		// ask LLM for relevant links
-		res, err := llm.Run(e, schema.ParamsAnswering{Question: input}, "")
+		res, err := llm.Exec(e, schema.ParamsAnswering{Question: input})
 		if ctx.Err() != nil {
 			return // expired
 		}

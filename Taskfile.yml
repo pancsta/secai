@@ -8,6 +8,12 @@ includes:
 
 tasks:
 
+  gen-sql-agent:
+    requires:
+      vars: [ SECAI_AGENT_DIR ]
+    dir: "{{.SECAI_AGENT_DIR}}"
+    cmd: task gen-sql
+
   docker-build:
     env:
       DOCKER_BUILDKIT: 1

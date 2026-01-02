@@ -73,6 +73,12 @@ graph-based flow, **secai** allows for precise behavior modeling of agents, incl
   - Desktop PWA (all platforms)
   - Mobile PWA (basic)
 
+### Goals
+
+- precision
+- traceability
+- privacy
+
 ### Devtools
 
 The following devtools are for the agent, the agent's dynamic memory, and tools (all of which are the same type of state machine).
