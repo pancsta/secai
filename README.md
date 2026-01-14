@@ -5,17 +5,24 @@
 structured memory. It offers a dedicated set of devtools and is written in the Go programming language. By having
 graph-based flow, **secai** allows for precise behavior modeling of agents, including interruptions and fault tolerance.
 
-* [User Demo](#user-demo)
-* [Platform Demo](#platform-demo)
+* Demos
+  * [User Demo](#user-demo)
+  * [Platform Demo](#platform-demo)
 * [Features](#features)
-* [Implementation](#implementation)
-* [Comparison](#comparison)
+  * [Implementation](#implementation)
+  * [Comparison](#comparison)
 * [Try It](#try-it)
-* [Example](#example)
+  * [Examples](#examples)
 * [Screenshots](#screenshots)
+  * [User](#screenshots-user-demo)
+  * [Platform](#screenshots-platform-demo)
+  * [Dashboards](#screenshots-dashboards)
 * [Documentation](#documentation)
 * [Getting Started](#getting-started)
 * [User Interfaces](#user-interfaces)
+  * [Chat](#chat-tui)
+  * [Stories](#stories-tui)
+  * [Clock](#clockmoji-tui)
 * [Bash Scripts](#bash-scripts)
 
 ## User Demo
@@ -25,7 +32,7 @@ graph-based flow, **secai** allows for precise behavior modeling of agents, incl
 <p align="center"><a href="https://pancsta.github.io/assets/secai/demo2/secai-demo2.mp4"><img src="https://pancsta.github.io/assets/secai/demo2/demo2.png?"></a></p>
 
 > [!NOTE]
-> This user demo is a 7min captions-only presentation, showcasing a cooking assistant which helps to pick a recipe from ingredients AND cook it.
+> User demo (7m captions-only) showcasing a cooking assistant which helps to pick a recipe from ingredients AND cook it.
 
 ## Platform Demo
 
@@ -34,7 +41,7 @@ graph-based flow, **secai** allows for precise behavior modeling of agents, incl
 <p align="center"><a href="https://pancsta.github.io/assets/secai/demo1/secai-demo1.mp4"><img src="https://pancsta.github.io/assets/secai/demo1/demo1.png"></a></p>
 
 > [!NOTE]
-> This tech demo is a 5min captions-only screencast, showcasing all 9 ways an agent can be seen, in addition to the classic chat view.
+> Platform demo (5m captions-only), showcasing all nine ways an agent can be seen, in addition to the classic chat view.
 
 ## Features
 
@@ -80,24 +87,6 @@ The following devtools are for the agent, the agent's dynamic memory, and tools 
 - websearch ([searxng](https://github.com/searxng/searxng))
 - HTML scrape ([colly](https://github.com/gocolly/colly))
 - browser scrape ([chromedp](https://github.com/chromedp/chromedp)) (WIP)
-
-### Planned
-
-- lambda prompts (unbound)
-  - based on langchaingo
-- MCP (both relay and tool)
-- history DSL with a vector format (WIP)
-- agent contracts
-- i18n
-- Gemini via direct SDK
-- ML triggers
-  - based on local neural networks
-- mobile and WASM builds
-- support local LLMs (eg iOS)
-- desktop apps
-- dynamic tools
-  - LLM creates tools on the fly
-- prompts as RSS
 
 ## Implementation
 
@@ -191,7 +180,7 @@ https://ai-gents.work
 {"time":"2025-06-25T11:59:29.779618008+02:00","level":"INFO","msg":"output phrase","key":"IngredientsPicking"}
 ```
 
-## Example
+## Examples
 
 Code snippets from [`/examples/research`](/examples/research/schema/sa_research.go) (ported from [AtomicAgents](https://github.com/BrainBlend-AI/atomic-agents/tree/main/atomic-examples/deep-research/deep_research/agents)).
 Both the state and prompt schemas are pure and debuggable Golang code.
