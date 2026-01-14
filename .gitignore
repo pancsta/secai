@@ -79,7 +79,9 @@ _py
 /deploy/agent/data
 /deploy/agent/agent.env
 .aider*
+
 /examples/cook/cook
-/examples/cook/cook.kdl
+/configs/cook.kdl
+
 /examples/research/research
-/examples/research/research.kdl
+/configs/research.kdl

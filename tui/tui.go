@@ -13,6 +13,7 @@ import (
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
 	arpc "github.com/pancsta/asyncmachine-go/pkg/rpc"
 	"github.com/pancsta/cview"
+
 	baseschema "github.com/pancsta/secai/schema"
 	"github.com/pancsta/secai/shared"
 	"github.com/pancsta/secai/tui/states"
@@ -78,9 +79,18 @@ func (t *Tui) Init(
 	shared.MachTelemetry(machTUI, nil)
 	t.MachTUI = machTUI
 	mach := t.Mach()
-	arpc.MachReplEnv(mach)
+	if t.cfg.Debug.REPL {
+		opts := arpc.ReplOpts{
+			AddrDir:    t.cfg.Agent.Dir,
+			ArgsPrefix: shared.APrefix,
+			Args:       shared.ARpc{},
+		}
+		if err := arpc.MachRepl(mach, "", &opts); err != nil {
+			return err
+		}
+	}
 
-	// TODO use groups and schema org
+	// TODO read from groups and schema org
 	trackedStates := mach.StateNames()
 	lastState := slices.Index(trackedStates, baseschema.AgentBaseStates.UICleanOutput)
 	trackedStates = trackedStates[0 : lastState+1]

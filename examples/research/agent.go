@@ -485,7 +485,7 @@ func (a *Agent) CheckingInfoState(e *am.Event) {
 			return // expired
 		}
 		if err != nil {
-			mach.EvAddErr(e, err, nil)
+			mach.EvAddErrState(e, ss.ErrLLM, err, nil)
 			return
 		}
 
@@ -524,7 +524,7 @@ func (a *Agent) SearchingLLMState(e *am.Event) {
 			return // expired
 		}
 		if err != nil {
-			mach.EvAddErr(e, err, nil)
+			mach.EvAddErrState(e, ss.ErrLLM, err, nil)
 			return
 		}
 
@@ -647,7 +647,7 @@ func (a *Agent) AnsweringState(e *am.Event) {
 			return // expired
 		}
 		if err != nil {
-			mach.EvAddErr(e, err, nil)
+			mach.EvAddErrState(e, ss.ErrLLM, err, nil)
 			return
 		}
 

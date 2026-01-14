@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"os"
 	"sync/atomic"
 	"time"
 
@@ -26,16 +25,16 @@ type Stories struct {
 	handlers *StoriesHandlers
 	header   *cview.TextView
 	t        *Tui
+	cfg      *shared.Config
 }
 
 // NewStories returns a new TUI dedicated to showing stories and their progress (as buttons).
-func NewStories(
-	tui *Tui, buttons []shared.StoryAction, stories []shared.StoryInfo,
-) *Stories {
+func NewStories(tui *Tui, buttons []shared.StoryAction, stories []shared.StoryInfo, cfg *shared.Config) *Stories {
 	return &Stories{
 		t:       tui,
 		buttons: buttons,
 		stories: stories,
+		cfg:     cfg,
 	}
 }
 
@@ -112,8 +111,8 @@ func (s *Stories) Init() error {
 
 	// header
 	s.header = cview.NewTextView()
-	label := os.Getenv("SECAI_LABEL")
-	intro := os.Getenv("SECAI_INTRO")
+	label := s.cfg.Agent.Label
+	intro := s.cfg.Agent.Intro
 	if intro != "" && label != "" {
 		s.header.SetDynamicColors(true)
 		s.header.SetTitle(label)

@@ -16,9 +16,10 @@ import (
 	"github.com/gliderlabs/ssh"
 	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
+	arpc "github.com/pancsta/asyncmachine-go/pkg/rpc"
 	"github.com/pancsta/secai/examples/cook/db/sqlc"
 
-	llmagent "github.com/pancsta/secai/agent_llm"
+	agentllm "github.com/pancsta/secai/agent_llm"
 	sa "github.com/pancsta/secai/examples/cook/schema"
 	baseschema "github.com/pancsta/secai/schema"
 	"github.com/pancsta/secai/shared"
@@ -140,7 +141,7 @@ func ConfigDefault() Config {
 
 type Agent struct {
 	// inherit from LLM AgentLLM
-	*llmagent.AgentLLM
+	*agentllm.AgentLLM
 
 	// public
 
@@ -216,7 +217,7 @@ func NewCook(ctx context.Context, cfg *Config) (*Agent, error) {
 // New returns a custom instance of Agent.
 func New(ctx context.Context, states am.S, schema am.Schema) *Agent {
 	a := &Agent{
-		AgentLLM: llmagent.New(ctx, states, schema),
+		AgentLLM: agentllm.New(ctx, states, schema),
 	}
 
 	// defaults
@@ -234,6 +235,8 @@ func New(ctx context.Context, states am.S, schema am.Schema) *Agent {
 func (a *Agent) Init(cfg *Config) error {
 	var err error
 
+	APrefix = cfg.Agent.ID
+
 	// build config
 	a.Config = cfg
 	baseDefault := shared.ConfigDefault()
@@ -242,15 +245,13 @@ func (a *Agent) Init(cfg *Config) error {
 	}
 
 	// call super
-	err = a.AgentLLM.Init(a, &baseDefault, sa.CookGroups, sa.CookStates)
+	err = a.AgentLLM.Init(a, &baseDefault, LogArgs, sa.CookGroups, sa.CookStates, NewArgsRpc())
 	if err != nil {
 		return err
 	}
 	cfg.Config = baseDefault
-
-	// args mapper for logging
 	mach := a.Mach()
-	mach.SemLogger().SetArgsMapper(LogArgs)
+
 	// mach.AddBreakpoint(nil, S{ss.StoryRecipePicking}, true)
 
 	// loop guards
@@ -287,20 +288,48 @@ func (a *Agent) Init(cfg *Config) error {
 	return nil
 }
 
+type MemHandlers struct {
+	a *Agent
+}
+
+func (m *MemHandlers) AnyState(_ *am.Event) {
+	// redraw on change
+	for _, ui := range m.a.UIs {
+		ui.Redraw()
+	}
+}
+
 func (a *Agent) initMem() error {
 	// TODO cook's mem schema
 	var err error
 	mach := a.Mach()
+	cfg := a.Config
 	if a.mem != nil {
 		a.MemCutoff.Add(a.mem.Time(nil).Sum(nil))
 	}
 
-	a.mem, err = am.NewCommon(mach.Ctx(), "memory-cook", baseschema.MemSchema,
+	a.mem, err = am.NewCommon(mach.Ctx(), "memory-"+cfg.Agent.ID, baseschema.MemSchema,
 		baseschema.MemStates.Names(), nil, mach, nil)
 	if err != nil {
 		return err
 	}
 	shared.MachTelemetry(a.mem, nil)
+	if cfg.Debug.REPL {
+		opts := arpc.ReplOpts{
+			AddrDir: cfg.Agent.Dir,
+		}
+		if err := arpc.MachRepl(a.mem, "", &opts); err != nil {
+			return err
+		}
+	}
+
+	// update stories memory change (via basic OnChange)
+	a.mem.OnChange(func(mach *am.Machine, before, after am.Time) {
+		a.renderStories(nil)
+		for _, ui := range a.UIs {
+			ui.Redraw()
+		}
+	})
 
 	// bind the new machine to all stories
 	for _, s := range a.Stories {
@@ -729,7 +758,8 @@ type AARpc = shared.ARpc
 // PassAA is shared.Pass.
 var PassAA = shared.Pass
 
-const APrefix = "cook"
+// APrefix is the args prefix, set from config.
+var APrefix = "cook"
 
 // A is a struct for node arguments. It's a typesafe alternative to [am.A].
 type A struct {
@@ -744,7 +774,16 @@ type A struct {
 	// TODO
 }
 
-// ARpc is a subset of [am.A], that can be passed over RPC (eg no channels, instances, etc)
+func NewArgs() A {
+	return A{A: &shared.A{}}
+}
+
+func NewArgsRpc() ARpc {
+	// TODO should be shared.ARpc
+	return ARpc{A: &shared.A{}}
+}
+
+// ARpc is a subset of [A] that can be passed over RPC (eg no channels, conns, etc)
 type ARpc struct {
 	// base args of the framework
 	*shared.A

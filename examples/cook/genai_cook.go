@@ -260,7 +260,7 @@ func (a *Agent) GenResourcesState(e *am.Event) {
 			return // expired
 		}
 		if err != nil {
-			mach.EvAddErr(e, err, nil)
+			mach.EvAddErrState(e, ss.ErrLLM, err, nil)
 			return
 		}
 
@@ -322,7 +322,7 @@ func (a *Agent) GenStepCommentsState(e *am.Event) {
 				return // expired
 			}
 			if err != nil {
-				mach.EvAddErr(e, err, nil)
+				mach.EvAddErrState(e, ss.ErrLLM, err, nil)
 				return
 			}
 		}
@@ -345,6 +345,7 @@ func (a *Agent) GenStepsState(e *am.Event) {
 	params := schema.ParamsGenSteps{
 		Recipe: *a.recipe.Load(),
 	}
+	a.Log("GenSteps_initial_schema", "memSchema", a.mem.Schema())
 
 	// unblock
 	go func() {
@@ -374,7 +375,7 @@ func (a *Agent) GenStepsState(e *am.Event) {
 				}
 			}
 
-			// prefix and checksum the schema
+			// prefix and checksum the schema TODO why count?
 			cBefore := 0
 			cAfter := 0
 			for _, state := range res.Schema {
@@ -384,6 +385,13 @@ func (a *Agent) GenStepsState(e *am.Event) {
 			res.Schema = amhelp.PrefixStates(res.Schema, "Step", true, nil, nil)
 			for _, state := range res.Schema {
 				cAfter += amhelp.CountRelations(&state)
+
+				// prefer require over remove TODO fix the other state the opposite way?
+				for _, name := range state.Require {
+					slices.DeleteFunc(state.Remove, func(s string) bool {
+						return s == name
+					})
+				}
 			}
 
 			if cBefore != cAfter {
@@ -393,19 +401,25 @@ func (a *Agent) GenStepsState(e *am.Event) {
 
 			// merge steps schema into memory
 			memSchema := am.SchemaMerge(a.mem.Schema(), res.Schema)
-			stateNames := sortSteps(memSchema)
-			err = a.mem.SetSchema(memSchema, slices.Concat(a.mem.StateNames(), stateNames))
+			stepNames := sortSteps(res.Schema)
+			newNames := slices.Concat(a.mem.StateNames(), stepNames)
+			err = a.mem.SetSchema(memSchema, newNames)
 			if err != nil {
+				// TODO dont print the err
 				mach.EvAddErrState(e, ss.ErrMem, err, nil)
-				a.Err("GenSteps_bad_schema", err, "memSchema", memSchema)
+				a.Err("GenSteps_bad_schema", err,
+					"memSchema", memSchema,
+					"stateNames", newNames,
+				)
 
 				// redo or exit
 				if i < 5 {
 					continue
 				}
 
-				a.Err("GenSteps_too_many_errs", err, "memSchema", memSchema)
-				// TODO phrase resource +config
+				// TODO ErrStepsState
+				a.Err("GenSteps_too_many_errs", nil)
+				// TODO phrase resource +config +another recipe choice
 				a.Output("Unable to generate cooking steps after 5 tries :(", shared.FromAssistant)
 				return
 			}
@@ -416,6 +430,7 @@ func (a *Agent) GenStepsState(e *am.Event) {
 
 			// re-render and wait for completed
 			mach.Add1(ss.CheckStories, nil)
+			break
 		}
 	}()
 }

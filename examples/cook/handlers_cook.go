@@ -168,8 +168,12 @@ func (a *Agent) HeartbeatState(e *am.Event) {
 	mach := a.Mach()
 	mach.Remove1(ss.Heartbeat, nil)
 
-	mach.AddErr(
-		a.Hist().Sync(), nil)
+	hist, err := a.Hist()
+	if err == nil {
+		mach.AddErr(
+			hist.Sync(), nil)
+	}
+
 	// TODO check orienting
 }
 
@@ -358,7 +362,7 @@ func (a *Agent) UISessConnState(e *am.Event) {
 	}
 
 	// init the UI
-	stories := tui.NewStories(uiMain, a.storiesButtons(), a.storiesInfo())
+	stories := tui.NewStories(uiMain, a.storiesButtons(), a.storiesInfo(), a.ConfigBase())
 	chat := tui.NewChat(uiMain, slices.Clone(a.Msgs))
 	clock := tui.NewClock(uiMain, a.Hist)
 
@@ -871,7 +875,7 @@ func (a *Agent) StoryIngredientsPickingState(e *am.Event) {
 				return // expired
 			}
 			if err != nil {
-				mach.EvAddErr(e, err, nil)
+				mach.EvAddErrState(e, ss.ErrLLM, err, nil)
 				return
 			}
 
@@ -908,8 +912,9 @@ func (a *Agent) StoryIngredientsPickingState(e *am.Event) {
 				a.mem.Add(newNames, nil)
 				// TODO DB save?
 
+				// next
 				mach.Add1(ss.IngredientsReady, nil)
-				return
+				break
 			}
 
 			msg := fmt.Sprintf("I need at least %d ingredients to continue.", a.Config.Cook.MinIngredients)
@@ -974,7 +979,7 @@ func (a *Agent) StoryRecipePickingState(e *am.Event) {
 				return // expired
 			}
 			if err != nil {
-				mach.EvAddErr(e, err, nil)
+				mach.EvAddErrState(e, ss.ErrLLM, err, nil)
 				return
 			}
 
@@ -1106,7 +1111,7 @@ func (a *Agent) StoryCookingStartedState(e *am.Event) {
 				return // expired
 			}
 			if err != nil {
-				mach.EvAddErr(e, err, nil)
+				mach.EvAddErrState(e, ss.ErrLLM, err, nil)
 				return
 			}
 

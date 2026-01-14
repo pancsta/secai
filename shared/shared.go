@@ -16,7 +16,6 @@ import (
 	"github.com/orsinium-labs/enum"
 	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
-	arpc "github.com/pancsta/asyncmachine-go/pkg/rpc"
 	amtele "github.com/pancsta/asyncmachine-go/pkg/telemetry"
 	amprom "github.com/pancsta/asyncmachine-go/pkg/telemetry/prometheus"
 	amgen "github.com/pancsta/asyncmachine-go/tools/generator"
@@ -24,10 +23,11 @@ import (
 )
 
 const (
-	// config location
+	// EnvConfig config location
 	EnvConfig = "SECAI_CONFIG"
-	// secai monorepo dir
+	// EnvAgentDir secai monorepo dir
 	EnvAgentDir = "SECAI_AGENT_DIR"
+	EnvNoDotEnv = "SECAI_NO_DOTENV"
 )
 
 // From enum
@@ -226,8 +226,6 @@ func MachTelemetry(mach *am.Machine, logArgs am.LogArgsMapperFn) {
 
 	// connect to an am-dbg instance
 	amhelp.MachDebugEnv(mach)
-	// start a dedicated aRPC server for the REPL, creates an addr file
-	arpc.MachReplEnv(mach)
 	// export metrics to prometheus
 	amprom.MachMetricsEnv(mach)
 	// loki logger
@@ -445,6 +443,7 @@ type Config struct {
 	AI    ConfigAI
 	Agent ConfigAgent
 	TUI   ConfigTUI
+	Tools ConfigTools
 	Debug ConfigDebug
 }
 
@@ -486,8 +485,10 @@ type ConfigAgent struct {
 type ConfigAgentLog struct {
 	// duplicate to state-machine log
 	Machine bool
-	// path to log file
-	File    string
+	// path to the log file
+	File string
+	// log level 0-5
+	Level   am.LogLevel
 	Prompts bool
 }
 
@@ -506,6 +507,18 @@ type ConfigTUI struct {
 	ClockRange int
 }
 
+type ConfigTools struct {
+	SearXNG ConfigSearXNG
+	// TODO rest
+}
+
+type ConfigSearXNG struct {
+	// Port to start a local instance on
+	Port string
+	// URL of an existing instance (disabled Port).
+	URL string
+}
+
 type ConfigDebug struct {
 	// display extra info about these stories in the machine log
 	Story []string `kdl:",multiple"`
@@ -513,6 +526,10 @@ type ConfigDebug struct {
 	Mock bool
 	// Enable misc debugging modes (eg SQL history)
 	Misc bool
+	// Enable REPL for each machine
+	REPL bool
+	// Enable debugging in am-dbg ("1" expands to default). am-dbg has to be started BEFORE the bot.
+	DBGAddr string
 }
 
 // defaults
@@ -531,6 +548,11 @@ func ConfigDefault() Config {
 			Host:       "localhost",
 			ClockRange: 10,
 		},
+		Tools: ConfigTools{
+			SearXNG: ConfigSearXNG{
+				Port: "7452",
+			},
+		},
 	}
 }
 
@@ -548,6 +570,9 @@ func ConfigDefaultGemini() ConfigAIGemini {
 		Model: "gemini-2.5-flash",
 	}
 }
+
+// TODO ConfigToEnv(cfg any) (string, error) {
+// }
 
 // TODO dump SQL queries
 // // LogDB wraps a standard sql.DB or sql.Tx

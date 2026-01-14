@@ -19,6 +19,9 @@ type S = am.S
 
 // ///// ///// /////
 
+var _ secai.AgentAPI = &AgentLLM{}
+var _ secai.AgentInit = &AgentLLM{}
+
 // AgentLLM is [secai.AgentBase] extended with common LLM prompts.
 type AgentLLM struct {
 	*secai.AgentBase
@@ -35,9 +38,12 @@ func New(ctx context.Context, states am.S, schema am.Schema) *AgentLLM {
 	}
 }
 
-func (a *AgentLLM) Init(agentImpl secai.AgentAPI, cfg *shared.Config, groups any, states am.States) error {
+func (a *AgentLLM) Init(
+	agentImpl secai.AgentAPI, cfg *shared.Config, logArgs am.LogArgsMapperFn, groups any, states am.States, args any,
+) error {
+	
 	// call super
-	err := a.AgentBase.Init(agentImpl, cfg, groups, states)
+	err := a.AgentBase.Init(agentImpl, cfg, logArgs, groups, states, args)
 	if err != nil {
 		return err
 	}

@@ -59,6 +59,10 @@ func Open(dbFile string) (conn *sql.DB, schema string, err error) {
 	return db, schema, nil
 }
 
+// TODO move to shared, format
+// "github.com/maxrichie5/go-sqlfmt/sqlfmt"
+// config := sqlfmt.NewDefaultConfig()
+// formatted := sqlfmt.Format(rawSQL, config)
 func getSQLiteSchema(db *sql.DB) (string, error) {
 	// Query the master table for the 'sql' column
 	// We filter out internal sqlite_ tables and empty entries

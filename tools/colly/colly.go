@@ -18,16 +18,15 @@ import (
 	"github.com/pancsta/secai"
 	baseschema "github.com/pancsta/secai/schema"
 	"github.com/pancsta/secai/shared"
-	"github.com/pancsta/secai/tools/colly/schema"
+	sa "github.com/pancsta/secai/tools/colly/schema"
 )
 
-var ss = schema.States
+var ss = sa.States
 var id = "colly"
 
 // TODO refac header
 var title = "Webpages as markdown\n\nContents is indented with 2 tab characters."
 
-// TODO config
 // TODO limit words, not chars
 var Limit = 1300
 
@@ -36,7 +35,7 @@ type Tool struct {
 	*am.ExceptionHandler
 
 	agent  secai.AgentAPI
-	result schema.Result
+	result sa.Result
 	client *http.Client
 	c      *colly.Collector
 }
@@ -44,7 +43,7 @@ type Tool struct {
 func New(agent secai.AgentAPI) (*Tool, error) {
 	var err error
 	t := &Tool{}
-	t.Tool, err = secai.NewTool(agent, id, title, ss.Names(), schema.Schema)
+	t.Tool, err = secai.NewTool(agent, id, title, ss.Names(), sa.Schema)
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +55,7 @@ func New(agent secai.AgentAPI) (*Tool, error) {
 	}
 
 	t.agent = agent
-	t.result = schema.Result{}
+	t.result = sa.Result{}
 
 	return t, nil
 }
@@ -102,17 +101,18 @@ func (t *Tool) StartState(e *am.Event) {
 
 // ///// ///// /////
 
-func (t *Tool) Scrape(ctx context.Context, params schema.Params) (schema.Result, error) {
+func (t *Tool) Scrape(ctx context.Context, params sa.Params) (sa.Result, error) {
 	mach := t.Mach()
 	mach.Add1(ss.Working, nil)
 	defer mach.Add1(ss.Idle, nil)
 
 	// config TODO clone the scraper and init earlier, bind ctx each time
-	cacheDir := filepath.Join(os.Getenv("SECAI_DIR"), "colly")
+	cfgDir := t.agent.ConfigBase().Agent.Dir
+	cacheDir := filepath.Join(cfgDir, "colly")
 	cfg := []colly.CollectorOption{colly.StdlibContext(ctx)}
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		mach.AddErr(fmt.Errorf("failed to create cache dir: %s %w",
-			os.Getenv("SECAI_DIR"), err), nil)
+			cfgDir, err), nil)
 	} else {
 		cfg = append(cfg, colly.CacheDir(cacheDir))
 	}
@@ -122,7 +122,7 @@ func (t *Tool) Scrape(ctx context.Context, params schema.Params) (schema.Result,
 	g.SetLimit(5)
 	t.c = colly.NewCollector(cfg...)
 
-	result := schema.Result{
+	result := sa.Result{
 		Websites: make([]*baseschema.Website, len(params)),
 		Errors:   make([]error, len(params)),
 	}

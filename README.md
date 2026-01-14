@@ -3,7 +3,7 @@
 **AI-gent Workflows** (aka **secai**) is a platform for AI Agents with a local reasoning layer. It's implemented on top of a
 **unified state graph** and makes a solid foundation for complex, proactive, and **long-lived AI Agents** with deep and
 structured memory. It offers a dedicated set of devtools and is written in the Go programming language. By having
-graph-based flow, **secai** allows for precise behavior modeling of agents, including interruptions and fault tolerance.
+a graph-based flow, **secai** allows for precise behavior modeling of agents, including interruptions and fault tolerance.
 
 * Demos
   * [User Demo](#user-demo)
@@ -45,14 +45,14 @@ graph-based flow, **secai** allows for precise behavior modeling of agents, incl
 
 ## Features
 
-- prompt atomicity on the state level
+- multi-prompt agency
   - each state can have a prompt bound to it, with dedicated history and documents
 - atomic consensus with relations and negotiation
-  - states excluding each other can't be active simultaneously
-- separate schema DSL layer
+  - eg states excluding each other can't be active simultaneously
+- dedicated DSL layer for bot schema 
   - suitable for non-coding authors
-- declarative flow definitions
-  - for non-linear flows
+- structured prompt input/output via JSON schemas
+- declarative flow definitions for non-linear flows
 - cancellation support (interrupts)
 - offer list / menu
 - prompt history
@@ -62,16 +62,15 @@ graph-based flow, **secai** allows for precise behavior modeling of agents, incl
 - LLM triggers (orienting)
   - on prompts and timeouts
 - dynamic flow graph for the memory
-  - LLM creates an actionable state machine
+  - LLM creates an actionable state-machine
 - UI components
-  - layouts (zellij)
-  - chat (tview)
-  - stories (cview)
-  - clock (bubbletea)
+  - chat
+  - stories
+  - clock
 - platforms
   - SSH (all platforms)
   - Desktop PWA (all platforms)
-  - Mobile PWA (basic)
+  - Mobile PWA (WIP)
 
 ### Goals
 
@@ -84,8 +83,8 @@ graph-based flow, **secai** allows for precise behavior modeling of agents, incl
 The following devtools are for the agent, the agent's dynamic memory, and tools (all of which are the same type of state machine).
 
 - REPL & CLI
-- TUI debugger (dashboards)
-- automatic diagrams (SVG, D2, mermaid)
+- TUI debugger (+dashboards)
+- automatic diagrams (D2 SVGs)
 - automatic observability (Prometheus, Grafana, Jaeger)
 
 ### Tools
@@ -100,10 +99,11 @@ The following devtools are for the agent, the agent's dynamic memory, and tools 
 - typesafe state-machine and prompt schemas
 - [asyncmachine-go](https://asyncmachine.dev) for graphs and control flow
 - [instructor-go](https://github.com/instructor-ai/instructor-go) for the LLM layer
-  - OpenAI, DeepSeek, Anthropic, Cohere (soon Gemini)
+  - OpenAI (DeepSeek, LMStudio), Gemini, Anthropic, Cohere
+- [invopop/jsonschema](https://github.com/invopop/jsonschema) for JSON schemas
 - network transparency (aRPC, debugger, REPL)
 - structured concurrency (multigraph-based)
-- [tview](https://github.com/rivo/tview/), [cview](https://code.rocket9labs.com/tslocum/cview), and [asciigraph](https://github.com/guptarohit/asciigraph) for UIs
+- [cview](https://codeberg.org/tslocum/cview), and [asciigraph](https://github.com/guptarohit/asciigraph) for UIs
 
 ### Components
 
@@ -157,33 +157,24 @@ The following devtools are for the agent, the agent's dynamic memory, and tools 
 
 Unlike Python apps, you can start it with a single command:
 
-- [Download a binary release](https://github.com/pancsta/secai/releases/latest) (Linux, MacOS, Windows)
-- Set either of the API keys:
-  - `export OPENAI_API_KEY=myapikey`
-  - `export DEEPSEEK_API_KEY=myapikey`
-- Run `./aigent-cook` or `./aigent-research` to start the server
-  - then copy-paste-run the *TUI Desktop* line in another terminal
-  - you'll see files being created in `./tmp`
+- [Download a binary release](https://github.com/pancsta/secai/releases) (Linux, MacOS, Windows)
+- Set an API key in `config.kdl`
+- Run `./aigent-cook` and copy-paste-run the *SSH* line into another terminal
+- You'll see files being created in `./tmp`
 
 ```markdown
-aigent-cook v0.2
+AI-gent Cook v0.4.0
 
-TUI Chat:
-$ ssh chat@localhost -p 7854 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no
+TUI:
+$ ssh localhost -p 7955 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no
 
-TUI Stories:
-$ ssh stories@localhost -p 7854 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no
+Log:
+$ tail -f tmp/cook/cook.jsonl -n 100 | fblog -d -x msg -x time -x level
 
-TUI Clock:
-$ ssh clock@localhost -p 7854 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no
-
-TUI Desktop:
-$ bash <(curl -L https://zellij.dev/launch) --layout $(./aigent-cook desktop-layout) attach secai-aigent-cook --create
+REPL:
+$ ./arpc --dir tmp/cook
 
 https://ai-gents.work
-
-{"time":"2025-06-25T11:59:28.421964349+02:00","level":"INFO","msg":"SSH UI listening","addr":"localhost:7854"}
-{"time":"2025-06-25T11:59:29.779618008+02:00","level":"INFO","msg":"output phrase","key":"IngredientsPicking"}
 ```
 
 ## Examples
@@ -480,7 +471,7 @@ We can use one of the examples as a starting template. It allows for further sem
 
 1. Choose the source example
    - `export SECAI_EXAMPLE=cook`
-   - `export SECAI_EXAMPLE=research`
+   - `export SECAI_EXAMPLE=research` (broken in `v0.4.0`)
 2. `git clone https://github.com/pancsta/secai.git`
 3. install task `./secai/scripts/deps.sh`
 4. copy the agent `cp -R secai/examples/$SECAI_EXAMPLE MYAGENT`
@@ -490,7 +481,8 @@ We can use one of the examples as a starting template. It allows for further sem
    2. `task sync-configs`
 7. start it `task start`
 8. look around `task --list-all`
-9. configure `cp template.env .env`
+9. configure dev stuff `cp .env.template .env`
+10. configure the bot `$EDITOR config.kdl`
 
 ## User Interfaces
 
@@ -504,8 +496,8 @@ Several TUIs with dedicated UI states are included in [`/tui`](/tui):
 
 ### Stories TUI
 
-- **list of stories** with activity status, non-actionable
-- **dynamic buttons** and progress bars, actionable
+- **list of stories** with activity status (non-actionable)
+- **dynamic buttons** and progress bars (actionable)
 
 ### Clockmoji TUI
 

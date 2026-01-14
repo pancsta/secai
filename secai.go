@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -50,6 +51,11 @@ var ParseArgs = shared.ParseArgs
 // ///// BASIC TYPES
 
 // ///// ///// /////
+
+var (
+	ErrHistNil = errors.New("history is nil")
+	ErrNoAI    = errors.New("no AI provider configured")
+)
 
 // DOCUMENT
 
@@ -191,6 +197,8 @@ func (p *Prompt[P, R]) Exec(e *am.Event, params P) (*R, error) {
 		gemini = ais[0]
 		provider = "gemini"
 		model = gemini.Cfg.Model
+	} else {
+		return nil, fmt.Errorf("%w: %s", ErrNoAI, p.State)
 	}
 
 	// gen an LLM prompt
@@ -205,8 +213,9 @@ func (p *Prompt[P, R]) Exec(e *am.Event, params P) (*R, error) {
 	conv.AddUserMessage(contentStr)
 
 	// detailed log
+	historyLen := int64(len(conv.GetMessages()) - 1)
 	if cfg.Agent.Log.Prompts {
-		p.A.Logger().Info("LLM req for "+p.State, "sys_prompt", sys)
+		p.A.Logger().Info("LLM req for "+p.State, "sys_prompt", sys, "historyLen", historyLen)
 	}
 	// brief log
 	p.A.Log(p.State, "prompt", params)
@@ -266,7 +275,7 @@ func (p *Prompt[P, R]) Exec(e *am.Event, params P) (*R, error) {
 				Agent:       mach.Id(),
 				State:       p.State,
 				System:      sys,
-				HistoryLen:  int64(len(conv.GetMessages()) - 1),
+				HistoryLen:  historyLen,
 				Request:     contentStr,
 				Provider:    provider,
 				Model:       model,
@@ -294,7 +303,13 @@ func (p *Prompt[P, R]) Exec(e *am.Event, params P) (*R, error) {
 
 	// handle the LLM err
 	if errLLM != nil {
-		return nil, fmt.Errorf("failed to run LLM: %w", errLLM)
+		data := []any{"provider", provider, "model", model}
+		if openAI != nil {
+			data = append(data, "url", openAI.Cfg.URL)
+		}
+		p.A.Err("llm_req", errLLM, data...)
+		// TODO handle context cancelled
+		return nil, fmt.Errorf("llm_%s: %w", provider, errLLM)
 	}
 
 	p.A.Logger().Info(p.State, "result", result)
@@ -407,12 +422,19 @@ func (p *Prompt[P, R]) HistClean() {
 
 // ///// ///// /////
 
-// AgentAPI is the top-level public API for all agents to overwrite.
+// AgentInit is an init func for extendable agents (non-top level ones).
+type AgentInit interface {
+	Init(
+		agentImpl AgentAPI, cfg *shared.Config, logArgs am.LogArgsMapperFn, groups any, states am.States, args any,
+	) error
+}
+
+// AgentAPI is the top-level public API for all agents to implement.
 type AgentAPI interface {
 	Output(txt string, from shared.From) am.Result
 
 	Mach() *am.Machine
-	Hist() amhist.MemoryApi
+	Hist() (amhist.MemoryApi, error)
 	HistMem() *amhist.Memory
 	HistSQLite() *amhistg.Memory
 	HistBBolt() *amhistbb.Memory
@@ -470,9 +492,11 @@ type AgentBase struct {
 	// loggerMach is a bridge between slog and machine log
 	loggerMach *slog.Logger
 	agentImpl  AgentAPI
+	args       any
 }
 
 var _ AgentAPI = &AgentBase{}
+var _ AgentInit = &AgentBase{}
 
 func NewAgent(
 	ctx context.Context, states am.S, machSchema am.Schema,
@@ -491,7 +515,10 @@ func NewAgent(
 // METHODS
 
 // Init initializes the AgentLLM and returns an error. It does not block.
-func (a *AgentBase) Init(agentImpl AgentAPI, cfg *shared.Config, groups any, states am.States) error {
+func (a *AgentBase) Init(
+	agentImpl AgentAPI, cfg *shared.Config, logArgs am.LogArgsMapperFn, groups any, states am.States, args any,
+) error {
+
 	// validate states schema
 	if err := amhelp.Implements(a.states, schema.AgentBaseStates.Names()); err != nil {
 		return fmt.Errorf("AgentBaseStates not implemented: %w", err)
@@ -528,9 +555,16 @@ func (a *AgentBase) Init(agentImpl AgentAPI, cfg *shared.Config, groups any, sta
 	}
 	a.mach = mach
 	mach.SetGroups(groups, states)
-	shared.MachTelemetry(mach, nil)
-	if err, _ := arpc.MachReplEnv(mach); err != nil {
-		return err
+	shared.MachTelemetry(mach, logArgs)
+	if cfg.Debug.REPL {
+		opts := arpc.ReplOpts{
+			ArgsPrefix: cfg.Agent.ID,
+			AddrDir:    cfg.Agent.Dir,
+			Args:       args,
+		}
+		if err := arpc.MachRepl(mach, "", &opts); err != nil {
+			return err
+		}
 	}
 	a.loggerMach = slog.New(slog.NewTextHandler(
 		amhelp.SlogToMachLog{Mach: mach}, amhelp.SlogToMachLogOpts))
@@ -539,6 +573,8 @@ func (a *AgentBase) Init(agentImpl AgentAPI, cfg *shared.Config, groups any, sta
 	if err := a.initAI(); err != nil {
 		return err
 	}
+
+	a.Log("initialized", "id", cfg.Agent.ID)
 
 	return nil
 }
@@ -693,16 +729,25 @@ func (a *AgentBase) BuildOffer() string {
 	return ret
 }
 
-func (a *AgentBase) Hist() amhist.MemoryApi {
+func (a *AgentBase) Hist() (amhist.MemoryApi, error) {
 	// TODO custom UnmarshalText for parsing enums
 	parsed := amhist.BackendEnum.Parse(a.cfg.Agent.History.Backend)
 	switch *parsed {
 	case amhist.BackendSqlite:
-		return a.histSQLite
+		if a.histSQLite == nil {
+			return nil, ErrHistNil
+		}
+		return a.histSQLite, nil
 	case amhist.BackendBbolt:
-		return a.histBBolt
+		if a.histBBolt == nil {
+			return nil, ErrHistNil
+		}
+		return a.histBBolt, nil
 	default:
-		return a.histMem
+		if a.histMem == nil {
+			return nil, ErrHistNil
+		}
+		return a.histMem, nil
 	}
 }
 
@@ -811,7 +856,8 @@ func (a *AgentBase) HistoryDBStartingState(e *am.Event) {
 }
 
 func (a *AgentBase) HistoryDBReadyEnd(e *am.Event) {
-	err := a.Hist().Dispose()
+	hist, _ := a.Hist()
+	err := hist.Dispose()
 	if err != nil {
 		a.Mach().AddErr(err, nil)
 	}
@@ -1050,6 +1096,17 @@ func NewTool(
 	}
 	t.mach = mach
 	shared.MachTelemetry(mach, nil)
+	cfg := agent.ConfigBase()
+	// TODO move to MachTelemetry
+	if cfg.Debug.REPL {
+		// TODO typesafe args
+		opts := arpc.ReplOpts{
+			AddrDir: cfg.Agent.Dir,
+		}
+		if err := arpc.MachRepl(mach, "", &opts); err != nil {
+			return nil, err
+		}
+	}
 
 	// pipe Ready from the tool to agent
 	err = pipes.BindReady(mach, agent.Mach(), "", "")

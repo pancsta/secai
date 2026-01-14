@@ -4,7 +4,7 @@ import (
 	"slices"
 
 	"github.com/gdamore/tcell/v2"
-	asciigraph "github.com/pancsta/asciigraph-tcell"
+	"github.com/pancsta/asciigraph-tcell"
 	amhist "github.com/pancsta/asyncmachine-go/pkg/history"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
 	"github.com/pancsta/cview"
@@ -19,13 +19,13 @@ type Clock struct {
 	t      *Tui
 	layout *cview.Grid
 	// agent's history
-	hist func() amhist.MemoryApi
+	hist func() (amhist.MemoryApi, error)
 	// machine time of the last render
 	lastRedraw uint64
 	lastData   [][]float64
 }
 
-func NewClock(tui *Tui, hist func() amhist.MemoryApi) *Clock {
+func NewClock(tui *Tui, hist func() (amhist.MemoryApi, error)) *Clock {
 
 	c := &Clock{
 		t:         tui,
@@ -104,8 +104,8 @@ func (c *Clock) Redraw() {
 }
 
 func (c *Clock) Data() [][]float64 {
-	hist := c.hist()
-	if hist == nil {
+	hist, err := c.hist()
+	if err != nil {
 		return [][]float64{make([]float64, 1)}
 	}
 

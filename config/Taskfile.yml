@@ -2,6 +2,7 @@ version: 3
 
 vars:
   AM_VER: 'v0.17.1'
+  # TODO remove
   SECAI_DIR_ABS: '{{.USER_WORKING_DIR}}/{{.SECAI_AGENT_DIR}}/{{.SECAI_DIR}}'
   SECAI_DIR: '{{.SECAI_DIR | default "tmp"}}'
   SECAI_ID: '{{.SECAI_ID | default "myagent"}}'
@@ -25,7 +26,7 @@ tasks:
       - mkdir -p {{.SECAI_DIR}}
       - ./{{.SECAI_ID}} {{.CLI_ARGS}}
 
-  release: goreleaser release --clean --skip-publish --skip-validate
+  release: goreleaser release --clean --skip publish --skip validate
 
   gen-sql:
     cmds:
@@ -33,7 +34,8 @@ tasks:
       - sqlc generate
 
   logs-agent:
-    cmd: tail -f {{.SECAI_DIR}}/{{.SECAI_ID}}.jsonl | fblog -d -x time -x msg -x level
+    # TODO gen .env from config
+    cmd: tail -f tmp/cook/cook.jsonl -n 100 | fblog -d -x time -x msg -x level
 
   build:
     dir: '{{.SECAI_AGENT_DIR}}'
@@ -41,27 +43,37 @@ tasks:
       - go build -o {{.SECAI_ID}} ./cmd
 
   repl:
-    desc: Start the REPL for ./{{.SECAI_DIR}}/*.addr
-    dir: '{{.SECAI_AGENT_DIR}}'
-    cmd: arpc -d {{.SECAI_DIR}}
+    desc: Start the REPL for tmp/cook
+#   TODO use gen .env
+    cmd: arpc -d tmp/cook
 
   sql:
-    desc: Start lazysql for {{.SECAI_DIR}}/db.sqlite
-    dir: '{{.SECAI_AGENT_DIR}}'
-    cmd: harlequin {{.SECAI_DIR}}/db.sqlite
+    requires:
+      vars: [SECAI_DIR]
+    desc: Framework-level SQL DB (eg prompts)
+    cmd: harlequin {{.SECAI_DIR}}/secai.sqlite
 
-  # TODO migrate to go tools 1.24
+  sql-history:
+    requires:
+      vars: [SECAI_DIR]
+    desc: State-machine history SQL DB
+    cmd: harlequin {{.SECAI_DIR}}/machine.sqlite
+
+  sql-agent:
+    requires:
+      vars: [SECAI_DIR, SECAI_ID]
+    desc: Agent-level SQL DB
+    cmd: harlequin {{.SECAI_DIR}}/{{.SECAI_ID}}.sqlite
+
   install-deps:
-    desc: Install Golang dependencies
+    desc: Install dependencies
     silent: true
     cmds:
       - go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
-      # TODO lock versions
       - go install github.com/pancsta/asyncmachine-go/tools/cmd/arpc@{{.AM_VER}}
       - go install github.com/pancsta/asyncmachine-go/tools/cmd/am-dbg@{{.AM_VER}}
       - go install github.com/mattn/goreman@latest
-      - go install github.com/eliben/static-server@latest
-      - # TODO harlequin
+      - uv tool install harlequin
 
   prometheus:
     desc: Open Prometheus
@@ -266,7 +278,7 @@ tasks:
 
   sync-configs:
 
-    desc: Pull the newest `./template.env`, `./config`, and `./docker`1
+    desc: Pull the newest `./template.env`, `./config`, and `./docker`
     ignore_error: true
     cmd: |
       files=(
