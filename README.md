@@ -78,6 +78,12 @@ a graph-based flow, **secai** allows for precise behavior modeling of agents, in
 - traceability
 - privacy
 
+### Goals
+
+- precision
+- traceability
+- privacy
+
 ### Devtools
 
 The following devtools are for the agent, the agent's dynamic memory, and tools (all of which are the same type of state machine).

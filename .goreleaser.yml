@@ -31,8 +31,8 @@ builds:
       - SECAI_ID=aigent-cook
     goos:
       - linux
-#      - darwin
-#      - windows
+      - darwin
+      - windows
     goarch:
       - amd64
       - arm64
@@ -52,8 +52,8 @@ builds:
       - GO111MODULE=on
     goos:
       - linux
-#      - darwin
-#      - windows
+      - darwin
+      - windows
     goarch:
       - amd64
       - arm64
@@ -71,8 +71,8 @@ builds:
       - GO111MODULE=on
     goos:
       - linux
-#      - darwin
-#      - windows
+      - darwin
+      - windows
     goarch:
       - amd64
       - arm64
