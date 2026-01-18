@@ -1,12 +1,13 @@
-// Package llmagent is a base agent extended with common LLM prompts.
-package llmagent
+// Package agent_llm is a base agent extended with common LLM prompts.
+package agent_llm
 
 import (
 	"context"
 
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
+
 	"github.com/pancsta/secai"
-	"github.com/pancsta/secai/llm_agent/schema"
+	sa "github.com/pancsta/secai/agent_llm/schema"
 	"github.com/pancsta/secai/shared"
 )
 
@@ -18,35 +19,42 @@ type S = am.S
 
 // ///// ///// /////
 
-type Agent struct {
-	*secai.Agent
+var _ secai.AgentAPI = &AgentLLM{}
+var _ secai.AgentInit = &AgentLLM{}
+
+// AgentLLM is [secai.AgentBase] extended with common LLM prompts.
+type AgentLLM struct {
+	*secai.AgentBase
 
 	// prompts
 
-	pCheckingOfferRefs *schema.PromptCheckingOfferRefs
+	pCheckingOfferRefs *sa.PromptCheckingOfferRefs
 }
 
-func New(ctx context.Context, id string, states am.S, machSchema am.Schema) *Agent {
+func New(ctx context.Context, states am.S, schema am.Schema) *AgentLLM {
 	// init the agent along with the base
-	return &Agent{
-		Agent: secai.NewAgent(ctx, id, states, machSchema),
+	return &AgentLLM{
+		AgentBase: secai.NewAgent(ctx, states, schema),
 	}
 }
 
-func (a *Agent) Init(agent secai.AgentAPI, groups any, states am.States) error {
+func (a *AgentLLM) Init(
+	agentImpl secai.AgentAPI, cfg *shared.Config, logArgs am.LogArgsMapperFn, groups any, states am.States, args any,
+) error {
+	
 	// call super
-	err := a.Agent.Init(agent, groups, states)
+	err := a.AgentBase.Init(agentImpl, cfg, logArgs, groups, states, args)
 	if err != nil {
 		return err
 	}
 
-	a.pCheckingOfferRefs = schema.NewPromptCheckingOfferRefs(a)
+	a.pCheckingOfferRefs = sa.NewPromptCheckingOfferRefs(a)
 	return nil
 }
 
 // HANDLERS
 
-func (a *Agent) CheckingOfferRefsState(e *am.Event) {
+func (a *AgentLLM) CheckingOfferRefsState(e *am.Event) {
 	args := shared.ParseArgs(e.Args)
 
 	prompt := args.Prompt
@@ -88,13 +96,13 @@ func (a *Agent) CheckingOfferRefsState(e *am.Event) {
 		}
 
 		// infer via LLM
-		params := schema.ParamsCheckingOfferRefs{
+		params := sa.ParamsCheckingOfferRefs{
 			Choices: shared.Map(choices, func(o string) string {
 				return shared.RemoveStyling(o)
 			}),
 			Prompt: args.Prompt,
 		}
-		res, err := llm.Run(e, params, "")
+		res, err := llm.Exec(e, params)
 		if err != nil {
 			a.Mach().AddErr(err, nil)
 			return

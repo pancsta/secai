@@ -8,11 +8,11 @@ import (
 
 	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
-	"github.com/pancsta/secai/shared"
 
 	"github.com/pancsta/secai"
-	llm "github.com/pancsta/secai/llm_agent/schema"
+	llm "github.com/pancsta/secai/agent_llm/schema"
 	base "github.com/pancsta/secai/schema"
+	"github.com/pancsta/secai/shared"
 )
 
 // aliases
@@ -106,7 +106,7 @@ type CookStatesDef struct {
 	// OrientingMove performs a move decided upon by Orienting.
 	OrientingMove string
 
-	// inherit from LLM Agent
+	// inherit from LLM AgentLLM
 	*llm.LLMAgentStatesDef
 }
 
@@ -135,7 +135,7 @@ type CookGroupsDef struct {
 
 // CookSchema represents all relations and properties of CookStates.
 var CookSchema = SchemaMerge(
-	// inherit from LLM Agent
+	// inherit from LLM AgentLLM
 	llm.LLMAgentSchema,
 	am.Schema{
 
@@ -525,9 +525,10 @@ func NewPromptGenSteps(agent secai.AgentAPI) *PromptGenSteps {
 			- You're a cooking process planner.
 		`, `
 			1. Extract actionable steps from the cooking recipe and represent them as binary flags called "states". Each step can represent either a long-running action (eg WaterHeatingUp), a short-running action (WaterBoiling), a fact (WaterBoiled). Each state can relate to any other state via Require, Remove, and Add relation.
-			2. The final state is called MealReady. Not all the states have to be connected with relations.
-			3. Put the time length of procedures (if given) inside Tags as "time:5m" to wait for 5min.
-			4. Index the steps using a tag "idx:4" for the 5th step in the input. Steps which can't be active at the same time should have Remove relation between them.
+			1. The final and mandatory state is called MealReady.
+			1. Not all the states have to be connected with relations.
+			1. Put the time length of procedures (if given) inside Tags as "time:5m" to wait for 5min.
+			1. Index the steps using a tag "idx:4" for the 5th step in the input. Steps which can't be active at the same time should have Remove relation between them.
 			
 			Example "make turkish coffee":
 			- WaterHeatingUp
@@ -569,7 +570,7 @@ func NewPromptGenSteps(agent secai.AgentAPI) *PromptGenSteps {
 				- Auto: true
 				- Require: MealBaked
 		`, `
-			Skip empty fields (null, false). Start the "idx:" counter from 1. If the same "idx" tag is present for more than 1 state, pick a final state from the same group "idx" group and mark it with a "final" tag (eg WaterBoiled is a final state for WaterBoiling).
+			2 states CAN'T require and remove each other - these relations are for a single point in time. Skip empty fields (null, false). Start the "idx:" counter from 1. If the same "idx" tag is present for more than 1 state, pick a final state from the same group "idx" group and mark it with a "final" tag (eg WaterBoiled is a final state for WaterBoiling).
 		`)
 }
 
@@ -802,7 +803,7 @@ var StoryCookingStarted = &Story{
 		StoryInfo: shared.StoryInfo{
 			State: ssC.StoryCookingStarted,
 			Title: "Cooking Started",
-			Desc:  "The main story, the bot translates the recipe into actionable steps, then acts on them.",
+			Desc:  "The main story, the bot translates the recipe into actionable steps, then comments while the user completes them.",
 		},
 	},
 	Cook: shared.StoryActor{

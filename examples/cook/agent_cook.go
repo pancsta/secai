@@ -12,28 +12,25 @@ import (
 	"sync/atomic"
 	"time"
 
+	"dario.cat/mergo"
 	"github.com/gliderlabs/ssh"
 	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
+	arpc "github.com/pancsta/asyncmachine-go/pkg/rpc"
+	"github.com/pancsta/secai/examples/cook/db/sqlc"
 
-	"github.com/pancsta/secai"
-	"github.com/pancsta/secai/examples/cook/db"
-	"github.com/pancsta/secai/examples/cook/schema"
-	llmagent "github.com/pancsta/secai/llm_agent"
+	agentllm "github.com/pancsta/secai/agent_llm"
+	sa "github.com/pancsta/secai/examples/cook/schema"
 	baseschema "github.com/pancsta/secai/schema"
 	"github.com/pancsta/secai/shared"
 	"github.com/pancsta/secai/tools/searxng"
 	"github.com/pancsta/secai/tui"
-	statesui "github.com/pancsta/secai/tui/states"
+	ssui "github.com/pancsta/secai/tui/states"
 )
 
-const id = "cook"
-
-// mock will run a sample scenario
-// const mock = false
-
+// Mock will run a sample scenario
 type Mock struct {
-	// Global mock switch, also requires AM_MOCK=1.
+	// Local mock switch, complementary to the config switch.
 	Active bool
 
 	FlowPromptIngredients string
@@ -48,10 +45,11 @@ type Mock struct {
 }
 
 var mock = Mock{
+	// DEBUG
 	Active: true,
 
 	FlowPromptIngredients: "I have 2 carrots, 3 eggs and rice",
-	FlowPromptRecipe:      "cake",
+	FlowPromptRecipe:      "1",
 	// FlowPromptCooking:     "wipe your memory",
 	// FlowPromptRecipe: "egg fried rice",
 
@@ -75,8 +73,8 @@ var mock = Mock{
 // 	},
 // }
 
-var ss = schema.CookStates
-var ssui = statesui.UIStoriesStates
+var ss = sa.CookStates
+var ssT = ssui.TUIStates
 var SAdd = am.SAdd
 
 type S = am.S
@@ -84,9 +82,9 @@ type S = am.S
 var WelcomeMessage = "Please wait while loading..."
 
 type StoryUI struct {
-	*schema.Story
+	*sa.Story
 
-	Buttons []shared.StoryButton
+	Actions []shared.StoryAction
 }
 
 // ///// ///// /////
@@ -96,31 +94,44 @@ type StoryUI struct {
 // ///// ///// /////
 
 type Config struct {
-	// COOK
+	shared.Config
 
-	MinIngredients int           `arg:"env:COOK_MIN_INGREDIENTS" help:"Number of ingredients to collect." default:"3"`
-	GenJokesAmount int           `arg:"env:COOK_GEN_JOKES_AMOUNT" help:"Number of jokes to generate." default:"3"`
-	SessionTimeout time.Duration `arg:"env:COOK_SESSION_TIMEOUT" help:"Session timeout." default:"1h"`
-	// Number of recipes to generate.
-	GenRecipes   int `arg:"env:COOK_GEN_RECIPES" help:"Number of recipes to generate." default:"3"`
-	MinPromptLen int `arg:"env:COOK_MIN_PROMPT_LEN" help:"Minimum prompt length." default:"2"`
-	// Lower number = higher frequency of step comments. 2=50%, 3=33%.
-	StepCommentFreq int           `arg:"env:COOK_STEP_COMMENT_FREQ" help:"Step comment frequency." default:"2"`
-	HeartbeatFreq   time.Duration `arg:"env:COOK_HEARTBEAT_FREQ" help:"Heartbeat frequency." default:"1h"`
-	// Certainty above which the orienting move should be accepted.
-	OrientingMoveThreshold float64 `arg:"env:COOK_ORIENTING_MOVE_THRESHOLD" help:"Certainty above which the orienting move should be accepted." default:"0.5"`
-
-	// SECAI TODO extract
-
-	OpenAIAPIKey   string `arg:"env:OPENAI_API_KEY" help:"OpenAI API key."`
-	DeepseekAPIKey string `arg:"env:DEEPSEEK_API_KEY" help:"DeepSeek API key."`
-	TUIPort        int    `arg:"env:SECAI_TUI_PORT" help:"SSH port for the TUI." default:"7854"`
-	TUIHost        string `arg:"env:SECAI_TUI_HOST" help:"SSH host for the TUI." default:"localhost"`
-	Mock           bool   `arg:"env:SECAI_MOCK" help:"Enable scenario mocking."`
-	ReqLimit       int    `arg:"env:SECAI_REQ_LIMIT" help:"Max LLM requests per session." default:"1000"`
+	Cook ConfigCook
 }
 
-// TODO shared secai config with everything from .env
+type ConfigCook struct {
+	// Number of ingredients to collect.
+	MinIngredients int
+	GenJokesAmount int
+	// TODO move to secai
+	SessionTimeout time.Duration `kdl:",duration"`
+	// Number of recipes to generate.
+	GenRecipes int
+	// TODO remove?
+	MinPromptLen int
+	// Step comment frequency. Lower number = higher frequency of step comments. 2=50%, 3=33%.
+	StepCommentFreq int
+	// Heartbeat frequency.
+	HeartbeatFreq time.Duration `kdl:",duration"`
+	// Certainty above which the orienting move should be accepted.
+	OrientingMoveThreshold float64
+}
+
+func ConfigDefault() Config {
+	return Config{
+		Config: shared.ConfigDefault(),
+		Cook: ConfigCook{
+			MinIngredients:         3,
+			GenJokesAmount:         3,
+			SessionTimeout:         time.Hour,
+			GenRecipes:             3,
+			MinPromptLen:           2,
+			StepCommentFreq:        2,
+			HeartbeatFreq:          time.Hour,
+			OrientingMoveThreshold: 0.5,
+		},
+	}
+}
 
 // ///// ///// /////
 
@@ -129,29 +140,30 @@ type Config struct {
 // ///// ///// /////
 
 type Agent struct {
-	// inherit from LLM Agent
-	*llmagent.Agent
+	// inherit from LLM AgentLLM
+	*agentllm.AgentLLM
 
 	// public
 
-	Config      Config
+	Config      *Config
 	StoriesList []string
 	Stories     map[string]*StoryUI
-	TUIs        []shared.UI
+	UIs         []*tui.Tui
 	Msgs        []*shared.Msg
 	MemCutoff   atomic.Uint64
+	UINum       int
 
 	// DB
 
 	dbConn        *sql.DB
-	dbQueries     *db.Queries
-	character     atomic.Pointer[schema.ResultGenCharacter]
-	jokes         atomic.Pointer[schema.ResultGenJokes]
-	recipe        atomic.Pointer[schema.Recipe]
-	stepComments  atomic.Pointer[schema.ResultGenStepComments]
-	resources     atomic.Pointer[schema.ResultGenResources]
-	ingredients   atomic.Pointer[[]schema.Ingredient]
-	moveOrienting atomic.Pointer[schema.ResultOrienting]
+	dbQueries     *sqlc.Queries
+	character     atomic.Pointer[sa.ResultGenCharacter]
+	jokes         atomic.Pointer[sa.ResultGenJokes]
+	recipe        atomic.Pointer[sa.Recipe]
+	stepComments  atomic.Pointer[sa.ResultGenStepComments]
+	resources     atomic.Pointer[sa.ResultGenResources]
+	ingredients   atomic.Pointer[[]sa.Ingredient]
+	moveOrienting atomic.Pointer[sa.ResultOrienting]
 
 	// machs
 
@@ -163,15 +175,15 @@ type Agent struct {
 
 	// prompts
 
-	pGenCharacter       *schema.PromptGenCharacter
-	pGenResources       *schema.PromptGenResources
-	pGenJokes           *schema.PromptGenJokes
-	pIngredientsPicking *schema.PromptIngredientsPicking
-	pRecipePicking      *schema.PromptRecipePicking
-	pGenSteps           *schema.PromptGenSteps
-	pGenStepComments    *schema.PromptGenStepComments
-	pCookingStarted     *schema.PromptCookingStarted
-	pOrienting          *schema.PromptOrienting
+	pGenCharacter       *sa.PromptGenCharacter
+	pGenResources       *sa.PromptGenResources
+	pGenJokes           *sa.PromptGenJokes
+	pIngredientsPicking *sa.PromptIngredientsPicking
+	pRecipePicking      *sa.PromptRecipePicking
+	pGenSteps           *sa.PromptGenSteps
+	pGenStepComments    *sa.PromptGenStepComments
+	pCookingStarted     *sa.PromptCookingStarted
+	pOrienting          *sa.PromptOrienting
 
 	// internals
 
@@ -180,8 +192,9 @@ type Agent struct {
 	loopCooking     *amhelp.StateLoop
 	loopIngredients *amhelp.StateLoop
 	loopRecipe      *amhelp.StateLoop
-	reqLimitOk      atomic.Bool
-	preWakeupSum    uint64
+	// reqLimitOk is an LLM request limiter guard.
+	reqLimitOk   atomic.Bool
+	preWakeupSum uint64
 	// the last msg was a no-jokes-without-cooking
 	jokeRefusedMsg   bool
 	orientingPending bool
@@ -192,29 +205,25 @@ type Agent struct {
 }
 
 // NewCook returns a preconfigured instance of Agent.
-func NewCook(ctx context.Context, config Config) (*Agent, error) {
-	a := New(ctx, id, ss.Names(), schema.CookSchema)
-	if err := a.Init(a); err != nil {
+func NewCook(ctx context.Context, cfg *Config) (*Agent, error) {
+	a := New(ctx, ss.Names(), sa.CookSchema)
+	if err := a.Init(cfg); err != nil {
 		return nil, err
 	}
-	a.Config = config
 
 	return a, nil
 }
 
 // New returns a custom instance of Agent.
-func New(
-	ctx context.Context, id string, states am.S, machSchema am.Schema,
-) *Agent {
-
+func New(ctx context.Context, states am.S, schema am.Schema) *Agent {
 	a := &Agent{
-		Agent: llmagent.New(ctx, id, states, machSchema),
+		AgentLLM: agentllm.New(ctx, states, schema),
 	}
 
 	// defaults
-	a.jokes.Store(&schema.ResultGenJokes{})
-	a.recipe.Store(&schema.Recipe{})
-	a.ingredients.Store(&[]schema.Ingredient{})
+	a.jokes.Store(&sa.ResultGenJokes{})
+	a.recipe.Store(&sa.Recipe{})
+	a.ingredients.Store(&[]sa.Ingredient{})
 	a.reqLimitOk.Store(true)
 
 	// predefined msgs
@@ -223,17 +232,27 @@ func New(
 	return a
 }
 
-func (a *Agent) Init(agent secai.AgentAPI) error {
+func (a *Agent) Init(cfg *Config) error {
+	var err error
+
+	APrefix = cfg.Agent.ID
+
+	// build config
+	a.Config = cfg
+	baseDefault := shared.ConfigDefault()
+	if err := mergo.Merge(&baseDefault, cfg.Config, mergo.WithOverride); err != nil {
+		return err
+	}
+
 	// call super
-	err := a.Agent.Init(agent, schema.CookGroups, schema.CookStates)
+	err = a.AgentLLM.Init(a, &baseDefault, LogArgs, sa.CookGroups, sa.CookStates, NewArgsRpc())
 	if err != nil {
 		return err
 	}
+	cfg.Config = baseDefault
 	mach := a.Mach()
 
-	// args mapper for logging
-	mach.SemLogger().SetArgsMapper(LogArgs)
-	mach.AddBreakpoint(nil, S{ss.StoryRecipePicking}, true)
+	// mach.AddBreakpoint(nil, S{ss.StoryRecipePicking}, true)
 
 	// loop guards
 	a.loop = amhelp.NewStateLoop(mach, ss.Loop, nil)
@@ -245,15 +264,15 @@ func (a *Agent) Init(agent secai.AgentAPI) error {
 	}
 
 	// init prompts
-	a.pGenCharacter = schema.NewPromptGenCharacter(a)
-	a.pGenResources = schema.NewPromptGenResources(a)
-	a.pGenJokes = schema.NewPromptGenJokes(a)
-	a.pIngredientsPicking = schema.NewPromptIngredientsPicking(a)
-	a.pRecipePicking = schema.NewPromptRecipePicking(a)
-	a.pCookingStarted = schema.NewPromptCookingStarted(a)
-	a.pGenSteps = schema.NewPromptGenSteps(a)
-	a.pOrienting = schema.NewPromptOrienting(a)
-	a.pGenStepComments = schema.NewPromptGenStepComments(a)
+	a.pGenCharacter = sa.NewPromptGenCharacter(a)
+	a.pGenResources = sa.NewPromptGenResources(a)
+	a.pGenJokes = sa.NewPromptGenJokes(a)
+	a.pIngredientsPicking = sa.NewPromptIngredientsPicking(a)
+	a.pRecipePicking = sa.NewPromptRecipePicking(a)
+	a.pCookingStarted = sa.NewPromptCookingStarted(a)
+	a.pGenSteps = sa.NewPromptGenSteps(a)
+	a.pOrienting = sa.NewPromptOrienting(a)
+	a.pGenStepComments = sa.NewPromptGenStepComments(a)
 
 	// register tools
 	// secai.ToolAddToPrompts(a.tSearxng, a.pSearchingLLM, a.pAnswering)
@@ -269,20 +288,48 @@ func (a *Agent) Init(agent secai.AgentAPI) error {
 	return nil
 }
 
+type MemHandlers struct {
+	a *Agent
+}
+
+func (m *MemHandlers) AnyState(_ *am.Event) {
+	// redraw on change
+	for _, ui := range m.a.UIs {
+		ui.Redraw()
+	}
+}
+
 func (a *Agent) initMem() error {
 	// TODO cook's mem schema
 	var err error
 	mach := a.Mach()
+	cfg := a.Config
 	if a.mem != nil {
 		a.MemCutoff.Add(a.mem.Time(nil).Sum(nil))
 	}
 
-	a.mem, err = am.NewCommon(mach.Ctx(), "memory-cook", baseschema.MemSchema,
+	a.mem, err = am.NewCommon(mach.Ctx(), "memory-"+cfg.Agent.ID, baseschema.MemSchema,
 		baseschema.MemStates.Names(), nil, mach, nil)
 	if err != nil {
 		return err
 	}
 	shared.MachTelemetry(a.mem, nil)
+	if cfg.Debug.REPL {
+		opts := arpc.ReplOpts{
+			AddrDir: cfg.Agent.Dir,
+		}
+		if err := arpc.MachRepl(a.mem, "", &opts); err != nil {
+			return err
+		}
+	}
+
+	// update stories memory change (via basic OnChange)
+	a.mem.OnChange(func(mach *am.Machine, before, after am.Time) {
+		a.renderStories(nil)
+		for _, ui := range a.UIs {
+			ui.Redraw()
+		}
+	})
 
 	// bind the new machine to all stories
 	for _, s := range a.Stories {
@@ -295,9 +342,9 @@ func (a *Agent) initMem() error {
 	return nil
 }
 
-func (a *Agent) Queries() *db.Queries {
+func (a *Agent) Queries() *sqlc.Queries {
 	if a.dbQueries == nil {
-		a.dbQueries = db.New(a.dbConn)
+		a.dbQueries = sqlc.New(a.dbConn)
 	}
 
 	return a.dbQueries
@@ -358,29 +405,29 @@ func (a *Agent) initStories() {
 	a.Stories = map[string]*StoryUI{
 
 		// waking up (progress bar)
-		schema.CookStates.StoryWakingUp: {
-			Story: schema.StoryWakingUp.Clone(),
-			Buttons: []shared.StoryButton{
+		sa.CookStates.StoryWakingUp: {
+			Story: sa.StoryWakingUp.Clone(),
+			Actions: []shared.StoryAction{
 				{
 					Label: "Overall progress",
 					Desc:  "This is the progress of the whole cooking session flow",
 					Value: func() int {
 						// TODO switch assumes the first active, when we'd like the last active
-						return slices.Index(schema.CookGroups.MainFlow,
-							mach.Switch(schema.CookGroups.MainFlow))
+						return slices.Index(sa.CookGroups.MainFlow,
+							mach.Switch(sa.CookGroups.MainFlow))
 					},
 					ValueEnd: func() int {
-						return len(schema.CookGroups.MainFlow) - 1
+						return len(sa.CookGroups.MainFlow) - 1
 					},
 				},
 				{
 					Label: "Waking up",
 					Desc:  "This button shows the progress of waking up",
 					Value: func() int {
-						return len(mach.ActiveStates(schema.CookGroups.BootGenReady))
+						return len(mach.ActiveStates(sa.CookGroups.BootGenReady))
 					},
 					ValueEnd: func() int {
-						return len(schema.CookGroups.BootGen)
+						return len(sa.CookGroups.BootGen)
 					},
 					VisibleCook: amhelp.Cond{
 						Not: S{ss.Ready},
@@ -390,17 +437,20 @@ func (a *Agent) initStories() {
 		},
 
 		// joke (hidden / visible / active)
-		schema.CookStates.StoryJoke: {
-			Story: schema.StoryJoke.Clone(),
-			Buttons: []shared.StoryButton{
+		sa.CookStates.StoryJoke: {
+			Story: sa.StoryJoke.Clone(),
+			Actions: []shared.StoryAction{
 				{
 					Label: "Joke?",
 					Desc:  "This button tells a joke",
 					VisibleCook: amhelp.Cond{
 						Any1: S{ss.StoryIngredientsPicking, ss.StoryRecipePicking, ss.StoryCookingStarted, ss.StoryMealReady},
 					},
+					IsDisabled: func() bool {
+						return mach.Is1(ss.StoryJoke)
+					},
 					Action: func() {
-						// TODO as TellJokeState
+						// TODO extract as TellJokeState
 						s := a.Stories[ss.StoryJoke]
 
 						if !a.hasJokes() {
@@ -414,21 +464,23 @@ func (a *Agent) initStories() {
 							// memorize the refusal
 							a.jokeRefusedMsg = true
 							_ = a.OutputPhrase("NoCookingNoJokes")
+						} else {
+							a.Log("repeated no jokes")
 						}
 					},
 				},
 			},
 		},
 
-		schema.CookStates.StoryIngredientsPicking: {
-			Story: schema.StoryIngredientsPicking,
-			Buttons: []shared.StoryButton{
+		sa.CookStates.StoryIngredientsPicking: {
+			Story: sa.StoryIngredientsPicking,
+			Actions: []shared.StoryAction{
 				{
 					Value: func() int {
 						return len(*a.ingredients.Load())
 					},
 					ValueEnd: func() int {
-						return a.Config.MinIngredients
+						return a.Config.Cook.MinIngredients
 					},
 					Label:    "Collecting ingredients",
 					LabelEnd: "Ingredients ready",
@@ -441,17 +493,17 @@ func (a *Agent) initStories() {
 			},
 		},
 
-		schema.CookStates.StoryRecipePicking: {
-			Story: schema.StoryRecipePicking,
+		sa.CookStates.StoryRecipePicking: {
+			Story: sa.StoryRecipePicking,
 			// TODO buttons?
 		},
 
-		schema.CookStates.StoryCookingStarted: {
-			Story: schema.StoryCookingStarted,
-			Buttons: []shared.StoryButton{
+		sa.CookStates.StoryCookingStarted: {
+			Story: sa.StoryCookingStarted,
+			Actions: []shared.StoryAction{
 				{
 					Value: func() int {
-						return len(a.mem.ActiveStates(a.allSteps()))
+						return 1 + len(a.mem.ActiveStates(a.allSteps()))
 					},
 					ValueEnd: func() int {
 						// fix the progress for optional steps
@@ -459,10 +511,9 @@ func (a *Agent) initStories() {
 							return len(a.mem.ActiveStates(a.allSteps()))
 						}
 
-						return len(a.allSteps())
+						return 1 + len(a.allSteps())
 					},
-					Label: "Cooking steps",
-					// TODO LabelEnd doesnt work
+					Label:    "Cooking steps",
 					LabelEnd: "Cooking completed",
 					Desc:     "This button shows the progress of cooking",
 					VisibleCook: amhelp.Cond{
@@ -470,19 +521,19 @@ func (a *Agent) initStories() {
 					},
 				},
 			},
-			// other buttons are created by [Agent.StoryCookingStartedState]
+			// other buttons are created by [AgentLLM.StoryCookingStartedState]
 		},
 
-		schema.CookStates.StoryMealReady: {
-			Story: schema.StoryMealReady,
+		sa.CookStates.StoryMealReady: {
+			Story: sa.StoryMealReady,
 		},
 
-		schema.CookStates.StoryStartAgain: {
-			Story: schema.StoryStartAgain,
-			Buttons: []shared.StoryButton{
+		sa.CookStates.StoryStartAgain: {
+			Story: sa.StoryStartAgain,
+			Actions: []shared.StoryAction{
 				{
-					Label: schema.StoryStartAgain.Title,
-					Desc:  schema.StoryStartAgain.Desc,
+					Label: sa.StoryStartAgain.Title,
+					Desc:  sa.StoryStartAgain.Desc,
 					VisibleCook: amhelp.Cond{
 						Is:  S{ss.StoryMealReady},
 						Not: S{ss.StoryStartAgain},
@@ -494,12 +545,12 @@ func (a *Agent) initStories() {
 			},
 		},
 
-		schema.CookStates.StoryMemoryWipe: {
-			Story: schema.StoryMemoryWipe,
-			Buttons: []shared.StoryButton{
+		sa.CookStates.StoryMemoryWipe: {
+			Story: sa.StoryMemoryWipe,
+			Actions: []shared.StoryAction{
 				{
-					Label: schema.StoryMemoryWipe.Title,
-					Desc:  schema.StoryMemoryWipe.Desc,
+					Label: sa.StoryMemoryWipe.Title,
+					Desc:  sa.StoryMemoryWipe.Desc,
 					VisibleCook: amhelp.Cond{
 						Is:  S{ss.StoryMealReady},
 						Not: S{ss.StoryMemoryWipe},
@@ -514,7 +565,7 @@ func (a *Agent) initStories() {
 
 	// sort stories according to the schema
 	var list []string
-	for _, s := range schema.CookGroups.Stories {
+	for _, s := range sa.CookGroups.Stories {
 		if _, ok := a.Stories[s]; !ok {
 			// TODO log
 			continue
@@ -535,8 +586,8 @@ func (a *Agent) initStories() {
 func (a *Agent) allSteps() S {
 	memSchema := a.mem.Schema()
 	ret := S{}
-	for _, name := range a.mem.StateNamesMatch(schema.MatchSteps) {
-		if name == schema.MemMealReady {
+	for _, name := range a.mem.StateNamesMatch(sa.MatchSteps) {
+		if name == sa.MemMealReady {
 			continue
 		}
 
@@ -553,8 +604,8 @@ func (a *Agent) allSteps() S {
 	return ret
 }
 
-// clockStates returns the list of states monitored in the chat's clock emoji chart.
-func (a *Agent) clockStates() S {
+// HistoryStates returns a list of states to track in the history.
+func (a *Agent) HistoryStates() S {
 	trackedStates := a.Mach().StateNames()
 
 	// dont track a global handler
@@ -564,15 +615,15 @@ func (a *Agent) clockStates() S {
 }
 
 func (a *Agent) renderStories(e *am.Event) {
-	for _, ui := range a.TUIs {
-		uiStories, ok := ui.(*tui.Stories)
-		if !ok {
+	for _, ui := range a.UIs {
+		stories := ui.MachTUI
+		if stories == nil {
 			continue
 		}
 
 		// pass to the UI
-		uiStories.UIMach().EvAdd1(e, ssui.ReqReplaceContent, PassAA(&AA{
-			Buttons: a.storiesButtons(),
+		stories.EvAdd1(e, ssT.ReqReplaceStories, PassAA(&AA{
+			Actions: a.storiesButtons(),
 			Stories: a.storiesInfo(),
 		}))
 	}
@@ -589,13 +640,13 @@ func (a *Agent) storiesInfo() []shared.StoryInfo {
 	return stories
 }
 
-func (a *Agent) storiesButtons() []shared.StoryButton {
+func (a *Agent) storiesButtons() []shared.StoryAction {
 	mach := a.Mach()
-	var buts []shared.StoryButton
+	var buts []shared.StoryAction
 	for _, key := range a.StoriesList {
 		s := a.Stories[key]
 
-		for _, but := range s.Buttons {
+		for _, but := range s.Actions {
 			// skip invisible ones
 			if !but.VisibleCook.Check(mach) || !but.VisibleMem.Check(a.mem) {
 				continue
@@ -632,33 +683,10 @@ func (a *Agent) runOrienting(ctx context.Context, e *am.Event) {
 	}))
 }
 
-func (a *Agent) nextUIName(uiType string) string {
-	i := 0
-	// TODO enum
-	switch uiType {
-	case "stories":
-		for _, ui := range a.TUIs {
-			if _, ok := ui.(*tui.Stories); ok {
-				i++
-			}
-
-		}
-	case "chat":
-		for _, ui := range a.TUIs {
-			if _, ok := ui.(*tui.Chat); ok {
-				i++
-			}
-		}
-
-	case "clock":
-		for _, ui := range a.TUIs {
-			if _, ok := ui.(*tui.Clock); ok {
-				i++
-			}
-		}
-	}
-
-	return strconv.Itoa(i)
+func (a *Agent) nextUIName() string {
+	idx := strconv.Itoa(len(a.UIs))
+	a.UINum++
+	return idx
 }
 
 // ///// ///// /////
@@ -678,7 +706,7 @@ func sortSteps(schema am.Schema) S {
 		})
 	}
 
-	sort.Sort(StepsByReqFinalList(steps))
+	sort.Sort(sortStepsByIdx(steps))
 
 	return shared.Map(steps, func(s StepsByReqFinal) string {
 		return s.Name
@@ -690,10 +718,10 @@ type StepsByReqFinal struct {
 	Schema am.Schema
 }
 
-type StepsByReqFinalList []StepsByReqFinal
+type sortStepsByIdx []StepsByReqFinal
 
-func (s StepsByReqFinalList) Len() int { return len(s) }
-func (s StepsByReqFinalList) Less(n1, n2 int) bool {
+func (s sortStepsByIdx) Len() int { return len(s) }
+func (s sortStepsByIdx) Less(n1, n2 int) bool {
 	el1 := s[n1]
 	name1 := el1.Name
 	state1 := el1.Schema[name1]
@@ -714,7 +742,7 @@ func (s StepsByReqFinalList) Less(n1, n2 int) bool {
 
 	return false
 }
-func (s StepsByReqFinalList) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
+func (s sortStepsByIdx) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
 
 // ///// ///// /////
 
@@ -727,9 +755,11 @@ func (s StepsByReqFinalList) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
 type AA = shared.A
 type AARpc = shared.ARpc
 
+// PassAA is shared.Pass.
 var PassAA = shared.Pass
 
-const APrefix = "cook"
+// APrefix is the args prefix, set from config.
+var APrefix = "cook"
 
 // A is a struct for node arguments. It's a typesafe alternative to [am.A].
 type A struct {
@@ -737,19 +767,29 @@ type A struct {
 	*shared.A
 
 	// agent's args
-	Move *schema.ResultOrienting `log:"move"`
+	Move *sa.ResultOrienting `log:"move"`
+	TUI  *tui.Tui
 
 	// agent's non-RPC args
 	// TODO
 }
 
-// ARpc is a subset of [am.A], that can be passed over RPC (eg no channels, instances, etc)
+func NewArgs() A {
+	return A{A: &shared.A{}}
+}
+
+func NewArgsRpc() ARpc {
+	// TODO should be shared.ARpc
+	return ARpc{A: &shared.A{}}
+}
+
+// ARpc is a subset of [A] that can be passed over RPC (eg no channels, conns, etc)
 type ARpc struct {
 	// base args of the framework
 	*shared.A
 
 	// agent's args
-	Move *schema.ResultOrienting `log:"move"`
+	Move *sa.ResultOrienting `log:"move"`
 }
 
 // ParseArgs extracts A from [am.Event.Args][APrefix] (decoder).

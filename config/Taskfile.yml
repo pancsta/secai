@@ -1,7 +1,8 @@
 version: 3
 
 vars:
-  AM_VER: 'v0.15.0'
+  AM_VER: 'v0.17.1'
+  # TODO remove
   SECAI_DIR_ABS: '{{.USER_WORKING_DIR}}/{{.SECAI_AGENT_DIR}}/{{.SECAI_DIR}}'
   SECAI_DIR: '{{.SECAI_DIR | default "tmp"}}'
   SECAI_ID: '{{.SECAI_ID | default "myagent"}}'
@@ -19,18 +20,22 @@ tasks:
   start-agent:
     desc: Start the agent within a prebuilt deployment
     dir: '{{.SECAI_AGENT_DIR}}'
+    env:
+      SECAI_LOG_FILE: '{{.SECAI_DIR}}/{{.SECAI_ID}}.jsonl'
     cmds:
       - mkdir -p {{.SECAI_DIR}}
-      - ./{{.SECAI_ID}} {{.CLI_ARGS}} > {{.SECAI_DIR}}/{{.SECAI_ID}}.jsonl
+      - ./{{.SECAI_ID}} {{.CLI_ARGS}}
 
-  release: goreleaser release --clean --skip-publish --skip-validate
+  release: goreleaser release --clean --skip publish --skip validate
 
-  gen-db:
-    cmd: sqlc generate
+  gen-sql:
+    cmds:
+      - go run ./scripts/gen_sql_schema
+      - sqlc generate
 
   logs-agent:
-    dir: '{{.SECAI_AGENT_DIR}}'
-    cmd: tail -f {{.SECAI_DIR}}/{{.SECAI_ID}}.jsonl | fblog -d -x time
+    # TODO gen .env from config
+    cmd: tail -f tmp/cook/cook.jsonl -n 100 | fblog -d -x time -x msg -x level
 
   build:
     dir: '{{.SECAI_AGENT_DIR}}'
@@ -38,28 +43,37 @@ tasks:
       - go build -o {{.SECAI_ID}} ./cmd
 
   repl:
-    desc: Start the REPL for ./{{.SECAI_DIR}}/*.addr
-    dir: '{{.SECAI_AGENT_DIR}}'
-    cmd: arpc -d {{.SECAI_DIR}}
+    desc: Start the REPL for tmp/cook
+#   TODO use gen .env
+    cmd: arpc -d tmp/cook
 
-  lazysql: # TODO squall
-    desc: Start lazysql for {{.SECAI_DIR}}/db.sqlite
-    dir: '{{.SECAI_AGENT_DIR}}'
-    cmd: lazysql {{.SECAI_DIR}}/db.sqlite
+  sql:
+    requires:
+      vars: [SECAI_DIR]
+    desc: Framework-level SQL DB (eg prompts)
+    cmd: harlequin {{.SECAI_DIR}}/secai.sqlite
 
-  # TODO migrate to go tools 1.24
+  sql-history:
+    requires:
+      vars: [SECAI_DIR]
+    desc: State-machine history SQL DB
+    cmd: harlequin {{.SECAI_DIR}}/machine.sqlite
+
+  sql-agent:
+    requires:
+      vars: [SECAI_DIR, SECAI_ID]
+    desc: Agent-level SQL DB
+    cmd: harlequin {{.SECAI_DIR}}/{{.SECAI_ID}}.sqlite
+
   install-deps:
-    desc: Install Golang dependencies
+    desc: Install dependencies
     silent: true
     cmds:
       - go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
-      # TODO lock versions
       - go install github.com/pancsta/asyncmachine-go/tools/cmd/arpc@{{.AM_VER}}
       - go install github.com/pancsta/asyncmachine-go/tools/cmd/am-dbg@{{.AM_VER}}
       - go install github.com/mattn/goreman@latest
-      - go install github.com/eliben/static-server@latest
-      - echo "Install Zellij from:"
-      - echo "- https://zellij.dev/documentation/installation"
+      - uv tool install harlequin
 
   prometheus:
     desc: Open Prometheus
@@ -169,120 +183,22 @@ tasks:
       - echo "{{.MSG}}"
       - goreman -exit-on-error start
 
-  # TUI CHAT
-
-  tui-chat:
-    ignore_error: true
-    desc: Connect to Chat TUI via SSH
-    cmd: ssh chat@localhost -p {{.SECAI_TUI_PORT}}
-      -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no
-
-  tui-chat-auto:
-    ignore_error: true
-    desc: Connect to Chat TUI via SSH and keep reconnecting
-    cmd: |
-      while true; do
-        task tui-chat
-        sleep 3
-      done
-
-  # TUI STORIES
-
-  tui-stories:
-    ignore_error: true
-    desc: Connect to Stories TUI via SSH
-    cmd: ssh stories@localhost -p {{.SECAI_TUI_PORT}}
-      -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no
-
-  tui-stories-auto:
-    ignore_error: true
-    desc: Connect to Storied TUI via SSH and keep reconnecting
-    cmd: |
-      while true; do
-        task tui-stories
-        sleep 3
-      done
-
-  # TUI CLOCK
-
-  tui-clock:
-    ignore_error: true
-    desc: Connect to Clock TUI via SSH
-    cmd: ssh clock@localhost -p {{.SECAI_TUI_PORT}}
-      -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no
-
-  tui-clock-auto:
-    ignore_error: true
-    desc: Connect to Clock TUI via SSH and keep reconnecting
-    cmd: |
-      while true; do
-        task tui-clock
-        sleep 3
-      done
-
-  # LAYOUTS
+  # TUI
 
   tui:
-    desc: Start the full desktop TUI
-    silent: false
     ignore_error: true
-    cmds:
-      - zellij --layout ./config/tui.kdl
-          attach secai-{{.SECAI_ID}}
-          --create
+    desc: Connect to TUI via SSH
+    cmd: ssh desktop@localhost -p {{.SECAI_TUI_PORT}}
+      -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no
 
   tui-auto:
-    desc: Start the full desktop TUI and keep reconnecting
-    silent: false
     ignore_error: true
-    cmds:
-      - zellij --layout ./config/tui-auto.kdl
-          attach secai-{{.SECAI_ID}}
-          --create
-
-  tui-mini:
-    desc: Start the mini desktop TUI
-    silent: false
-    ignore_error: true
-    cmds:
-      - zellij --layout ./config/tui-mini.kdl
-          attach secai-{{.SECAI_ID}}
-          --create
-
-  tui-mini-auto:
-    desc: Start the mini desktop TUI and reconnect
-    silent: false
-    ignore_error: true
-    cmds:
-      - zellij --layout ./config/tui-mini-auto.kdl
-          attach secai-{{.SECAI_ID}}
-          --create
-
-  tui-exit:
-    desc: Exit all desktop TUIs
-    cmd: zellij delete-session secai-{{.SECAI_ID}} --force
-
-  tui-mobile:
-    desc: Start the mobile TUI with stories
-    silent: false
-    ignore_error: true
-    cmds:
-      - zellij --layout ./config/tui-mobile.kdl
-          attach secai-{{.SECAI_ID}}-mobile
-          --create
-
-  tui-mobile-auto:
-    desc: Start the mobile TUI with stories and reconnect
-    silent: false
-    ignore_error: true
-    cmds:
-      - zellij --layout ./config/tui-mobile-auto.kdl
-          attach secai-{{.SECAI_ID}}-mobile
-          --create
-
-  tui-mobile-exit:
-    desc: Exit all mobile TUIs
-    cmd: zellij delete-session secai-{{.SECAI_ID}}-mobile --force
+    desc: Connect to TUI via SSH and keep reconnecting
+    cmd: |
+      while true; do
+        task tui
+        sleep 3
+      done
 
   # WEB
 
@@ -362,7 +278,7 @@ tasks:
 
   sync-configs:
 
-    desc: Pull the newest `./template.env`, `./config`, and `./docker`1
+    desc: Pull the newest `./template.env`, `./config`, and `./docker`
     ignore_error: true
     cmd: |
       files=(
@@ -371,12 +287,6 @@ tasks:
         "./config/dash-repl.kdl" 
         "./config/dash-wide-narrow.kdl"
         "./config/dash-wide-narrow-repl.kdl"
-        "./config/tui-auto.kdl"
-        "./config/tui-mini-auto.kdl"
-        "./config/tui-mini.kdl"
-        "./config/tui-mobile-auto.kdl"
-        "./config/tui-mobile.kdl"
-        "./config/tui.kdl"
         "./deploy/agent-metrics/docker-compose.yml"
         "./deploy/agent-metrics/loki.yaml"
         "./deploy/agent-metrics/otel-collector-config.yaml"

@@ -1,24 +1,25 @@
 # .goreleaser.yml
 
 builds:
-  -
-    id: "research"
-    env:
-      - CGO_ENABLED=0
-      - GO111MODULE=on
-      - SECAI_ID=aigent-research
-    goos:
-      - linux
-      - darwin
-      - windows
-    goarch:
-      - amd64
-      - arm64
-    main: ./examples/research/cmd
-    binary: aigent-research
-    ldflags:
-      - -s -w # Remove debug info, strip symbols (common optimization)
-      - -X main.id=aigent-research
+#  TODO update
+#  -
+#    id: "research"
+#    env:
+#      - CGO_ENABLED=0
+#      - GO111MODULE=on
+#      - SECAI_ID=aigent-research
+#    goos:
+#      - linux
+#      - darwin
+#      - windows
+#    goarch:
+#      - amd64
+#      - arm64
+#    main: ./examples/research/cmd
+#    binary: aigent-research
+#    ldflags:
+#      - -s -w # Remove debug info, strip symbols (common optimization)
+#      - -X main.id=aigent-research
 
 
 
@@ -30,8 +31,8 @@ builds:
       - SECAI_ID=aigent-cook
     goos:
       - linux
-      - darwin
-      - windows
+#      - darwin
+#      - windows
     goarch:
       - amd64
       - arm64
@@ -39,26 +40,77 @@ builds:
     binary: aigent-cook
     ldflags:
       - -s -w # Remove debug info, strip symbols (common optimization)
-      - -X main.id=aigent-cook
+
+  # TOOLS
+
+  -
+    id: "am-dbg"
+    # 3. CRITICAL: Disable the check for a local main.go file
+    no_main_check: true
+    env:
+      - CGO_ENABLED=0
+      - GO111MODULE=on
+    goos:
+      - linux
+#      - darwin
+#      - windows
+    goarch:
+      - amd64
+      - arm64
+    main: github.com/pancsta/asyncmachine-go/tools/cmd/am-dbg
+    binary: am-dbg
+    ldflags:
+      - -s -w # Remove debug info, strip symbols (common optimization)
+
+  -
+    id: "arpc"
+    # 3. CRITICAL: Disable the check for a local main.go file
+    no_main_check: true
+    env:
+      - CGO_ENABLED=0
+      - GO111MODULE=on
+    goos:
+      - linux
+#      - darwin
+#      - windows
+    goarch:
+      - amd64
+      - arm64
+    main: github.com/pancsta/asyncmachine-go/tools/cmd/arpc
+    binary: arpc
+    ldflags:
+      - -s -w # Remove debug info, strip symbols (common optimization)
 
 archives:
-  -
-    id: "aigent-research"
-    format: tar.gz
-    name_template: "aigent-research_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    # dont add readmes etc
-    files: [""]
-    builds:
-      - research
+#  TODO update
+#  -
+#    id: "aigent-research"
+#    format: tar.gz
+#    name_template: "aigent-research_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+#    # dont add readmes etc
+#    files: [""]
+#    builds:
+#      - research
 
   -
     id: "aigent-cook"
-    format: tar.gz
+    format: zip
     name_template: "aigent-cook_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    # dont add readmes etc
-    files: [""]
+    files:
+      - src: 'LICENSE'
+        dst: '.'
+        strip_parent: true
+      - src: 'examples/cook/README.md'
+        dst: '.'
+        strip_parent: true
+      - src: 'examples/cook/config.kdl'
+        dst: '.'
+        strip_parent: true
+    wrap_in_directory: true
     builds:
       - cook
+      - am-dbg
+      - arpc
 
 checksum:
   name_template: 'checksums.txt'

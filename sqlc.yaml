@@ -6,5 +6,5 @@ sql:
     gen:
       go:
         emit_json_tags: true
-        package: "db"
-        out: "db"
+        package: "sqlc"
+        out: "db/sqlc"

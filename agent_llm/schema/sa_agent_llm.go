@@ -1,3 +1,5 @@
+// Package schema contains a stateful schema-v2 for AgentLLM.
+//
 //nolint:lll
 package schema
 
@@ -19,7 +21,7 @@ var Sp = shared.Sp
 
 // ///// ///// /////
 
-// LLMAgentStatesDef contains all the states of the LLMAgent state machine. LLMAgent is like the base Agent but
+// LLMAgentStatesDef contains all the states of the LLMAgent state machine. LLMAgent is like the base AgentLLM but
 // includes predefined LLM prompts.
 type LLMAgentStatesDef struct {
 	*am.StatesBase
@@ -31,7 +33,7 @@ type LLMAgentStatesDef struct {
 
 	// TODO ideally keep story related prompts here
 
-	*ss.AgentStatesDef
+	*ss.AgentBaseStatesDef
 }
 
 type StepsStatesDef struct {
@@ -43,7 +45,7 @@ type LLMAgentGroupsDef struct {
 
 // LLMAgentSchema represents all relations and properties of LLMAgentStates.
 var LLMAgentSchema = SchemaMerge(
-	// inherit from Agent
+	// inherit from AgentLLM
 	ss.AgentSchema,
 
 	am.Schema{

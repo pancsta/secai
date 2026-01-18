@@ -6,7 +6,7 @@ import (
 
 	"github.com/invopop/jsonschema"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
-	llm "github.com/pancsta/secai/llm_agent/schema"
+	llm "github.com/pancsta/secai/agent_llm/schema"
 
 	"github.com/pancsta/secai"
 	ss "github.com/pancsta/secai/schema"
@@ -40,7 +40,7 @@ type ResearchStatesDef struct {
 	// CheckingRefs string
 	// RefsChecked  string
 
-	// inherit from LLM Agent
+	// inherit from LLM AgentLLM
 	*llm.LLMAgentStatesDef
 }
 
@@ -53,7 +53,7 @@ type ResearchGroupsDef struct {
 
 // ResearchSchema represents all relations and properties of ResearchStates.
 var ResearchSchema = SchemaMerge(
-	// inherit from LLM Agent
+	// inherit from LLM AgentLLM
 	llm.LLMAgentSchema,
 	am.Schema{
 
@@ -94,11 +94,11 @@ var ResearchSchema = SchemaMerge(
 
 		// OVERRIDES
 
-		ssR.Interrupted: StateAdd(ss.AgentSchema[ss.AgentStates.Interrupted], State{
+		ssR.Interrupted: StateAdd(ss.AgentSchema[ss.AgentBaseStates.Interrupted], State{
 			// stop these from happening when interrupted
 			Remove: S{ssR.CheckingInfo, ssR.SearchingLLM, ssR.SearchingWeb, ssR.Scraping},
 		}),
-		ssR.Prompt: StateAdd(ss.AgentSchema[ss.AgentStates.Prompt], State{
+		ssR.Prompt: StateAdd(ss.AgentSchema[ss.AgentBaseStates.Prompt], State{
 			// remove these when a new prompt is sent
 			Remove: S{ssR.Answered},
 		}),

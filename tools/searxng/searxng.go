@@ -17,6 +17,7 @@ import (
 	"time"
 
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
+	"github.com/pancsta/secai/shared"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/pancsta/secai"
@@ -34,7 +35,7 @@ type Tool struct {
 
 	queries []string
 	result  *schema.Result
-	port    string
+	cfg     shared.ConfigSearXNG
 }
 
 //go:embed config
@@ -42,8 +43,9 @@ var cfgFolder embed.FS
 
 func New(agent secai.AgentAPI) (*Tool, error) {
 	var err error
-	// TODO config
-	t := &Tool{port: "7452"}
+	t := &Tool{
+		cfg: agent.ConfigBase().Tools.SearXNG,
+	}
 	t.Tool, err = secai.NewTool(agent, id, title, ss.Names(), schema.Schema)
 	if err != nil {
 		return nil, err
@@ -65,7 +67,7 @@ func (t *Tool) Document() *secai.Document {
 		return &doc
 	}
 
-	doc.AddPart("BaseQueries: " + strings.Join(t.queries, "; "))
+	doc.AddPart("QueriesBase: " + strings.Join(t.queries, "; "))
 	// TODO config
 	for _, r := range t.result.Results[:min(30, len(t.result.Results))] {
 		doc.AddPart("- " + r.Title)
@@ -112,7 +114,11 @@ func (t *Tool) Search(ctx context.Context, params *schema.Params) (*schema.Resul
 		enc := sp.Encode()
 
 		g.Go(func() error {
-			u := "http://localhost:" + t.port + "/search?" + enc
+			u := t.cfg.URL
+			if u == "" {
+				u = "http://localhost:" + t.cfg.Port
+			}
+			u += "/search?" + enc
 			req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 			if err != nil {
 				return nil
@@ -173,14 +179,15 @@ func (t *Tool) Search(ctx context.Context, params *schema.Params) (*schema.Resul
 
 func (t *Tool) StartState(e *am.Event) {
 	mach := t.Mach()
-	if os.Getenv("SEARXNG_PORT") != "" {
-		t.port = os.Getenv("SEARXNG_PORT")
-		mach.EvAdd1(e, ss.Ready, nil)
 
+	// existing instance
+	if t.cfg.URL != "" {
+		mach.EvAdd1(e, ss.Ready, nil)
 		return
 	}
 
-	mach.Log("SEARXNG_PORT empty - starting docker compose")
+	// new instance
+	mach.Log("Tools.SearXNG.URL empty - starting a local docker instance")
 	mach.EvAdd1(e, ss.DockerChecking, nil)
 }
 
@@ -232,7 +239,7 @@ func (t *Tool) DockerStartingState(e *am.Event) {
 			return
 		}
 
-		// start
+		// start TODO correct mount perms UID=$(id -u) GID=$(id -g)
 		cmd := exec.Command("docker", "compose", "-p", "secai-tool-searxng", "up", "-d")
 		cmd.Dir = filepath.Join(tmpDir, "config")
 		out, err := cmd.CombinedOutput()

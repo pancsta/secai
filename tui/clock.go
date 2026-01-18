@@ -1,64 +1,37 @@
 package tui
 
 import (
-	"errors"
-	"fmt"
-	"io"
-	"log/slog"
-	"regexp"
 	"slices"
-	"strings"
-	"sync/atomic"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/guptarohit/asciigraph"
-	"github.com/leaanthony/go-ansi-parser"
+	"github.com/pancsta/asciigraph-tcell"
 	amhist "github.com/pancsta/asyncmachine-go/pkg/history"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
-	"github.com/pancsta/secai/shared"
-	"github.com/pancsta/secai/tui/states"
-	"github.com/rivo/tview"
+	"github.com/pancsta/cview"
 )
-
-var ssClock = states.UIClockStates
 
 // TODO re-render on resize
 
-// regexp for " \d+"
-var lineNumRe = regexp.MustCompile(`^(\s+)(\d+)`)
-
 type Clock struct {
-	agent     *am.Machine
-	logger    *slog.Logger
-	app       *tview.Application
-	msgs      []*shared.Msg
-	mach      *am.Machine
-	hist      *amhist.Memory
-	dispose   func() error
-	redrawing atomic.Bool
-
 	Height    int
-	States    am.S
-	HistSize  int
-	chart     string
-	screen    tcell.Screen
-	tty       tcell.Tty
 	SeriesLen int
+
+	t      *Tui
+	layout *cview.Grid
+	// agent's history
+	hist func() (amhist.MemoryApi, error)
+	// machine time of the last render
+	lastRedraw uint64
+	lastData   [][]float64
 }
 
-var _ shared.UI = &Clock{}
-
-func NewClock(mach *am.Machine, logger *slog.Logger, clockStates am.S) *Clock {
+func NewClock(tui *Tui, hist func() (amhist.MemoryApi, error)) *Clock {
 
 	c := &Clock{
+		t:         tui,
 		Height:    4,
-		States:    clockStates,
-		HistSize:  10,
 		SeriesLen: 15,
-
-		agent:  mach,
-		logger: logger,
-		app:    tview.NewApplication(),
+		hist:      hist,
 	}
 
 	return c
@@ -72,85 +45,12 @@ func NewClock(mach *am.Machine, logger *slog.Logger, clockStates am.S) *Clock {
 
 func (c *Clock) DisposingState(e *am.Event) {
 	// TODO
-	// c.Mach().EvAddErrState(e, ss.ErrUI,
+	// c.tui.mach().EvAddErrState(e, ss.ErrUI,
 	// 	tty.Close(), nil)
 }
 
 func (c *Clock) AnyState(e *am.Event) {
-	c.Redraw()
-}
-
-func (c *Clock) Redraw() {
-	if c.redrawing.Swap(true) {
-		return
-	}
-	defer c.redrawing.Store(false)
-
-	mach := c.Mach()
-	c.chart = c.Chart(c.Data())
-
-	// remove line numbers
-	lines := strings.Split(c.chart, "\n")
-	size, err := c.tty.WindowSize()
-	if err != nil {
-		mach.Log("%w: %w", ss.ErrUI, err)
-		return
-	}
-	for i, line := range lines {
-
-		// remove prefix
-		lines[i] = lineNumRe.ReplaceAllString(line, "")
-
-		// TODO trim grid lines
-		// parsed, err := ansi.Parse(lines[i])
-		// if err != nil {
-		// 	mach.Log("%w: %w", ss.ErrUI, err)
-		// 	lines = []string{""}
-		// 	break
-		// }
-		//
-		// var result []*ansi.StyledText
-		// for i, element := range parsed {
-		//
-		// 	if i > 0 {
-		// 		result = append(result, element)
-		// 		continue
-		// 	}
-		//
-		// 	var newLabel []rune
-		// 	graphemes := uniseg.NewGraphemes(element.Label)
-		// 	toSkip := 4
-		// 	for graphemes.Next() {
-		// 		if toSkip > 0 {
-		// 			toSkip--
-		// 			continue
-		// 		}
-		// 		newLabel = append(newLabel, graphemes.Runes()...)
-		// 		element.Label = string(newLabel)
-		// 		result = append(result, element)
-		// 		break
-		// 	}
-		//
-		// }
-		// lines[i] = ansi.MutString(result)
-
-		// limit to width
-		lines[i], err = ansi.Truncate(lines[i], size.Width)
-		if err != nil {
-			mach.Log("%w: %w", ss.ErrUI, err)
-			lines = []string{""}
-			break
-		}
-	}
-	c.chart = strings.Join(lines, "\n")
-
-	// clear the screen
-	_, _ = fmt.Fprint(c.tty, "\033[2J\033[H")
-	_, err = c.tty.Write([]byte(c.chart))
-	if err != nil && !errors.Is(err, io.EOF) {
-		mach.Log("%w: %w", ss.ErrUI, err)
-		return
-	}
+	c.t.Redraw()
 }
 
 // ///// ///// /////
@@ -159,86 +59,63 @@ func (c *Clock) Redraw() {
 
 // ///// ///// /////
 
-func (c *Clock) Init(sub shared.UI, screen tcell.Screen, name string) error {
-	ctx := c.agent.NewStateCtx(ss.UIMode)
-
-	// init the UI machine
-	id := "tui-clock-" + c.agent.Id() + "-" + name
-	uiMach, err := am.NewCommon(ctx, id, states.UIClockSchema, ssClock.Names(), nil, c.agent, nil)
-	if err != nil {
+func (c *Clock) Init() error {
+	if err := c.t.agent.BindHandlers(c); err != nil {
 		return err
 	}
-	uiMach.SetGroups(states.UIClockGroups, states.UIClockStates)
-	shared.MachTelemetry(uiMach, nil)
-	c.screen = screen
-	c.mach = uiMach
+	c.layout = cview.NewGrid()
+	c.layout.AddItem(cview.NewBox(), 0, 0, 1, 1, 4, 0, true)
 
-	// start tracking the agent
-	c.hist, err = amhist.NewMemory(ctx, nil, c.agent, amhist.BaseConfig{
-		TrackedStates: c.States,
-		Changed:       c.States,
-		MaxRecords:    c.HistSize,
-	}, func(err error) {
-		uiMach.AddErr(err, nil)
+	// catch ctrl+c
+	c.t.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyCtrlC {
+			_ = c.t.Stop()
+			return nil
+		}
+
+		return event
 	})
-	if err != nil {
-		return err
+
+	return nil
+}
+
+func (c *Clock) Redraw() {
+	// data or cache
+	mTimeSum := c.t.Mach().Time(nil).Sum(nil)
+	if c.lastRedraw != mTimeSum {
+		c.lastData = c.Data()
 	}
-	c.InitComponents()
-	if screen != nil {
-		screen.EnableMouse(tcell.MouseMotionEvents)
-		// TODO enable paste?
-		c.app.SetScreen(screen)
-	}
+	c.lastRedraw = mTimeSum
+	x, y, width, height := c.layout.Box.GetInnerRect()
 
-	tty, ok := c.screen.Tty()
-	if !ok {
-		// TODO pipe
-		return errors.New("tty not ok")
-	}
-	c.tty = tty
-	c.tty.NotifyResize(c.Redraw)
+	s := c.t.app.GetScreen()
+	c.t.app.Lock()
+	defer c.t.app.Unlock()
+	defer s.Show()
 
-	return sub.BindHandlers()
-}
-
-func (c *Clock) Logger() *slog.Logger {
-	return c.logger
-}
-
-func (c *Clock) Mach() *am.Machine {
-	return c.agent
-}
-
-func (c *Clock) UIMach() *am.Machine {
-	return c.mach
-}
-
-// BindHandlers binds transition handlers to the state machine. Overwrite it to bind methods from a subclass.
-func (c *Clock) BindHandlers() error {
-	return c.Mach().BindHandlers(c)
-}
-
-func (c *Clock) InitComponents() {
-}
-
-func (c *Clock) Chart(data [][]float64) string {
-	return asciigraph.PlotMany(data, asciigraph.Height(c.Height), asciigraph.Precision(0),
+	asciigraph.PlotManyToScreen(s, x, y, c.lastData, asciigraph.Width(width-2),
+		asciigraph.Height(height-1), asciigraph.Precision(0), asciigraph.HideAxisY(true),
 		asciigraph.SeriesColors(
-			asciigraph.Red,
-			asciigraph.Yellow,
-			asciigraph.Green,
-			asciigraph.Blue,
+			tcell.ColorRed,
+			tcell.ColorYellow,
+			tcell.ColorGreen,
+			tcell.ColorBlue,
 		))
 }
 
 func (c *Clock) Data() [][]float64 {
+	hist, err := c.hist()
+	if err != nil {
+		return [][]float64{make([]float64, 1)}
+	}
 
-	lastState := slices.Index(c.States, ss.UICleanOutput)
-	states := c.States[0:lastState]
+	// TODO use schema groups (self?)
+	tracked := hist.Config().TrackedStates
+	lastState := slices.Index(tracked, ss.UICleanOutput)
+	states := tracked[0:lastState]
 
 	// build series (colors)
-	size, _ := c.tty.WindowSize()
+	_, _, width, _ := c.layout.Box.GetRect()
 	seriesLen := c.SeriesLen
 	i := 1
 	var series = []struct{ From, To int }{}
@@ -256,12 +133,13 @@ func (c *Clock) Data() [][]float64 {
 
 	plots := make([][]float64, len(series))
 	maxLen := lastState
-	maxWidth := size.Width + 1
+	maxWidth := width + 1
 
-	// query history
-	rows, err := c.hist.FindLatest(c.UIMach().Ctx(), false, 0, amhist.Query{})
+	// query history TODO better ctx
+	ctx := c.t.MachTUI.Ctx()
+	rows, err := hist.FindLatest(ctx, false, c.t.cfg.TUI.ClockRange, amhist.Query{})
 	if err != nil {
-		c.UIMach().AddErr(err, nil)
+		c.t.MachTUI.AddErr(err, nil)
 		// TODO proper defaults, panic
 		return [][]float64{make([]float64, len(series))}
 	}
@@ -300,25 +178,4 @@ func (c *Clock) Data() [][]float64 {
 	}
 
 	return plots
-}
-
-// Start starts the UI and optionally returns the error and mutates with UIErr.
-func (c *Clock) Start(dispose func() error) error {
-	c.dispose = dispose
-	// start the U
-	c.UIMach().Add(S{ssStories.Start, ssStories.Ready}, nil)
-	go c.agent.Add1(ss.UIReady, nil)
-	err := c.app.Run()
-	if err != nil && err.Error() != "EOF" {
-		c.agent.AddErrState(ss.ErrUI, err, nil)
-	}
-
-	return err
-}
-
-func (c *Clock) Stop() error {
-	_ = c.dispose()
-	c.app.Stop()
-
-	return nil
 }
