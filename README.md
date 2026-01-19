@@ -6,8 +6,9 @@ structured memory. It offers a dedicated set of devtools and is written in the G
 a graph-based flow, **secai** allows for precise behavior modeling of agents, including interruptions and fault tolerance.
 
 * Demos
-  * [User Demo](#user-demo)
-  * [Platform Demo](#platform-demo)
+  * [v0.4](#v04-demo)
+  * [User](#user-demo)
+  * [Platform](#platform-demo)
 * [Features](#features)
   * [Implementation](#implementation)
   * [Comparison](#comparison)
@@ -24,6 +25,23 @@ a graph-based flow, **secai** allows for precise behavior modeling of agents, in
   * [Stories](#stories-tui)
   * [Clock](#clockmoji-tui)
 * [Bash Scripts](#bash-scripts)
+
+## v0.4 Demo
+
+<div align="center" class="video">
+    <a href="https://github.com/pancsta/asyncmachine-go/blob/main/tools/cmd/am-dbg/README.md">
+        <img width="420px"
+            src="https://github.com/user-attachments/assets/a387b00f-c2ba-444c-9b58-381d1425edfb"
+            alt="AI-gent Cook" />
+    </a>
+</div>
+
+- [Diagram](https://ai-gents.work/demo/_diagram.svg)
+- [SQL DBs](https://ai-gents.work/data-cook)
+- [Debugger](https://ai-gents.work/dbg-cook)
+- [Log](https://ai-gents.work/demo/cook.html)
+- [Schema](/examples/cook/schema/sa_cook.go)
+- [Files](https://ai-gents.work/demo)
 
 ## User Demo
 
