@@ -1,0 +1,6 @@
+/web/app.wasm
+/web/assets/deps
+/cook
+/config.kdl
+/config.env
+/tmp-*

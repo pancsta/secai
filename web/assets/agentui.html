@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="business">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI-gent Cook Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdn.jsdelivr.net/npm/daisyui@4.7.2/dist/full.min.css" rel="stylesheet" type="text/css"/>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js/dist/chart.umd.js"></script>
+  <!-- https://raw.githubusercontent.com/imhvost/chart-utils/refs/heads/master/dist/chart-utils.min.js -->
+  <script src="./deps/utils.js"></script>
+
+  <style>
+      /* Custom scrollbar for modern look */
+      ::-webkit-scrollbar {
+          width: 8px;
+      }
+
+      ::-webkit-scrollbar-track {
+          background: transparent;
+      }
+
+      ::-webkit-scrollbar-thumb {
+          background-color: #4b5563;
+          border-radius: 20px;
+      }
+  </style>
+</head>
+<body class="bg-base-300 h-screen w-screen overflow-hidden p-4 font-sans text-base-content">
+
+<div class="grid grid-cols-10 gap-4 h-full max-h-full">
+
+  <div class="col-span-5 flex flex-col gap-4 h-full overflow-hidden">
+
+    <div class="card bg-base-100 h-16 border border-base-200 rounded-lg items-center">
+      <div class="card-body p-2 relative h-full w-40">
+        <canvas id="activityChart"></canvas>
+      </div>
+    </div>
+
+    <div class="card bg-base-100 rounded-lg flex-1 overflow-hidden border border-base-200">
+      <div class="card-body p-4 flex flex-col h-full">
+        <h2 class="card-title text-sm text-base-content/50 uppercase tracking-wider mb-2 self-center">Messages</h2>
+
+        <div class="flex-1 overflow-y-auto">
+
+          <div class="chat chat-start">
+            <div class="chat-header opacity-50 text-xs mb-1">Narrator</div>
+            <div class="chat-bubble chat-bubble-neutral italic text-sm rounded-lg">
+              Your host will be Eleanor Finch from 1932.<br>
+              Profession: Culinary Technologist.
+            </div>
+          </div>
+
+          <div class="chat chat-start">
+            <div class="chat-header opacity-50 text-xs mb-1">Assistant</div>
+            <div class="chat-bubble chat-bubble-primary text-sm">
+              Don't worry, I won't judge your ingredient choices—unless you're trying to cook with a single pickle!
+            </div>
+          </div>
+
+          <div class="chat chat-end">
+            <div class="chat-header opacity-50 text-xs mb-1">You</div>
+            <div class="chat-bubble chat-bubble-secondary text-sm">
+              I have 2 carrots, 3 eggs and rice
+            </div>
+          </div>
+
+          <div class="chat chat-start">
+            <div class="chat-header opacity-50 text-xs mb-1">Assistant</div>
+            <div class="chat-bubble chat-bubble-primary text-sm">
+              Let's get these ingredients ready to become the stars of our kitchen show!<br>
+              Hmm, let's see… what delicious adventure shall we embark on today?
+            </div>
+          </div>
+
+          <div class="chat chat-start">
+            <div class="chat-header opacity-50 text-xs mb-1">Assistant</div>
+            <div class="chat-bubble chat-bubble-primary text-sm flex flex-col gap-2">
+              <span>With a flair for innovation, I've crafted three delightful recipes that blend your ingredients with creativity—perfect for a modern kitchen.</span>
+              <ul class="list-decimal list-inside bg-base-200/50 p-2 rounded-lg mt-1">
+                <li>Carrot and Egg Frittata</li>
+                <li>Rice and Carrot Pilaf</li>
+                <li>Carrot and Egg Omelette</li>
+                <li>Carrot and Egg Custard</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="chat chat-end">
+            <div class="chat-header opacity-50 text-xs mb-1">You</div>
+            <div class="chat-bubble chat-bubble-secondary text-sm">1</div>
+          </div>
+
+          <div class="chat chat-start">
+            <div class="chat-header opacity-50 text-xs mb-1">Assistant</div>
+            <div class="chat-bubble chat-bubble-primary text-sm">
+              You chose Carrot and Egg Frittata as the recipe which we will cook, got it. I will plan all the cooking
+              steps nicely for us. Just press those buttons on the right, once I'm done.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mt-2 flex flex-col gap-2 ">
+      <textarea class="textarea w-full shadow-sm grow rounded-lg" type="text"
+          placeholder="Type your message here..."></textarea>
+      <button class="btn btn-primary w-full flex-none rounded-lg">Send</button>
+      <button class="btn btn-error btn-outline w-full flex-none rounded-lg">Interrupt</button>
+    </div>
+  </div>
+
+  <div class="col-span-5 flex flex-col gap-4 overflow-hidden">
+
+    <div class="card bg-base-100 rounded-lg border border-base-200 max-h-24">
+      <div class="card-body p-4 h-full">
+        <h2 class="card-title text-sm text-base-content/50 uppercase tracking-wider self-center">AI-gent Cook</h2>
+        <p class="text-xs text-base-content/70 overflow-y-auto">
+          Stories, workflows, dynamic short-term memory, planning with a DAG, story navigation, progress, and clockmoji.
+          Stories, workflows, dynamic short-term memory, planning with a DAG, story navigation, progress, and clockmoji.
+        </p>
+      </div>
+    </div>
+
+    <div class="card bg-base-100 rounded-lg flex-1 overflow-hidden border border-base-200">
+      <div class="card-body p-4 flex flex-col h-full">
+        <h2 class="card-title text-sm text-base-content/50 uppercase tracking-wider mb-2 self-center">Stories</h2>
+
+        <div class="flex-1 overflow-y-auto space-y-3 pr-2">
+          <div class="opacity-60">
+            <div class="flex justify-between items-center mb-1">
+              <span class="font-semibold text-sm">1. Waking Up</span>
+              <span class="text-xs">1m ago</span>
+            </div>
+            <p class="text-xs pl-4 border-l-2 border-base-300">The waking up story is the bot starting on either cold or
+              warm boot.</p>
+          </div>
+
+          <div class="opacity-60">
+            <div class="flex justify-between items-center mb-1">
+              <span class="font-semibold text-sm">2. Ingredients Picking</span>
+              <span class="text-xs">1m ago</span>
+            </div>
+            <p class="text-xs pl-4 border-l-2 border-base-300">The bot asks the user what ingredients they have at
+              hand.</p>
+          </div>
+
+          <div class="opacity-60">
+            <div class="flex justify-between items-center mb-1">
+              <span class="font-semibold text-sm">3. Recipe Picking</span>
+              <div class="text-xs">0m ago</div>
+            </div>
+            <p class="text-xs pl-4 border-l-2 border-base-300">The bot offers some recipes, based on the
+              ingredients.</p>
+          </div>
+
+          <div class="bg-success/10 p-2 rounded-lg border border-success/30">
+            <div class="flex justify-between items-center mb-1">
+              <span class="font-bold text-success text-sm">5. Cooking Started</span>
+              <div class="badge badge-success badge-sm animate-pulse">Active</div>
+            </div>
+            <p class="text-xs pl-4 border-l-2 border-success text-success/80">The main story, the bot translates the
+              recipe into actionable steps, then comments while the user completes them.</p>
+          </div>
+
+          <div class="opacity-40">
+            <div class="flex justify-between items-center mb-1">
+              <span class="font-semibold text-sm">6. Meal Ready</span>
+            </div>
+            <p class="text-xs pl-4 border-l-2 border-base-300">This story is the end of the flow, the recipe should have
+              been materialized by now.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card bg-base-100 flex-1 rounded-lg border border-base-200 overflow-y-auto">
+      <div class="card-body p-4">
+
+        <div>
+          <div class="flex justify-between text-xs text-base-content/70">
+            <span>Overall Progress</span>
+            <span>85%</span>
+          </div>
+          <progress class="progress progress-primary w-full h-3" value="85" max="100"></progress>
+        </div>
+
+        <button class="btn rounded-lg btn-outline btn-sm w-full text-base-content/60">Joke?</button>
+
+        <div>
+          <div class="flex justify-between text-xs text-base-content/70">
+            <span>Cooking Steps</span>
+            <span>20%</span>
+          </div>
+          <progress class="progress progress-secondary w-full h-3" value="20" max="100"></progress>
+        </div>
+
+        <button class="btn rounded-lg btn-secondary btn-sm w-full">(1) Oven Preheated</button>
+        <button class="btn rounded-lg btn-outline btn-sm w-full text-base-content/60">(2) Carrots Sautéed</button>
+        <button class="btn rounded-lg btn-outline btn-sm w-full text-base-content/60">(3) Eggs Beaten</button>
+        <button class="btn rounded-lg btn-outline btn-sm w-full text-base-content/60">(4) Frittata Baking</button>
+        <button class="btn rounded-lg btn-outline btn-sm w-full text-base-content/60">(5) Frittata Baked</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+    function clockmojiUpdate(newDiff) {
+      newDiff = [
+          [1,1,1,1,5,1,1,1,1,1,1],
+          [3,1,1,1,1,1,1,1,1,1,1],
+          [1,1,1,1,1,1,1,1,3,1,1],
+      ]
+
+      maxVal = 0
+      window.clockmoji.data.datasets.forEach((dataset, i) => {
+          dataset.data.length = 0
+          newDiff[i].forEach((v) => {
+              dataset.data.push(v);
+              if (v > maxVal) {
+                  maxVal = v
+              }
+          })
+      });
+      window.clockmoji.options.scales.y.max = maxVal
+      window.clockmoji.update()
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+        const ctx = document.getElementById('activityChart').getContext('2d');
+        const Utils = ChartUtils.init();
+
+        window.clockmoji = new Chart(ctx, {
+            // type: 'line',
+            type: 'radar',
+            // type: 'bar',
+            data: {
+                labels: Array.from({length: 10}, (_, i) => i),
+                datasets: [{
+                    data: [2, 3, 8, 4, 3, 0, 10, 5, 2, 3, 9, 4, 3, 14, 5, 0, 6, 3, 2, 0],
+                    borderColor: '#4dc9f6',
+                    backgroundColor: Utils.transparentize('#4dc9f6', 0.5),
+                    borderWidth: 3,
+                    borderRadius: Number.MAX_VALUE,
+                    lineTension: 0.4,
+                    pointRadius: 0,
+                }, {
+                    data: [0, 9, 0, 14, 7, 0, 0, 15, 12, 0, 19, 4, 0, 4, 15, 13, 6, 10, 2, 0],
+                    borderColor: '#f67019',
+                    backgroundColor: Utils.transparentize('#f67019', 0.5),
+                    borderWidth: 3,
+                    borderRadius: Number.MAX_VALUE,
+                    lineTension: 0.4,
+                    pointRadius: 0,
+                }, {
+                    data: [6, 2, 6, 0, 0, 3, 6, 0, 0, 9, 0, 4, 0, 4, 0, 4, 6, 0, 2, 7],
+                    borderColor: '#acc236',
+                    backgroundColor: Utils.transparentize('#acc236', 0.5),
+                    borderWidth: 3,
+                    borderRadius: Number.MAX_VALUE,
+                    lineTension: 0.4,
+                    pointRadius: 0,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {display: false},
+                    tooltip: {enabled: false}
+                },
+                scales: {
+                    x: {display: false},
+                    y: {
+                        display: false,
+                        min: 0,
+                        max: 16
+                    },
+                    r: {
+                        pointLabels: {display: false},
+                        ticks: {display: false},
+                        angleLines: {display: false},
+                        grid: {display: false
+},
+                    }
+                },
+                layout: {
+                    padding: 0
+                }
+            }
+        });
+    });
+
+    // TODO
+    // // Overwrite the data in the first dataset (index 0)
+    // myChart.data.datasets[0].data = newData;
+    //
+    // // 3. Tell Chart.js to re-draw
+    // myChart.update();
+</script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-// Package deepresearch is a port of atomic-agents/deepresearch to secai.
+// Package research is a port of atomic-agents/deepresearch to secai.
 // https://github.com/BrainBlend-AI/atomic-agents/blob/main/atomic-examples/deep-research/deep_research/main.py
 package research
 
@@ -11,17 +11,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gliderlabs/ssh"
+	"github.com/charmbracelet/ssh"
 	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
 
 	"github.com/pancsta/secai"
 	llmagent "github.com/pancsta/secai/agent_llm"
 	"github.com/pancsta/secai/examples/research/schema"
-	baseschema "github.com/pancsta/secai/schema"
 	"github.com/pancsta/secai/shared"
+	baseschema "github.com/pancsta/secai/states"
 	"github.com/pancsta/secai/tools/colly"
-	schemacolly "github.com/pancsta/secai/tools/colly/schema"
+	schemacolly "github.com/pancsta/secai/tools/colly/states"
 	"github.com/pancsta/secai/tools/getter"
 	"github.com/pancsta/secai/tools/searxng"
 	"github.com/pancsta/secai/tui"
@@ -111,7 +111,7 @@ func New(
 	return a
 }
 
-func (a *Agent) Init(agent secai.AgentAPI) error {
+func (a *Agent) Init(agent shared.AgentBaseAPI) error {
 	// call super
 	err := a.AgentLLM.Init(agent, schema.ResearchGroups, schema.ResearchStates)
 	if err != nil {
@@ -309,7 +309,7 @@ func (a *Agent) UIModeState(e *am.Event) {
 	var handlerFn ssh.Handler = func(sess ssh.Session) {
 		srcAddr := sess.RemoteAddr().String()
 		done := make(chan struct{})
-		mach.EvAdd1(e, ss.UISessConn, PassAA(&AA{
+		mach.EvAdd1(e, ss.SSHConn, PassAA(&AA{
 			SSHSess: sess,
 			ID:      sess.User(),
 			Addr:    srcAddr,
@@ -330,7 +330,7 @@ func (a *Agent) UIModeState(e *am.Event) {
 	go func() {
 		// save srv ref
 		optSrv := func(s *ssh.Server) error {
-			mach.EvAdd1(e, ss.UISrvListening, PassAA(&AA{
+			mach.EvAdd1(e, ss.SSHReady, PassAA(&AA{
 				SSHServer: s,
 			}))
 			return nil
@@ -429,7 +429,7 @@ func (a *Agent) UISessConnState(e *am.Event) {
 		// TODO log err if not EOF?
 
 		close(done)
-		mach.EvAdd1(e, ss.UISessDisconn, PassAA(&AA{
+		mach.EvAdd1(e, ss.SSHDisconn, PassAA(&AA{
 			UI: ui,
 		}))
 	}()
@@ -455,7 +455,7 @@ func (a *Agent) CheckingInfoState(e *am.Event) {
 
 		// dereference the prompt TODO extract
 		retOffer := make(chan *shared.OfferRef, 1)
-		mach.EvAdd1(e, ss.CheckingOfferRefs, PassAA(&AA{
+		mach.EvAdd1(e, ss.CheckingMenuRefs, PassAA(&AA{
 			Prompt:      a.UserInput,
 			RetOfferRef: retOffer,
 			CheckLLM:    true,
@@ -512,8 +512,8 @@ func (a *Agent) SearchingLLMState(e *am.Event) {
 	// unblock
 	go func() {
 		// llm indicator
-		defer mach.EvRemove1(e, ss.RequestingLLM, nil)
-		mach.EvAdd1(e, ss.RequestingLLM, nil)
+		defer mach.EvRemove1(e, ss.RequestingAI, nil)
+		mach.EvAdd1(e, ss.RequestingAI, nil)
 
 		// ask LLM for relevant links
 		res, err := llm.Exec(e, schema.ParamsSearching{
@@ -699,7 +699,7 @@ func (a *Agent) AnsweredState(e *am.Event) {
 // aliases
 
 type AA = shared.A
-type AARpc = shared.ARpc
+type AARpc = shared.ARPC
 
 var PassAA = shared.Pass
 
@@ -780,7 +780,7 @@ func PassRpc(args *A) am.A {
 	out := am.A{APrefix: clone}
 
 	// merge with base args
-	return am.AMerge(out, shared.PassRpc(args.A))
+	return am.AMerge(out, shared.PassRPC(args.A))
 }
 
 // LogArgs is an args logger for A and [secai.A].

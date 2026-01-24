@@ -12,15 +12,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gliderlabs/ssh"
+	"github.com/charmbracelet/ssh"
 	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
+	"github.com/sblinch/kdl-go"
 
+	"github.com/pancsta/secai"
 	"github.com/pancsta/secai/examples/cook/db"
 	sa "github.com/pancsta/secai/examples/cook/schema"
-	sabase "github.com/pancsta/secai/schema"
+	"github.com/pancsta/secai/examples/cook/states"
 	"github.com/pancsta/secai/shared"
 	"github.com/pancsta/secai/tui"
+	"github.com/pancsta/secai/web"
 )
 
 func (a *Agent) ExceptionState(e *am.Event) {
@@ -29,8 +32,9 @@ func (a *Agent) ExceptionState(e *am.Event) {
 	args := am.ParseArgs(e.Args)
 
 	// show the error
-	a.Output(fmt.Sprintf("ERROR: %s", args.Err), shared.FromSystem)
-	a.Logger().Error("error", "err", args.Err)
+	if a.ConfigBase().Debug.Verbose {
+		a.Output(fmt.Sprintf("ERROR: %s", args.Err), shared.FromSystem)
+	}
 
 	// exit on too many errors
 	// TODO reset counter sometimes
@@ -52,8 +56,11 @@ func (a *Agent) StartState(e *am.Event) {
 
 	// start the UI
 	// TODO make UI optional
-	mach.Add1(ss.UIMode, nil)
+	mach.EvAdd1(e, ss.UIMode, nil)
 	mach.EvAdd1(e, ss.Mock, nil)
+
+	a.handlersWeb = &web.Handlers{A: a}
+	mach.AddErr(mach.BindHandlers(a.handlersWeb), nil)
 
 	// start Heartbeat
 	go func() {
@@ -70,30 +77,44 @@ func (a *Agent) StartState(e *am.Event) {
 	}()
 }
 
+func (a *Agent) StartEnd(e *am.Event) {
+	mach := a.Mach()
+
+	mach.EvAddErr(e,
+		mach.DetachHandlers(a.handlersWeb), nil)
+	a.handlersWeb = nil
+}
+
 func (a *Agent) MockEnter(e *am.Event) bool {
 	return a.Config.Debug.Mock && mock.Active
 }
 
 func (a *Agent) MockState(e *am.Event) {
 	mach := a.Mach()
+	ctx := mach.NewStateCtx(ss.Mock)
 
 	// first msg when cooking steps are out, right after the narrator's recipe
 	if in := mock.StoryCookingStartedInput; in != "" {
 		go func() {
-			<-mach.When1(ss.InputPending, nil)
-			time.Sleep(time.Second)
-			mach.EvAdd1(e, ss.Prompt, PassAA(&AA{
+			<-mach.When1(ss.InputPending, ctx)
+			if !amhelp.Wait(ctx, time.Second) {
+				return
+			}
+			mach.EvAdd1(e, ss.Prompt, Pass3(&A3{
 				Prompt: in,
 			}))
 		}()
 	}
 
+	whenInput3 := mach.WhenTicks(ss.InputPending, 3, ctx)
 	// first msg when cooking steps are out, right after the narrator's recipe
 	if in := mock.StoryCookingStartedInput3; in != "" {
 		go func() {
-			<-mach.WhenTime1(ss.InputPending, 3, nil)
-			time.Sleep(time.Second)
-			mach.EvAdd1(e, ss.Prompt, PassAA(&AA{
+			<-whenInput3
+			if !amhelp.Wait(ctx, time.Second) {
+				return
+			}
+			mach.EvAdd1(e, ss.Prompt, Pass3(&A3{
 				Prompt: in,
 			}))
 		}()
@@ -136,7 +157,7 @@ func (a *Agent) LoopState(e *am.Event) {
 			// timeout - trigger an interruption
 			case <-time.After(timeout):
 				cancel()
-				mach.EvAdd1(e, ss.Interrupted, PassAA(&AA{
+				mach.EvAdd1(e, ss.Interrupted, Pass3(&A3{
 					IntByTimeout: true,
 				}))
 				a.loop.Break()
@@ -154,14 +175,30 @@ func (a *Agent) AnyState(e *am.Event) {
 	mtime := mach.Time(nil).Sum(nil)
 
 	// refresh stories on state changes but avoid recursion and DUPs
-	// TODO bind each story directly via wait methods
+	// TODO bind each story directly via wait methods (maybe a group?)
 	skipCalled := S{ss.CheckStories, ss.StoryChanged, ss.Healthcheck, ss.Loop, ss.Requesting,
-		ss.RequestingLLM, ss.Heartbeat}
+		ss.RequestingAI, ss.RequestedAI, ss.Heartbeat, ss.UIRenderStories, ss.UICleanOutput, ss.UIUpdateClock}
 	called := tx.Mutation.CalledIndex(mach.StateNames())
 	if a.lastStoryCheck != mtime && called.Not(skipCalled) && !mach.WillBe1(ss.CheckStories) {
 		mach.EvAdd1(e, ss.CheckStories, nil)
 	}
 	a.lastStoryCheck = mtime
+
+	// redraw clock
+	hist, err := a.Hist()
+	if err != nil {
+		return
+	}
+
+	// redraw on tracked changed
+	added, removed := e.Transition().TimeIndexDiff()
+	names := slices.Concat(added.ActiveStates(nil), removed.ActiveStates(nil))
+	for _, s := range names {
+		if hist.IsTracked1(s) {
+			a.Mach().EvAdd1(e, ss.UIUpdateClock, nil)
+			break
+		}
+	}
 }
 
 func (a *Agent) HeartbeatState(e *am.Event) {
@@ -185,7 +222,7 @@ func (a *Agent) CheckStoriesState(e *am.Event) {
 
 	var stateList S
 	var activateList []bool
-	for _, s := range a.Stories {
+	for _, s := range a.stories {
 		// TODO env const
 		isDebug := os.Getenv("SECAI_DEBUG_STORY") == s.State
 		if isDebug {
@@ -207,8 +244,8 @@ func (a *Agent) CheckStoriesState(e *am.Event) {
 		// dont activate without passing triggers
 
 		// check the agent machine
-		if !s.Cook.Trigger.IsEmpty() {
-			activate = s.Cook.Trigger.Check(s.Cook.Mach)
+		if !s.Agent.Trigger.IsEmpty() {
+			activate = s.Agent.Trigger.Check(s.Agent.Mach)
 			if isDebug {
 				a.Log("cook", "check", activate)
 			}
@@ -247,7 +284,7 @@ func (a *Agent) CheckStoriesState(e *am.Event) {
 
 	// apply the changes if any
 	if len(stateList) > 0 {
-		mach.EvAdd1(e, ss.StoryChanged, PassAA(&AA{
+		mach.EvAdd1(e, ss.StoryChanged, Pass3(&A3{
 			StatesList:   stateList,
 			ActivateList: activateList,
 		}))
@@ -265,7 +302,7 @@ func (a *Agent) StoryChangedState(e *am.Event) {
 
 	for i, name := range states {
 		activate := activates[i]
-		s := a.Stories[name]
+		s := a.stories[name]
 
 		if s == nil {
 			a.Log("story not found", "state", name)
@@ -278,11 +315,11 @@ func (a *Agent) StoryChangedState(e *am.Event) {
 
 			// TODO handle Queued?
 			if res != am.Canceled {
-				s.Cook.TimeDeactivated = mach.Time(nil)
+				s.Agent.TimeDeactivated = mach.Time(nil)
 				s.Memory.TimeDeactivated = a.mem.Time(nil)
 				s.DeactivatedAt = time.Now()
-				s.LastActiveTicks = s.Cook.TimeDeactivated.Sum(nil) -
-					s.Cook.TimeActivated.Sum(nil)
+				s.LastActiveTicks = s.Agent.TimeDeactivated.Sum(nil) -
+					s.Agent.TimeActivated.Sum(nil)
 			}
 
 			// activate
@@ -291,7 +328,7 @@ func (a *Agent) StoryChangedState(e *am.Event) {
 
 			// TODO handle Queued?
 			if res != am.Canceled {
-				s.Cook.TimeActivated = mach.Time(nil)
+				s.Agent.TimeActivated = mach.Time(nil)
 				s.Memory.TimeActivated = a.mem.Time(nil)
 			} else {
 				a.Log("failed to activate", "state", name)
@@ -305,7 +342,7 @@ func (a *Agent) InterruptedState(e *am.Event) {
 	a.AgentLLM.InterruptedState(e)
 
 	mach := a.Mach()
-	switch mach.Switch(sa.CookGroups.Interruptable) {
+	switch mach.Switch(states.CookGroups.Interruptable) {
 	case ss.StoryWakingUp:
 		a.Output("not waking up", shared.FromAssistant)
 	}
@@ -336,7 +373,7 @@ func (a *Agent) ReadyState(e *am.Event) {
 
 // TODO enter
 
-func (a *Agent) UISessConnState(e *am.Event) {
+func (a *Agent) SSHConnState(e *am.Event) {
 	mach := a.Mach()
 	args := ParseArgs(e.Args)
 	sess := args.SSHSess
@@ -353,7 +390,9 @@ func (a *Agent) UISessConnState(e *am.Event) {
 
 	// new UI will add UIReady
 	mach.Remove1(ss.UIReady, nil)
-	uiMain := tui.NewTui(mach, a.Logger(), &a.Config.Config)
+	uiMain := tui.NewTui(mach, a.Logger(), a.ConfigBase(),
+		// TODO remote addr of local fwder, not the browser
+		sess.RemoteAddr().String())
 
 	// screen init is required for cview, but not for tview TODO still?
 	if err := screen.Init(); err != nil {
@@ -361,10 +400,10 @@ func (a *Agent) UISessConnState(e *am.Event) {
 		return
 	}
 
-	// init the UI
-	stories := tui.NewStories(uiMain, a.storiesButtons(), a.storiesInfo(), a.ConfigBase())
-	chat := tui.NewChat(uiMain, slices.Clone(a.Msgs))
-	clock := tui.NewClock(uiMain, a.Hist)
+	// init the UI TODO merge into 1
+	stories := tui.NewStories(uiMain, a.Actions(), a.Stories(), a.ConfigBase())
+	chat := tui.NewChat(uiMain, slices.Clone(a.msgs))
+	clock := tui.NewClock(uiMain, a.Store().ClockDiff)
 
 	err = uiMain.Init(screen, a.nextUIName(), stories, clock, chat)
 	if err != nil {
@@ -373,37 +412,69 @@ func (a *Agent) UISessConnState(e *am.Event) {
 	}
 
 	// register
-	a.UIs = append(a.UIs, uiMain)
+	a.tuis = append(a.tuis, uiMain)
+
+	uiMain.Redraw()
 
 	// start the UI
 	go func() {
+		defer close(done)
 		if ctx.Err() != nil {
 			return // expired
 		}
 
+		// TODO catch CTRL+C, CTRL+Q
+		//   https://github.com/gliderlabs/ssh/issues/226
 		err = uiMain.Start(sess.Close)
 		// TODO log err if not EOF?
 
-		close(done)
-		mach.EvAdd1(e, ss.UISessDisconn, nil)
+		mach.EvAdd1(e, ss.SSHDisconn, Pass(&A{
+			TUI: uiMain,
+		}))
 	}()
 }
 
-func (a *Agent) UISessDisconnState(e *am.Event) {
+func (a *Agent) SSHDisconnState(e *am.Event) {
+	addr := ParseArgs(e.Args).Addr
 	ui := ParseArgs(e.Args).TUI
 
-	a.UIs = shared.SlicesWithout(a.UIs, ui)
+	before := len(a.tuis)
+	a.tuis = slices.DeleteFunc(a.tuis, func(t *tui.TUI) bool {
+		// dispose all on web disconn TODO add conn IDs via users, match IDs
+		if ui == nil {
+			amhelp.DisposeEv(t.MachTUI, e)
+			return true
+		}
+
+		if t == ui {
+			return true
+		}
+		if t.ClientAddr == addr {
+			return true
+		}
+		return false
+	})
+
+	after := len(a.tuis)
+	if before == after {
+		// TODO err state
+		a.Mach().EvAddErr(e, fmt.Errorf("undisposed TUI"), nil)
+	}
+}
+
+func (a *Agent) UIModeEnter(e *am.Event) bool {
+	return a.Config.TUI.PortSSH != -1
 }
 
 func (a *Agent) UIModeState(e *am.Event) {
-	mach := e.Machine()
+	mach := a.Mach()
 	ctx := mach.NewStateCtx(ss.UIMode)
 
 	// new session handler passing to UINewSess state
 	var handlerFn ssh.Handler = func(sess ssh.Session) {
 		srcAddr := sess.RemoteAddr().String()
 		done := make(chan struct{})
-		mach.EvAdd1(e, ss.UISessConn, PassAA(&AA{
+		mach.EvAdd1(e, ss.SSHConn, Pass3(&A3{
 			SSHSess: sess,
 			ID:      sess.User(),
 			Addr:    srcAddr,
@@ -411,7 +482,7 @@ func (a *Agent) UIModeState(e *am.Event) {
 		}))
 
 		// TODO WhenArgs for typed args
-		// amhelp.WaitForAll(ctx, time.Hour*9999, mach.WhenArgs(ss.UISessDisconn, am.A{}))
+		// amhelp.WaitForAll(ctx, time.Hour*9999, mach.WhenArgs(ss.SSHDisconn, am.A{}))
 
 		// keep this session alive
 		select {
@@ -420,17 +491,17 @@ func (a *Agent) UIModeState(e *am.Event) {
 		}
 	}
 
-	// start the server
+	// start SSH
 	go func() {
 		// save srv ref
 		optSrv := func(s *ssh.Server) error {
-			mach.EvAdd1(e, ss.UISrvListening, PassAA(&AA{
+			mach.EvAdd1(e, ss.SSHReady, Pass3(&A3{
 				SSHServer: s,
 			}))
 			return nil
 		}
 
-		addr := a.Config.TUI.Host + ":" + strconv.Itoa(a.Config.TUI.Port)
+		addr := a.Config.TUI.Host + ":" + strconv.Itoa(a.Config.TUI.PortSSH)
 		a.Log("SSH UI listening", "addr", addr)
 		err := ssh.ListenAndServe(addr, handlerFn, optSrv)
 		if err != nil {
@@ -441,10 +512,10 @@ func (a *Agent) UIModeState(e *am.Event) {
 
 func (a *Agent) UIModeEnd(e *am.Event) {
 	// TUIs
-	for _, ui := range a.UIs {
+	for _, ui := range a.tuis {
 		_ = ui.Stop()
 	}
-	a.UIs = nil
+	a.tuis = nil
 
 	// SSHs
 	if a.srvUI != nil {
@@ -454,14 +525,14 @@ func (a *Agent) UIModeEnd(e *am.Event) {
 
 // TODO enter
 
-func (a *Agent) UISrvListeningState(e *am.Event) {
+func (a *Agent) SSHReadyState(e *am.Event) {
 	s := ParseArgs(e.Args).SSHServer
 	a.srvUI = s
 }
 
-func (a *Agent) MsgState(e *am.Event) {
+func (a *Agent) UIMsgState(e *am.Event) {
 	msg := ParseArgs(e.Args).Msg
-	a.Msgs = append(a.Msgs, msg)
+	a.msgs = append(a.msgs, msg)
 }
 
 func (a *Agent) PromptEnter(e *am.Event) bool {
@@ -480,7 +551,7 @@ func (a *Agent) PromptState(e *am.Event) {
 	ctx := mach.NewStateCtx(ss.Prompt)
 
 	limit := a.Config.AI.ReqLimit
-	if int(mach.Time(S{ss.RequestingLLM}).Sum(nil)) > limit {
+	if int(mach.Time(S{ss.RequestingAI}).Sum(nil)) > limit {
 		_ = a.OutputPhrase("ReqLimitReached", limit)
 		a.reqLimitOk.Store(false)
 		a.UserInput = ""
@@ -509,14 +580,14 @@ func (a *Agent) PromptState(e *am.Event) {
 			if ctx.Err() != nil {
 				return // expired
 			}
-			move := a.moveOrienting.Load()
+			move := a.MoveOrienting.Load()
 			if move == nil {
 				return
 			}
-			a.moveOrienting.Store(nil)
+			a.MoveOrienting.Store(nil)
 
 			// exec the move
-			mach.Add1(ss.OrientingMove, Pass(&A{
+			mach.Add1(ss.OrientingMove, Pass2(&A2{
 				Move: move,
 			}))
 		}()
@@ -525,22 +596,25 @@ func (a *Agent) PromptState(e *am.Event) {
 
 // InputPendingState is a test mocking handler.
 func (a *Agent) InputPendingState(e *am.Event) {
+	mach := a.Mach()
 	if !a.Config.Debug.Mock || !mock.Active {
 		return
 	}
 
-	switch a.Mach().Tick(ss.InputPending) {
-	case 1:
+	errs := mach.Tick(ss.ErrAI)
+
+	switch mach.Tick(ss.InputPending) {
+	case 1 + errs:
 		if p := mock.FlowPromptIngredients; p != "" {
-			a.Mach().EvAdd1(e, ss.Prompt, PassAA(&AA{Prompt: p}))
+			mach.EvAdd1(e, ss.Prompt, Pass3(&A3{Prompt: p}))
 		}
-	case 3:
+	case 3 + errs:
 		if p := mock.FlowPromptRecipe; p != "" {
-			a.Mach().EvAdd1(e, ss.Prompt, PassAA(&AA{Prompt: p}))
+			mach.EvAdd1(e, ss.Prompt, Pass3(&A3{Prompt: p}))
 		}
-	case 5:
+	case 5 + errs:
 		if p := mock.FlowPromptCooking; p != "" {
-			a.Mach().EvAdd1(e, ss.Prompt, PassAA(&AA{Prompt: p}))
+			mach.EvAdd1(e, ss.Prompt, Pass3(&A3{Prompt: p}))
 		}
 	}
 }
@@ -553,7 +627,7 @@ func (a *Agent) DisposedState(e *am.Event) {
 
 // TODO bind
 func (a *Agent) UIReadyEnter(e *am.Event) bool {
-	for _, ui := range a.UIs {
+	for _, ui := range a.tuis {
 		if ui.MachTUI.Not1(ss.Ready) {
 			return false
 		}
@@ -562,19 +636,24 @@ func (a *Agent) UIReadyEnter(e *am.Event) bool {
 	return true
 }
 
+// TODO enter?
+// 		// stop on a DB err
+// 		if mach.WillBe1(ss.ErrDB) {
+// 			return
+// 		}
+
 func (a *Agent) DBStartingState(e *am.Event) {
 	mach := a.Mach()
 	ctx := mach.NewStateCtx(ss.DBStarting)
 
-	// TODO flaky - timeout & redo
-	go func() {
+	mach.Fork(ctx, e, func() {
 		dbFile := filepath.Join(a.Config.Agent.Dir, "cook.sqlite")
 		conn, _, err := db.Open(dbFile)
 		if ctx.Err() != nil {
 			return // expired
 		}
 		if err != nil {
-			mach.EvAddErrState(e, ss.ErrDB, err, nil)
+			secai.AddErrDB(e, mach, err)
 			return
 		}
 		a.dbConn = conn
@@ -583,12 +662,7 @@ func (a *Agent) DBStartingState(e *am.Event) {
 			return // expired
 		}
 		mach.Add1(ss.DBReady, nil)
-	}()
-
-	// stop on a DB err
-	if mach.WillBe1(ss.ErrDB) {
-		return
-	}
+	})
 }
 
 func (a *Agent) StepCompletedState(e *am.Event) {
@@ -643,144 +717,8 @@ func (a *Agent) StepCompletedState(e *am.Event) {
 	// TODO add to the CookingStarted prompt history
 }
 
-func (a *Agent) OrientingState(e *am.Event) {
-	mach := a.Mach()
-	// use multi-state context here on purpose
-	ctx := mach.NewStateCtx(ss.Orienting)
-	tick := mach.Tick(ss.Orienting)
-	llm := a.pOrienting
-	cookSchema := a.Mach().Schema()
-	prompt := ParseArgs(e.Args).Prompt
-
-	// possible moves: all cooking steps, most stories and some states
-
-	// moves from stories
-	movesStories := map[string]string{}
-	for _, name := range mach.StateNames() {
-		state := cookSchema[name]
-
-		isStory := strings.HasPrefix(name, "Story") && name != ss.StoryChanged
-		isTrigger := amhelp.TagValue(state.Tags, sabase.TagTrigger) != ""
-		isManual := amhelp.TagValue(state.Tags, sabase.TagManual) != ""
-		// TODO reflect godoc?
-		desc := ""
-		if s := a.Stories[name]; s != nil && isStory {
-			desc = a.Stories[name].Desc
-		}
-
-		if isTrigger || (isStory && !isManual) {
-			impossible := amhelp.CantAdd1(mach, name, nil)
-			if !impossible {
-				movesStories[name] = desc
-			}
-		}
-	}
-
-	// collect and filter cooking moves
-	movesCooking := a.mem.StateNamesMatch(sa.MatchSteps)
-	movesCooking = slices.DeleteFunc(movesCooking, func(state string) bool {
-		return amhelp.CantAdd1(a.mem, state, nil)
-	})
-
-	// build params
-	params := sa.ParamsOrienting{
-		Prompt:       prompt,
-		MovesCooking: movesCooking,
-		MovesStories: movesStories,
-	}
-
-	// unblock
-	go func() {
-		if ctx.Err() != nil {
-			return // expired
-		}
-		// check tail
-		defer func() {
-			if tick != mach.Tick(ss.Orienting) {
-				return
-			}
-			mach.EvRemove1(e, ss.Orienting, nil)
-		}()
-
-		// run the prompt (checks ctx)
-		resp, err := llm.Exec(e, params)
-		if ctx.Err() != nil {
-			return // expired
-		}
-		if err != nil {
-			mach.EvAddErrState(e, ss.ErrLLM, err, nil)
-			return
-		}
-
-		if resp.Certainty < 0.8 {
-			return
-		}
-		if tick != mach.Tick(ss.Orienting) {
-			return
-		}
-
-		// store
-		a.moveOrienting.Store(resp)
-	}()
-}
-
-func (a *Agent) OrientingMoveEnter(e *am.Event) bool {
-	args := ParseArgs(e.Args)
-	return args.Move != nil
-}
-
-func (a *Agent) OrientingMoveState(e *am.Event) {
-	mach := a.Mach()
-	defer mach.Remove1(ss.OrientingMove, nil)
-	args := ParseArgs(e.Args)
-	move := args.Move
-	resCh := args.Result
-
-	// dispatch the mutation
-	m := move.Move
-	var res am.Result
-	if a.mem.Has1(m) {
-		res = a.mem.Add1(m, nil)
-		if res == am.Canceled {
-			a.Log("2", "move", m)
-		}
-
-	} else if _, ok := a.Stories[m]; ok {
-		res = a.StoryActivate(e, m)
-		if res == am.Canceled {
-			a.Log("story canceled", "move", m)
-		}
-
-	} else if mach.Has1(m) {
-		res = mach.Add1(m, nil)
-		if res == am.Canceled {
-			a.Log("move canceled", "move", m)
-		}
-	}
-
-	// optionally return the result
-	if args.Result == nil || cap(args.Result) < 1 {
-		return
-	}
-
-	// channel back (buf)
-	select {
-	case resCh <- res:
-	default:
-		mach.Log("OrientingMove chan closed")
-	}
-}
-
 func (a *Agent) StepCommentsReadyEnd(e *am.Event) {
 	a.stepComments.Store(nil)
-}
-
-func (a *Agent) CharacterReadyEnd(e *am.Event) {
-	a.character.Store(nil)
-}
-
-func (a *Agent) ResourcesReadyEnd(e *am.Event) {
-	a.resources.Store(nil)
 }
 
 func (a *Agent) JokesReadyEnd(e *am.Event) {
@@ -793,6 +731,66 @@ func (a *Agent) IngredientsReadyEnd(e *am.Event) {
 	a.Mach().EvAddErrState(e, ss.ErrMem, err, nil)
 }
 
+func (a *Agent) ConfigUpdateState(e *am.Event) {
+	mach := a.Mach()
+	ctx := mach.NewStateCtx(ss.ConfigUpdate)
+	mock := mach.Is1(ss.Mock)
+
+	// call super
+	a.AgentLLM.ConfigUpdateState(e)
+
+	// re-check stories
+	mach.EvRemove(e, states.CookGroups.Stories, nil)
+	mach.EvAdd1(e, ss.CheckStories, nil)
+	if mock {
+		mach.EvAdd1(e, ss.Mock, nil)
+	}
+
+	// save config TODO migrate to https://github.com/calico32/kdl-go?
+	cfg := a.Config
+	mach.Fork(ctx, e, func() {
+		data, err := kdl.Marshal(cfg)
+		if err != nil {
+			mach.AddErr(err, nil)
+			return
+		}
+		mach.AddErr(os.WriteFile(cfg.File, data, 0644), nil)
+	})
+}
+
+func (a *Agent) StoryActionEnter(e *am.Event) bool {
+	return ParseArgs(e.Args).ID != ""
+}
+
+func (a *Agent) StoryActionState(e *am.Event) {
+	id := ParseArgs(e.Args).ID
+	var action *shared.Action
+	for _, key := range a.storiesOrder {
+		s := a.stories[key]
+
+		for i := range s.Actions {
+			act := &s.Actions[i]
+			if act.ID == id {
+				action = act
+				break
+			}
+		}
+	}
+
+	// TODO move to Enter
+	if action == nil {
+		a.Mach().EvAddErr(e, fmt.Errorf("action not found: %s", id), nil)
+		return
+	}
+
+	// execute TODO fork?
+	action.Action()
+}
+
+func (a *Agent) UIRenderClockState(e *am.Event) {
+	a.Store().ClockDiff = ParseArgs(e.Args).ClockDiff
+}
+
 // ///// ///// /////
 
 // ///// STORIES
@@ -802,7 +800,7 @@ func (a *Agent) IngredientsReadyEnd(e *am.Event) {
 func (a *Agent) StoryWakingUpState(e *am.Event) {
 	mach := a.Mach()
 	ctx := mach.NewStateCtx(ss.StoryWakingUp)
-	a.preWakeupSum = mach.Time(sa.CookGroups.BootGen).Sum(nil)
+	a.preWakeupSum = mach.Time(states.CookGroups.BootGen).Sum(nil)
 
 	// loop guards
 	a.loop = amhelp.NewStateLoop(mach, ss.Loop, nil)
@@ -812,7 +810,7 @@ func (a *Agent) StoryWakingUpState(e *am.Event) {
 		<-mach.When1(ss.DBReady, ctx)
 
 		a.Output("...", shared.FromAssistant)
-		genStates := sa.CookGroups.BootGen
+		genStates := states.CookGroups.BootGen
 		chans := make([]<-chan struct{}, len(genStates))
 		for i, s := range genStates {
 			chans[i] = mach.WhenTime1(s, 1, ctx)
@@ -830,7 +828,7 @@ func (a *Agent) StoryWakingUpState(e *am.Event) {
 
 func (a *Agent) StoryWakingUpEnd(e *am.Event) {
 	// announce only if waking up took some time (any related Gen* was triggered)
-	postWakeupSum := a.Mach().Time(sa.CookGroups.BootGen).Sum(nil)
+	postWakeupSum := a.Mach().Time(states.CookGroups.BootGen).Sum(nil)
 	if postWakeupSum > a.preWakeupSum {
 		_ = a.OutputPhrase("WokenUp")
 	}
@@ -875,7 +873,7 @@ func (a *Agent) StoryIngredientsPickingState(e *am.Event) {
 				return // expired
 			}
 			if err != nil {
-				mach.EvAddErrState(e, ss.ErrLLM, err, nil)
+				mach.EvAddErrState(e, ss.ErrAI, err, nil)
 				return
 			}
 
@@ -979,7 +977,7 @@ func (a *Agent) StoryRecipePickingState(e *am.Event) {
 				return // expired
 			}
 			if err != nil {
-				mach.EvAddErrState(e, ss.ErrLLM, err, nil)
+				mach.EvAddErrState(e, ss.ErrAI, err, nil)
 				return
 			}
 
@@ -1007,7 +1005,7 @@ func (a *Agent) StoryRecipePickingState(e *am.Event) {
 
 			// dereference the prompt TODO extract
 			retOffer := make(chan *shared.OfferRef)
-			mach.EvAdd1(e, ss.CheckingOfferRefs, PassAA(&AA{
+			mach.EvAdd1(e, ss.CheckingMenuRefs, Pass3(&A3{
 				Prompt:      a.UserInput,
 				RetOfferRef: retOffer,
 				CheckLLM:    true,
@@ -1111,7 +1109,7 @@ func (a *Agent) StoryCookingStartedState(e *am.Event) {
 				return // expired
 			}
 			if err != nil {
-				mach.EvAddErrState(e, ss.ErrLLM, err, nil)
+				mach.EvAddErrState(e, ss.ErrAI, err, nil)
 				return
 			}
 
@@ -1120,12 +1118,12 @@ func (a *Agent) StoryCookingStartedState(e *am.Event) {
 			if ctx.Err() != nil {
 				return // expired
 			}
-			move := a.moveOrienting.Load()
+			move := a.MoveOrienting.Load()
 			if move != nil {
-				a.moveOrienting.Store(nil)
+				a.MoveOrienting.Store(nil)
 				// TODO local prompt
 				// a.Output(move.Answer, shared.FromAssistant)
-				mach.Add1(ss.OrientingMove, Pass(&A{
+				mach.Add1(ss.OrientingMove, Pass2(&A2{
 					Move: move,
 				}))
 			} else if res.Answer != "" {
@@ -1194,28 +1192,25 @@ func (a *Agent) StoryMemoryWipeState(e *am.Event) {
 	var err error
 
 	// unblock
-	go func() {
+	mach.Fork(ctx, e, func() {
 		defer a.StoryDeactivate(e, ss.StoryMemoryWipe)
 
 		// unset DB
-		err = a.Queries().DeleteAllCharacter(ctx)
-		mach.EvAddErrState(e, ss.ErrDB, err, nil)
+		a.AgentLLM.MemoryWipe(ctx, e)
 		err = a.Queries().DeleteAllIngredients(ctx)
 		mach.EvAddErrState(e, ss.ErrDB, err, nil)
 		err = a.Queries().DeleteAllJokes(ctx)
 		mach.EvAddErrState(e, ss.ErrDB, err, nil)
-		err = a.Queries().DeleteAllResources(ctx)
-		mach.EvAddErrState(e, ss.ErrDB, err, nil)
 
 		// unset mem and boot again
 		mach.EvRemove(e, SAdd(
-			sa.CookGroups.BootGenReady,
+			states.CookGroups.BootGenReady,
 			S{ss.StepsReady, ss.StepCommentsReady, ss.RecipeReady, ss.IngredientsReady},
 			// TODO tmp fix for no stories unsetting
-			am.SRem(sa.CookGroups.Stories, S{ss.StoryMemoryWipe}),
+			am.SRem(states.CookGroups.Stories, S{ss.StoryMemoryWipe}),
 		), nil)
 		mach.EvAdd1(e, ss.UICleanOutput, nil)
-	}()
+	})
 }
 
 func (a *Agent) StoryStartAgainState(e *am.Event) {

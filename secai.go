@@ -1,14 +1,19 @@
 package secai
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,31 +24,37 @@ import (
 	instrc "github.com/567-labs/instructor-go/pkg/instructor/core"
 	instrg "github.com/567-labs/instructor-go/pkg/instructor/providers/google"
 	instroai "github.com/567-labs/instructor-go/pkg/instructor/providers/openai"
-	"github.com/google/uuid"
+
+	"github.com/gookit/goutil/dump"
 	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
 	amhist "github.com/pancsta/asyncmachine-go/pkg/history"
-	amhistbb "github.com/pancsta/asyncmachine-go/pkg/history/bbolt"
 	amhistg "github.com/pancsta/asyncmachine-go/pkg/history/gorm"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
 	arpc "github.com/pancsta/asyncmachine-go/pkg/rpc"
 	ssam "github.com/pancsta/asyncmachine-go/pkg/states"
-	"github.com/pancsta/asyncmachine-go/pkg/states/pipes"
+	ampipe "github.com/pancsta/asyncmachine-go/pkg/states/pipes"
+	"github.com/pancsta/asyncmachine-go/pkg/telemetry/dbg"
+	"github.com/pancsta/asyncmachine-go/tools/debugger"
+	"github.com/pancsta/asyncmachine-go/tools/debugger/server"
+	ssdbg "github.com/pancsta/asyncmachine-go/tools/debugger/states"
+	typesdbg "github.com/pancsta/asyncmachine-go/tools/debugger/types"
 	"github.com/sashabaranov/go-openai"
 	"google.golang.org/genai"
 	"gopkg.in/natefinch/lumberjack.v2"
+	"gopkg.in/yaml.v3"
 
 	"github.com/pancsta/secai/db"
 	"github.com/pancsta/secai/db/sqlc"
-	"github.com/pancsta/secai/schema"
 	"github.com/pancsta/secai/shared"
+	"github.com/pancsta/secai/states"
 )
 
 type S = am.S
 type A = shared.A
 
-var ss = schema.AgentBaseStates
-var sessId = uuid.New().String()
+var ss = states.AgentBaseStates
 var Pass = shared.Pass
+var PassRpc = shared.PassRPC
 var ParseArgs = shared.ParseArgs
 
 // ///// ///// /////
@@ -110,16 +121,6 @@ type PromptMsg struct {
 	Content string
 }
 
-type OpenAIClient struct {
-	Cfg *shared.ConfigAIOpenAI
-	C   *instr.InstructorOpenAI
-}
-
-type GeminiClient struct {
-	Cfg *shared.ConfigAIGemini
-	C   *instr.InstructorGoogle
-}
-
 type PromptApi interface {
 	AddTool(tool ToolApi)
 	AddDoc(doc *Document)
@@ -138,7 +139,7 @@ type Prompt[P any, R any] struct {
 	SchemaParams P
 	SchemaResult R
 	State        string
-	A            AgentAPI
+	A            shared.AgentBaseAPI
 	// number of previous messages to include
 	HistoryMsgLen int
 	Msgs          []*PromptMsg
@@ -147,7 +148,7 @@ type Prompt[P any, R any] struct {
 	docs  map[string]*Document
 }
 
-func NewPrompt[P any, R any](agent AgentAPI, state, condition, steps, results string) *Prompt[P, R] {
+func NewPrompt[P any, R any](agent shared.AgentBaseAPI, state, condition, steps, results string) *Prompt[P, R] {
 	if condition == "" {
 		condition = "This is a conversation with a helpful and friendly AI assistant."
 	}
@@ -175,10 +176,15 @@ func (p *Prompt[P, R]) Exec(e *am.Event, params P) (*R, error) {
 	mach := p.A.Mach()
 	ctx := mach.NewStateCtx(p.State)
 	cfg := p.A.ConfigBase()
-	// TODO nest under dir/prompts
 	outDir := cfg.Agent.Dir
-	mach.EvAdd1(e, ss.RequestingLLM, nil)
-	defer mach.EvRemove1(e, ss.RequestingLLM, nil)
+	err := os.MkdirAll(filepath.Join(outDir, "prompts"), 0755)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create output dir: %w", err)
+	}
+
+	// metrics
+	mach.EvAdd1(e, ss.RequestingAI, nil)
+	defer mach.EvAdd1(e, ss.RequestedAI, nil)
 
 	// AI provider
 	// TODO metric state per provider
@@ -186,8 +192,8 @@ func (p *Prompt[P, R]) Exec(e *am.Event, params P) (*R, error) {
 		// TODO enum
 		provider string
 		model    string
-		gemini   *GeminiClient
-		openAI   *OpenAIClient
+		gemini   *shared.GeminiClient
+		openAI   *shared.OpenAIClient
 	)
 	if ais := p.A.OpenAI(); len(ais) > 0 {
 		openAI = ais[0]
@@ -221,13 +227,13 @@ func (p *Prompt[P, R]) Exec(e *am.Event, params P) (*R, error) {
 	p.A.Log(p.State, "prompt", params)
 	if outDir != "" {
 		// save sys msg to output dir under "statename.sys.md"
-		filename := filepath.Join(outDir, p.A.Mach().Id()+"-"+p.State+".sys.md")
+		filename := filepath.Join(outDir, "prompts", p.State+".sys.md")
 		if err := os.WriteFile(filename, []byte(sys), 0644); err != nil {
 			return nil, fmt.Errorf("failed to write prompt file: %w", err)
 		}
 
 		// save the prompt to output dir under "statename.prompt.json"
-		filename = filepath.Join(outDir, p.A.Mach().Id()+"-"+p.State+".prompt.json")
+		filename = filepath.Join(outDir, "prompts", p.State+".prompt.json")
 		if err := os.WriteFile(filename, prompt, 0644); err != nil {
 			return nil, fmt.Errorf("failed to write prompt file: %w", err)
 		}
@@ -236,7 +242,7 @@ func (p *Prompt[P, R]) Exec(e *am.Event, params P) (*R, error) {
 	// call the LLM and fill the result (according to the schema)
 	var result R
 	var resultJ []byte
-	var errLLM error
+	var errAI error
 
 	if openAI != nil {
 		req := openai.ChatCompletionRequest{
@@ -244,8 +250,8 @@ func (p *Prompt[P, R]) Exec(e *am.Event, params P) (*R, error) {
 			Messages: instroai.ConversationToMessages(conv),
 		}
 		// TODO collect usage tokens, save in DB
-		_, errLLM = openAI.C.CreateChatCompletion(ctx, req, &result)
-		if errLLM == nil {
+		_, errAI = openAI.C.CreateChatCompletion(ctx, req, &result)
+		if errAI == nil {
 			resultJ, err = json.MarshalIndent(result, "", "	")
 			if err != nil {
 				return nil, fmt.Errorf("failed to marshal result: %w", err)
@@ -256,8 +262,8 @@ func (p *Prompt[P, R]) Exec(e *am.Event, params P) (*R, error) {
 			Model:    gemini.Cfg.Model,
 			Contents: instrg.ConversationToContents(conv),
 		}
-		_, errLLM = gemini.C.CreateChatCompletion(ctx, req, &result)
-		if errLLM == nil {
+		_, errAI = gemini.C.CreateChatCompletion(ctx, req, &result)
+		if errAI == nil {
 			resultJ, err = json.MarshalIndent(result, "", "	")
 			if err != nil {
 				return nil, fmt.Errorf("failed to marshal result: %w", err)
@@ -302,14 +308,14 @@ func (p *Prompt[P, R]) Exec(e *am.Event, params P) (*R, error) {
 	mach.EvAdd1(e, ss.BaseDBSaving, Pass(args))
 
 	// handle the LLM err
-	if errLLM != nil {
+	if errAI != nil {
 		data := []any{"provider", provider, "model", model}
 		if openAI != nil {
 			data = append(data, "url", openAI.Cfg.URL)
 		}
-		p.A.Err("llm_req", errLLM, data...)
+		p.A.LogErr("ai_req", errAI, data...)
 		// TODO handle context cancelled
-		return nil, fmt.Errorf("llm_%s: %w", provider, errLLM)
+		return nil, fmt.Errorf("ai_%s_%s: %w", provider, model, errAI)
 	}
 
 	p.A.Logger().Info(p.State, "result", result)
@@ -325,11 +331,14 @@ func (p *Prompt[P, R]) Exec(e *am.Event, params P) (*R, error) {
 		})
 	}
 	if outDir != "" {
-		filename := filepath.Join(outDir, p.A.Mach().Id()+"-"+p.State+".resp.json")
+		filename := filepath.Join(outDir, "prompts", p.State+".resp.json")
 		if err := os.WriteFile(filename, resultJ, 0644); err != nil {
 			return nil, fmt.Errorf("failed to write prompt file: %w", err)
 		}
 	}
+
+	// confirm config OK TODO handle better
+	p.A.Mach().EvAdd1(e, ss.ConfigValid, nil)
 
 	return &result, nil
 }
@@ -422,39 +431,6 @@ func (p *Prompt[P, R]) HistClean() {
 
 // ///// ///// /////
 
-// AgentInit is an init func for extendable agents (non-top level ones).
-type AgentInit interface {
-	Init(
-		agentImpl AgentAPI, cfg *shared.Config, logArgs am.LogArgsMapperFn, groups any, states am.States, args any,
-	) error
-}
-
-// AgentAPI is the top-level public API for all agents to implement.
-type AgentAPI interface {
-	Output(txt string, from shared.From) am.Result
-
-	Mach() *am.Machine
-	Hist() (amhist.MemoryApi, error)
-	HistMem() *amhist.Memory
-	HistSQLite() *amhistg.Memory
-	HistBBolt() *amhistbb.Memory
-
-	ConfigBase() *shared.Config
-	OpenAI() []*OpenAIClient
-	Gemini() []*GeminiClient
-
-	Start() am.Result
-	Stop(disposeCtx context.Context) am.Result
-	Log(msg string, args ...any)
-	Err(msg string, err error, args ...any)
-	Logger() *slog.Logger
-
-	QueriesBase() *sqlc.Queries
-	HistoryStates() am.S
-}
-
-// BASE AGENT
-
 type AgentBase struct {
 	*am.ExceptionHandler
 	*ssam.DisposedHandlers
@@ -464,49 +440,44 @@ type AgentBase struct {
 	// OfferList is a list of choices for the user.
 	// TODO atomic?
 	OfferList []string
-	// Messages
-	Msgs []*shared.Msg
+	DbConn    *sql.DB
 
-	logger              *slog.Logger
-	cfg                 *shared.Config
-	mach                *am.Machine
-	histMem             *amhist.Memory
-	histSQLite          *amhistg.Memory
-	histBBolt           *amhistbb.Memory
-	prompts             map[string]PromptApi
-	openAI              []*OpenAIClient
-	gemini              []*GeminiClient
-	openAIHistory       []openai.Message
-	maxRetries          int
-	dbConn              *sql.DB
-	dbQueries           *sqlc.Queries
-	dbPending           []func(ctx context.Context) error
-	requestingLLMEnter  int
-	requestingLLMExit   int
-	requestingToolEnter int
-	requestingToolExit  int
-	states              am.S
-	machSchema          am.Schema
-	ctx                 context.Context
-	id                  string
+	agentImpl     shared.AgentAPI
+	logger        *slog.Logger
+	cfg           *shared.Config
+	mach          *am.Machine
+	histMem       *amhist.Memory
+	histSQLite    *amhistg.Memory
+	openAI        []*shared.OpenAIClient
+	gemini        []*shared.GeminiClient
+	openAIHistory []openai.Message
+	maxRetries    int
+	dbQueries     *sqlc.Queries
+	dbPending     []func(ctx context.Context) error
+	states        am.S
+	machSchema    am.Schema
+	ctx           context.Context
+	id            string
 	// loggerMach is a bridge between slog and machine log
 	loggerMach *slog.Logger
-	agentImpl  AgentAPI
-	args       any
+	store      *shared.AgentStore
+	dbg        *debugger.Debugger
+	dbHist     *sql.DB
+	dumper     *dump.Dumper
 }
 
-var _ AgentAPI = &AgentBase{}
-var _ AgentInit = &AgentBase{}
+var _ shared.AgentBaseAPI = &AgentBase{}
+var _ shared.AgentInit = &AgentBase{}
 
-func NewAgent(
-	ctx context.Context, states am.S, machSchema am.Schema,
-) *AgentBase {
-
+func NewAgent(ctx context.Context, states am.S, machSchema am.Schema) *AgentBase {
 	a := &AgentBase{
 		DisposedHandlers: &ssam.DisposedHandlers{},
 		states:           states,
 		machSchema:       machSchema,
 		ctx:              ctx,
+		store: &shared.AgentStore{
+			M: make(map[string]any),
+		},
 	}
 
 	return a
@@ -514,13 +485,12 @@ func NewAgent(
 
 // METHODS
 
-// Init initializes the AgentLLM and returns an error. It does not block.
 func (a *AgentBase) Init(
-	agentImpl AgentAPI, cfg *shared.Config, logArgs am.LogArgsMapperFn, groups any, states am.States, args any,
+	agentImpl shared.AgentAPI, cfg *shared.Config, logArgs am.LogArgsMapperFn, groups any, states am.States, args any,
 ) error {
 
 	// validate states schema
-	if err := amhelp.Implements(a.states, schema.AgentBaseStates.Names()); err != nil {
+	if err := amhelp.Implements(a.states, ss.Names()); err != nil {
 		return fmt.Errorf("AgentBaseStates not implemented: %w", err)
 	}
 	a.agentImpl = agentImpl
@@ -532,10 +502,7 @@ func (a *AgentBase) Init(
 	}
 
 	// logger
-	logFile := filepath.Join(cfg.Agent.Dir, cfg.Agent.ID+".jsonl")
-	if v := cfg.Agent.Log.File; v != "" {
-		logFile = v
-	}
+	logFile := shared.ConfigLogPath(cfg.Agent)
 	rotator := &lumberjack.Logger{
 		Filename:   logFile,
 		MaxSize:    10,
@@ -548,6 +515,20 @@ func (a *AgentBase) Init(
 		Level: slog.LevelInfo,
 	}))
 
+	// redir legacy logger (eg gotty)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	log.SetOutput(io.Discard)
+	if cfg.Debug.Verbose {
+		log.SetOutput(&SlogWriter{
+			Logger: a.logger,
+			Level:  slog.LevelInfo,
+		})
+	}
+
+	// embedded am-dbg TODO ctx?
+	err := a.startAmDbg()
+
 	// machine
 	mach, err := am.NewCommon(a.ctx, cfg.Agent.ID, a.machSchema, a.states, agentImpl, nil, nil)
 	if err != nil {
@@ -558,9 +539,9 @@ func (a *AgentBase) Init(
 	shared.MachTelemetry(mach, logArgs)
 	if cfg.Debug.REPL {
 		opts := arpc.ReplOpts{
-			ArgsPrefix: cfg.Agent.ID,
-			AddrDir:    cfg.Agent.Dir,
-			Args:       args,
+			AddrDir:  cfg.Agent.Dir,
+			Args:     args,
+			ParseRpc: shared.ParseRpc,
 		}
 		if err := arpc.MachRepl(mach, "", &opts); err != nil {
 			return err
@@ -568,6 +549,13 @@ func (a *AgentBase) Init(
 	}
 	a.loggerMach = slog.New(slog.NewTextHandler(
 		amhelp.SlogToMachLog{Mach: mach}, amhelp.SlogToMachLogOpts))
+
+	// pprof
+	if cfg.Debug.ProfilerAddr != "" {
+		go func() {
+			http.ListenAndServe(cfg.Debug.ProfilerAddr, nil)
+		}()
+	}
 
 	// AI clients
 	if err := a.initAI(); err != nil {
@@ -579,85 +567,14 @@ func (a *AgentBase) Init(
 	return nil
 }
 
-func (a *AgentBase) buildConfig() error {
-	for i, item := range a.cfg.AI.OpenAI {
-		baseDefault := shared.ConfigDefaultOpenAI()
-		if err := mergo.Merge(&baseDefault, item, mergo.WithOverride); err != nil {
-			return err
-		}
-		a.cfg.AI.OpenAI[i] = baseDefault
-	}
-	for i, item := range a.cfg.AI.Gemini {
-		baseDefault := shared.ConfigDefaultGemini()
-		if err := mergo.Merge(&baseDefault, item, mergo.WithOverride); err != nil {
-			return err
-		}
-		a.cfg.AI.Gemini[i] = baseDefault
-	}
-
-	return nil
-}
-
-func (a *AgentBase) initAI() error {
-	// TODO expose as states
-
-	// open ai
-	for i := range a.cfg.AI.OpenAI {
-		item := &a.cfg.AI.OpenAI[i]
-		if item.Disabled {
-			continue
-		}
-
-		config := openai.DefaultConfig(item.Key)
-		if item.URL != "" {
-			a.Log("using OpenAI", "base", item.URL)
-			config.BaseURL = item.URL
-		}
-		a.openAI = append(a.openAI, &OpenAIClient{
-			Cfg: item,
-			C: instr.FromOpenAI(
-				openai.NewClientWithConfig(config),
-				instr.WithMode(instr.ModeJSONSchema),
-				instr.WithMaxRetries(item.Retries),
-			),
-		})
-	}
-
-	// gemini
-	for i := range a.cfg.AI.Gemini {
-		item := &a.cfg.AI.Gemini[i]
-		if item.Disabled {
-			continue
-		}
-
-		client, err := genai.NewClient(a.ctx, &genai.ClientConfig{
-			// TODO enforce schema?
-			APIKey: item.Key,
-		})
-		if err != nil {
-			return err
-		}
-		a.gemini = append(a.gemini, &GeminiClient{
-			Cfg: item,
-			C: instr.FromGoogle(client,
-				instr.WithMode(instr.ModeJSONSchema),
-				// TODO config
-				instr.WithMaxRetries(item.Retries),
-			),
-		})
-	}
-
-	return nil
-}
-
-func (a *AgentBase) db() *sql.DB {
-	return a.dbConn
+func (a *AgentBase) AgentImpl() shared.AgentAPI {
+	return a.agentImpl
 }
 
 // Output is a sugar for adding a [schema.AgentBaseStatesDef.Msg] mutation.
 func (a *AgentBase) Output(txt string, from shared.From) am.Result {
 	// TODO check last msg and avoid dups
-	return a.Mach().Add1(ss.Msg, Pass(&A{
+	return a.Mach().Add1(ss.UIMsg, PassRpc(&A{
 		Msg: shared.NewMsg(txt, from),
 	}))
 }
@@ -670,11 +587,11 @@ func (a *AgentBase) SetMach(m *am.Machine) {
 	a.mach = m
 }
 
-func (a *AgentBase) OpenAI() []*OpenAIClient {
+func (a *AgentBase) OpenAI() []*shared.OpenAIClient {
 	return a.openAI
 }
 
-func (a *AgentBase) Gemini() []*GeminiClient {
+func (a *AgentBase) Gemini() []*shared.GeminiClient {
 	return a.gemini
 }
 
@@ -693,18 +610,20 @@ func (a *AgentBase) Stop(disposeCtx context.Context) am.Result {
 	return res
 }
 
-// Log will push a log entry to Logger as Info() and optionally the machine log with SECAI_LOG_AM.
-// Log accepts the same convention of arguments as [slog.Info].
+// Log is an slog logger. It can optionally pipe log entries into the machine log.
 func (a *AgentBase) Log(txt string, args ...any) {
 	// log into the machine logger TODO config
-	if a.cfg.Agent.Log.Machine {
+	if a.cfg.Agent.Log.MachFwd {
 		a.loggerMach.Info(txt, args...)
 	}
 	a.logger.Info(txt, args...)
 }
 
-func (a *AgentBase) Err(msg string, err error, args ...any) {
+func (a *AgentBase) LogErr(msg string, err error, args ...any) {
 	args = append([]any{"err", err}, args...)
+	if a.cfg.Agent.Log.MachFwd {
+		a.loggerMach.Error(msg, args...)
+	}
 	a.logger.Error(msg, args...)
 }
 
@@ -714,7 +633,7 @@ func (a *AgentBase) Logger() *slog.Logger {
 
 func (a *AgentBase) QueriesBase() *sqlc.Queries {
 	if a.dbQueries == nil {
-		a.dbQueries = sqlc.New(a.dbConn)
+		a.dbQueries = sqlc.New(a.DbConn)
 	}
 
 	return a.dbQueries
@@ -738,11 +657,6 @@ func (a *AgentBase) Hist() (amhist.MemoryApi, error) {
 			return nil, ErrHistNil
 		}
 		return a.histSQLite, nil
-	case amhist.BackendBbolt:
-		if a.histBBolt == nil {
-			return nil, ErrHistNil
-		}
-		return a.histBBolt, nil
 	default:
 		if a.histMem == nil {
 			return nil, ErrHistNil
@@ -763,15 +677,100 @@ func (a *AgentBase) HistSQLite() *amhistg.Memory {
 	return a.histSQLite
 }
 
-func (a *AgentBase) HistBBolt() *amhistbb.Memory {
-	return a.histBBolt
+// func (a *AgentBase) HistBBolt() *amhistbb.Memory {
+// 	return a.histBBolt
+// }
+
+func (a *AgentBase) Store() *shared.AgentStore {
+	return a.store
 }
 
-func (a *AgentBase) HistoryStates() am.S {
-	panic("implement in subclass")
+func (a *AgentBase) DBBase() *sql.DB {
+	return a.DbConn
 }
+
+func (a *AgentBase) DBG() *debugger.Debugger {
+	return a.dbg
+}
+
+func (a *AgentBase) DBHistory() *sql.DB {
+	return a.dbHist
+}
+
+func (a *AgentBase) StoryActivate(e *am.Event, story string) am.Result {
+	mach := a.Mach()
+
+	// TODO check the story group for [story] and return am.Canceled
+
+	return mach.EvAdd(e, S{ss.StoryChanged, ss.CheckStories}, Pass(&A{
+		StatesList:   S{story},
+		ActivateList: []bool{true},
+	}))
+}
+
+func (a *AgentBase) StoryDeactivate(e *am.Event, story string) am.Result {
+	mach := a.Mach()
+
+	// TODO check the story group for [story] and return am.Canceled
+
+	return mach.EvAdd(e, S{ss.StoryChanged, ss.CheckStories}, Pass(&A{
+		StatesList:   S{story},
+		ActivateList: []bool{false},
+	}))
+}
+
+// TODO enc enum
+func (a *AgentBase) ValFile(ctx context.Context, name string, val any, enc string) {
+	if !a.cfg.Debug.ValFiles {
+		return
+	}
+	if a.dumper == nil {
+		a.dumper = dump.NewWithOptions(dump.WithoutColor())
+	}
+	if ctx == nil {
+		ctx = a.ctx
+	}
+
+	var (
+		data   []byte
+		err    error
+		suffix string
+	)
+	switch enc {
+	case "yaml":
+		suffix = ".yaml"
+		data, err = yaml.Marshal(val)
+	case "dump":
+		suffix = ".txt"
+		var buf bytes.Buffer
+		a.dumper.Fprint(&buf, val)
+		data = buf.Bytes()
+	default:
+		suffix = ".json"
+		data, err = json.MarshalIndent(val, "", "  ")
+	}
+	if err != nil {
+		a.LogErr("dbg_file", err)
+		return
+	}
+
+	dir := filepath.Join(a.cfg.Agent.Dir, "vals")
+	_ = os.MkdirAll(dir, 0755)
+	file := filepath.Join(dir, name+suffix)
+
+	a.Mach().Go(ctx, func() {
+		err = os.WriteFile(file, data, 0644)
+		if err != nil {
+			a.LogErr("dbg_file", err)
+		}
+	})
+}
+
+//
 
 // HANDLERS
+
+//
 
 func (a *AgentBase) StartEnter(e *am.Event) bool {
 	// TODO err msg
@@ -781,14 +780,25 @@ func (a *AgentBase) StartEnter(e *am.Event) bool {
 func (a *AgentBase) StartState(e *am.Event) {
 	err := os.MkdirAll(a.cfg.Agent.Dir, 0755)
 	a.Mach().EvAddErr(e, err, nil)
+
+	// debug states
+	if a.dbg != nil {
+		a.mach.EvAdd1(e, ss.Debugger, nil)
+	}
+	if a.cfg.Debug.REPL {
+		a.mach.EvAdd1(e, ss.REPL, nil)
+	}
+}
+
+func (a *AgentBase) ExceptionState(e *am.Event) {
+	a.LogErr("exception", am.ParseArgs(e.Args).Err)
 }
 
 func (a *AgentBase) HistoryDBStartingState(e *am.Event) {
 	mach := a.Mach()
 	ctx := mach.NewStateCtx(ss.HistoryDBStarting)
 
-	// fork
-	go func() {
+	mach.Fork(ctx, e, func() {
 		if ctx.Err() != nil {
 			return // expired
 		}
@@ -807,7 +817,7 @@ func (a *AgentBase) HistoryDBStartingState(e *am.Event) {
 		// init
 		var err error
 		onErr := func(err error) {
-			mach.AddErr(err, nil)
+			AddErrDB(e, mach, err)
 		}
 		file := filepath.Join(a.cfg.Agent.Dir, "machine")
 		backend := amhist.BackendEnum.Parse(c.Backend)
@@ -818,8 +828,12 @@ func (a *AgentBase) HistoryDBStartingState(e *am.Event) {
 
 		case amhist.BackendSqlite:
 			cfgSQL := amhistg.Config{BaseConfig: histConfig}
-			db, _, err := amhistg.NewDb(file, a.cfg.Debug.Misc)
+			db, _, err := amhistg.NewDb(file, a.cfg.Debug.Verbose)
 			if err != nil {
+				mach.AddErr(err, nil)
+				return
+			}
+			if a.dbHist, err = db.DB(); err != nil {
 				mach.AddErr(err, nil)
 				return
 			}
@@ -830,17 +844,18 @@ func (a *AgentBase) HistoryDBStartingState(e *am.Event) {
 			}
 
 		case amhist.BackendBbolt:
-			cfgBB := amhistbb.Config{BaseConfig: histConfig}
-			db, err := amhistbb.NewDb(file)
-			if err != nil {
-				mach.AddErr(err, nil)
-				return
-			}
-			a.histBBolt, err = amhistbb.NewMemory(a.ctx, db, mach, cfgBB, onErr)
-			if err != nil {
-				mach.AddErr(err, nil)
-				return
-			}
+			// TODO fix WASM
+			// cfgBB := amhistbb.Config{BaseConfig: histConfig}
+			// db, err := amhistbb.NewDb(file)
+			// if err != nil {
+			// 	mach.AddErr(err, nil)
+			// 	return
+			// }
+			// a.histBBolt, err = amhistbb.NewMemory(a.ctx, db, mach, cfgBB, onErr)
+			// if err != nil {
+			// 	mach.AddErr(err, nil)
+			// 	return
+			// }
 
 		default:
 			a.histMem, err = amhist.NewMemory(a.ctx, nil, mach, histConfig, onErr)
@@ -852,7 +867,7 @@ func (a *AgentBase) HistoryDBStartingState(e *am.Event) {
 
 		// next
 		a.Mach().Add1(ss.HistoryDBReady, nil)
-	}()
+	})
 }
 
 func (a *AgentBase) HistoryDBReadyEnd(e *am.Event) {
@@ -878,10 +893,10 @@ func (a *AgentBase) BaseDBStartingState(e *am.Event) {
 			return // expired
 		}
 		if err != nil {
-			a.Mach().EvAddErrState(e, ss.ErrDB, err, nil)
+			AddErrDB(e, a.mach, err)
 			return
 		}
-		a.dbConn = conn
+		a.DbConn = conn
 
 		// truncate
 		// TODO DEBUG
@@ -896,7 +911,7 @@ func (a *AgentBase) BaseDBStartingState(e *am.Event) {
 				return // expired
 			}
 			if err := fn(ctx); err != nil {
-				a.Mach().EvAddErrState(e, ss.ErrDB, err, nil)
+				AddErrDB(e, a.mach, err)
 				return
 			}
 		}
@@ -926,7 +941,7 @@ func (a *AgentBase) BaseDBStartingState(e *am.Event) {
 }
 
 func (a *AgentBase) BaseDBReadyEnd(e *am.Event) {
-	err := a.dbConn.Close()
+	err := a.DbConn.Close()
 	if err != nil {
 		a.Mach().AddErr(err, nil)
 	}
@@ -949,53 +964,38 @@ func (a *AgentBase) BaseDBSavingState(e *am.Event) {
 	// save
 	ctx := a.Mach().NewStateCtx(ss.BaseDBReady)
 	tick := a.Mach().Tick(ss.BaseDBSaving)
-	go func() {
-		if ctx.Err() != nil {
-			return // expired
-		}
+	a.Mach().Go(ctx, func() {
 		if err := fn(ctx); err != nil {
-			a.Mach().AddErr(err, nil)
+			AddErrDB(e, a.mach, err)
 		}
 
 		// the last one deactivates
 		if tick == a.Mach().Tick(ss.BaseDBSaving) {
 			a.Mach().Remove1(ss.BaseDBSaving, nil)
 		}
-	}()
+	})
 }
 
-// TODO generalize these type of handlers in pkg/x/helpers as counted-multi
-
-func (a *AgentBase) RequestingLLMEnter(e *am.Event) bool {
-	a.requestingLLMEnter++
-	return true
+func (a *AgentBase) RequestingAIState(e *am.Event) {
+	a.Mach().EvAdd1(e, ss.Requesting, nil)
 }
 
-func (a *AgentBase) RequestingLLMExit(e *am.Event) bool {
-	a.requestingLLMExit++
-	return a.requestingLLMEnter == a.requestingLLMExit
+func (a *AgentBase) RequestedAIState(e *am.Event) {
+	a.Mach().EvRemove1(e, ss.Requesting, nil)
 }
 
-func (a *AgentBase) RequestingLLMEnd(e *am.Event) {
-	a.Mach().Remove1(ss.Requesting, nil)
+func (a *AgentBase) RequestingToolState(e *am.Event) {
+	a.Mach().EvAdd1(e, ss.Requesting, nil)
 }
 
-func (a *AgentBase) RequestingToolEnter(e *am.Event) bool {
-	a.requestingToolEnter++
-	return true
-}
-
-func (a *AgentBase) RequestingToolExit(e *am.Event) bool {
-	a.requestingToolExit++
-	return a.requestingToolEnter == a.requestingToolExit
-}
-
-func (a *AgentBase) RequestingToolEnd(e *am.Event) {
-	a.Mach().Remove1(ss.Requesting, nil)
+func (a *AgentBase) RequestedToolState(e *am.Event) {
+	a.Mach().EvRemove1(e, ss.Requesting, nil)
 }
 
 func (a *AgentBase) RequestingExit(e *am.Event) bool {
-	return !a.Mach().Any1(ss.RequestingLLM, ss.RequestingTool)
+	m := a.Mach()
+	return m.Tick(ss.RequestingAI) == m.Tick(ss.RequestedAI) &&
+		m.Not1(ss.RequestingTool) && m.Not1(ss.RequestedTool)
 }
 
 func (a *AgentBase) PromptEnter(e *am.Event) bool {
@@ -1011,7 +1011,7 @@ func (a *AgentBase) PromptEnd(e *am.Event) {
 	a.UserInput = ""
 }
 
-func (a *AgentBase) MsgEnter(e *am.Event) bool {
+func (a *AgentBase) UIMsgEnter(e *am.Event) bool {
 	args := ParseArgs(e.Args)
 	return args.Msg != nil
 }
@@ -1032,14 +1032,33 @@ func (a *AgentBase) ResumeState(e *am.Event) {
 	a.Output("Resumed by the user", shared.FromSystem)
 }
 
-// PROMPTS
+func (a *AgentBase) ConfigUpdateEnter(e *am.Event) bool {
+	return ParseArgs(e.Args).ConfigAI != nil
+}
 
-func (a *AgentBase) CheckingOfferRefsEnter(e *am.Event) bool {
+func (a *AgentBase) ConfigUpdateState(e *am.Event) {
+	a.Mach().EvRemove1(e, ss.ConfigUpdate, nil)
+	cfg := ParseArgs(e.Args).ConfigAI
+	// TODO support >1 backend
+	if cfg.OpenAI != nil {
+		a.cfg.AI.OpenAI = slices.Concat(a.cfg.AI.OpenAI, cfg.OpenAI)
+	}
+	if cfg.Gemini != nil {
+		a.cfg.AI.Gemini = slices.Concat(a.cfg.AI.Gemini, cfg.Gemini)
+	}
+	AddErrAI(e, a.mach, a.initAI())
+
+	// restart related states
+	a.mach.EvRemove(e, am.S{ss.ErrAI, ss.Exception, ss.InputPending, ss.Mock}, nil)
+	a.mach.EvAdd1(e, ss.UICleanOutput, nil)
+}
+
+func (a *AgentBase) CheckingMenuRefsEnter(e *am.Event) bool {
 	args := shared.ParseArgs(e.Args)
 	return len(a.OfferList) > 0 && len(args.Prompt) > 0 && args.RetOfferRef != nil
 }
 
-func (a *AgentBase) CheckingOfferRefsState(e *am.Event) {
+func (a *AgentBase) CheckingMenuRefsState(e *am.Event) {
 	args := shared.ParseArgs(e.Args)
 	ret := args.RetOfferRef
 
@@ -1054,6 +1073,204 @@ func (a *AgentBase) CheckingOfferRefsState(e *am.Event) {
 
 	// TODO support LLM checks for longer msgs
 	ret <- nil
+}
+
+//
+
+// PRIVATE
+
+//
+
+func (a *AgentBase) initAI() error {
+	// TODO expose as states
+
+	// open ai
+	for i := range a.cfg.AI.OpenAI {
+		item := &a.cfg.AI.OpenAI[i]
+		if item.Disabled || item.Key == "" {
+			continue
+		}
+
+		if item.Model == "" {
+			item.Model = shared.ConfigDefaultOpenAI().Model
+		}
+
+		config := openai.DefaultConfig(item.Key)
+		if item.URL != "" {
+			a.Log("using OpenAI", "base", item.URL)
+			config.BaseURL = item.URL
+		}
+		a.openAI = append(a.openAI, &shared.OpenAIClient{
+			Cfg: item,
+			C: instr.FromOpenAI(
+				openai.NewClientWithConfig(config),
+				instr.WithMode(instr.ModeJSONSchema),
+				instr.WithMaxRetries(item.Retries),
+			),
+		})
+	}
+
+	// gemini
+	for i := range a.cfg.AI.Gemini {
+		item := &a.cfg.AI.Gemini[i]
+		if item.Disabled || item.Key == "" {
+			continue
+		}
+
+		client, err := genai.NewClient(a.ctx, &genai.ClientConfig{
+			// TODO enforce schema?
+			APIKey: item.Key,
+		})
+		if err != nil {
+			return err
+		}
+		a.gemini = append(a.gemini, &shared.GeminiClient{
+			Cfg: item,
+			C: instr.FromGoogle(client,
+				instr.WithMode(instr.ModeJSONSchema),
+				// TODO config
+				instr.WithMaxRetries(item.Retries),
+			),
+		})
+	}
+
+	return nil
+}
+
+func (a *AgentBase) db() *sql.DB {
+	return a.DbConn
+}
+
+func (a *AgentBase) buildConfig() error {
+	// set env
+	os.Setenv(am.EnvAmLog, a.cfg.Agent.Log.MachLevel.Level())
+	if a.cfg.Debug.DBGAddr != "" {
+		os.Setenv(dbg.EnvAmDbgAddr, a.cfg.Debug.DBGAddr)
+		os.Setenv(amhelp.EnvAmLogFull, "1")
+	}
+
+	if a.cfg.Agent.Log.MachPrint {
+		os.Setenv(amhelp.EnvAmLogPrint, "1")
+	}
+
+	// slice defaults
+	for i, item := range a.cfg.AI.OpenAI {
+		baseDefault := shared.ConfigDefaultOpenAI()
+		if err := mergo.Merge(&baseDefault, item, mergo.WithOverride); err != nil {
+			return err
+		}
+		a.cfg.AI.OpenAI[i] = baseDefault
+	}
+	for i, item := range a.cfg.AI.Gemini {
+		baseDefault := shared.ConfigDefaultGemini()
+		if err := mergo.Merge(&baseDefault, item, mergo.WithOverride); err != nil {
+			return err
+		}
+		a.cfg.AI.Gemini[i] = baseDefault
+	}
+
+	// RPC debug
+	if a.cfg.Debug.Verbose {
+		if a.cfg.Debug.DBGAddr != "" {
+			os.Setenv(arpc.EnvAmRpcDbg, "1")
+		}
+		os.Setenv(arpc.EnvAmRpcLogClient, "1")
+		os.Setenv(arpc.EnvAmRpcLogServer, "1")
+		os.Setenv(amhelp.EnvAmHealthcheck, "1")
+	}
+
+	return nil
+}
+
+func (a *AgentBase) startAmDbg() error {
+	// TODO ctx for blocking
+	cfg := a.cfg.Debug
+	if !cfg.DBGEmbed || cfg.DBGAddr == "" {
+		return nil
+	}
+	// logger and profiler
+	// logger := typesdbg.GetLogger(&p, p.OutputDir)
+	// typesdbg.StartCpuProfileSrv(ctx, logger, &p)
+	// stopProfile := typesdbg.StartCpuProfile(logger, &p)
+	// if stopProfile != nil {
+	// 	defer stopProfile()
+	// }
+	// log.SetOutput(logger.Writer())
+
+	version := "devel"
+	if info, ok := debug.ReadBuildInfo(); ok {
+		version = info.Main.Version
+	}
+
+	dbgAddr, httpAddr, sshAddr, err := shared.ConfigDbgAddrs(cfg)
+	if err != nil {
+		return err
+	}
+
+	// init the debugger
+	dbg, err := debugger.New(a.ctx, debugger.Opts{
+		Id: a.cfg.Agent.ID + "-am-dbg",
+		// DbgLogLevel:   p.LogLevel,
+		// DbgLogger:     logger,
+		// ImportData:    p.ImportData,
+		OutputClients: true,
+		// OutputDiagrams: 1,
+		OutputTx:  true,
+		OutputLog: true,
+		Timelines: 2,
+		// ...:           p.FilterLogLevel,
+		OutputDir:       a.cfg.Agent.Dir,
+		AddrRpc:         dbgAddr,
+		AddrHttp:        httpAddr,
+		AddrSsh:         sshAddr,
+		UiSsh:           true,
+		UiWeb:           true,
+		EnableMouse:     true,
+		EnableClipboard: true,
+		// MachUrl:         p.MachUrl,
+		// SelectConnected: p.SelectConnected,
+		// ShowReader:      p.ViewReader,
+		CleanOnConnect: true,
+		// MaxMemMb:       p.MaxMemMb,
+		// Log2Ttl:    p.LogOpsTtl,
+		// ViewNarrow: p.ViewNarrow,
+		// ViewRain:   p.ViewRain,
+		TailMode: true,
+		Version:  version,
+		Print: func(txt string, args ...any) {
+			// TODO log?
+		},
+		// Filters: &debugger.OptsFilters{
+		// 	SkipOutGroup: p.FilterGroup,
+		// 	LogLevel:     p.FilterLogLevel,
+		// },
+	})
+	if err != nil {
+		return err
+	}
+	a.dbg = dbg
+	// TODO ErrDebug wait for a.mach
+	// err = ampipe.BindErr(dbg.Mach, a.mach, "")
+	// if err != nil {
+	// 	return err
+	// }
+
+	// rpc server
+	p := typesdbg.Params{
+		OutputDir: a.cfg.Agent.Dir,
+		UiWeb:     true,
+	}
+	go server.StartRpc(dbg.Mach, dbgAddr, nil, p)
+
+	// start and wait till the end
+	// TODO move to params
+	go dbg.Start("", 0, "", "")
+	// TODO fwd err
+
+	// TODO timeout
+	<-a.dbg.Mach.When1(ssdbg.Ready, nil)
+
+	return nil
 }
 
 // ///// ///// /////
@@ -1074,10 +1291,10 @@ type Tool struct {
 }
 
 func NewTool(
-	agent AgentAPI, idSuffix, title string, states am.S, stateSchema am.Schema,
+	agent shared.AgentBaseAPI, idSuffix, title string, toolStates am.S, toolSchema am.Schema,
 ) (*Tool, error) {
 	// validate the state schema
-	if err := amhelp.Implements(states, schema.ToolStates.Names()); err != nil {
+	if err := amhelp.Implements(toolStates, states.ToolStates.Names()); err != nil {
 		return nil, fmt.Errorf("%w: ToolStates not implemented: %w", am.ErrSchema, err)
 	}
 
@@ -1088,7 +1305,7 @@ func NewTool(
 
 	// machine
 	id := "tool-" + idSuffix + "-" + agent.Mach().Id()
-	mach, err := am.NewCommon(agent.Mach().Ctx(), id, stateSchema, states, nil, agent.Mach(), &am.Opts{
+	mach, err := am.NewCommon(agent.Mach().Context(), id, toolSchema, toolStates, nil, agent.Mach(), &am.Opts{
 		Tags: []string{"tool"},
 	})
 	if err != nil {
@@ -1109,13 +1326,13 @@ func NewTool(
 	}
 
 	// pipe Ready from the tool to agent
-	err = pipes.BindReady(mach, agent.Mach(), "", "")
+	err = ampipe.BindReady(mach, agent.Mach(), "", "")
 	if err != nil {
 		return nil, err
 	}
 
 	// pipe Start from the agent to tool
-	err = pipes.BindStart(agent.Mach(), mach, "", "")
+	err = ampipe.BindStart(agent.Mach(), mach, "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -1135,4 +1352,52 @@ func ToolAddToPrompts(t ToolApi, prompts ...PromptApi) {
 	for _, p := range prompts {
 		p.AddTool(t)
 	}
+}
+
+// ///// ///// /////
+
+// ///// MISC
+
+// ///// ///// /////
+
+type SlogWriter struct {
+	Logger *slog.Logger
+	Level  slog.Level
+}
+
+func (w *SlogWriter) Write(p []byte) (n int, err error) {
+	msg := strings.TrimSpace(string(p))
+	w.Logger.Log(context.Background(), w.Level, msg, "source", "std_log")
+
+	return len(p), nil
+}
+
+// ERRORS
+
+// ErrDB is for [states.AgentBaseStatesDef.ErrDB].
+var ErrDB = errors.New("DB error")
+
+// AddErrDB adds [ErrDB].
+func AddErrDB(
+	event *am.Event, mach *am.Machine, err error, args ...am.A,
+) am.Result {
+	if err == nil {
+		return am.Executed
+	}
+	err = fmt.Errorf("%w: %w", ErrDB, err)
+	return mach.EvAddErrState(event, ss.ErrDB, err, shared.OptArgs(args))
+}
+
+// ErrAI is for [states.AgentBaseStatesDef.ErrAI].
+var ErrAI = errors.New("AI error")
+
+// AddErrAI adds [ErrAI].
+func AddErrAI(
+	event *am.Event, mach *am.Machine, err error, args ...am.A,
+) am.Result {
+	if err == nil {
+		return am.Executed
+	}
+	err = fmt.Errorf("%w: %w", ErrAI, err)
+	return mach.EvAddErrState(event, ss.ErrAI, err, shared.OptArgs(args))
 }

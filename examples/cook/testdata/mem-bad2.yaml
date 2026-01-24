@@ -1,0 +1,68 @@
+CarrotsDiced:
+    tags:
+        - idx:2
+CarrotsSautéed:
+    require:
+        - CarrotsDiced
+    remove:
+        - CarrotsSautéing
+    tags:
+        - idx:4
+        - final
+CarrotsSautéing:
+    require:
+        - CarrotsDiced
+    remove:
+        - CarrotsSautéed
+    tags:
+        - time:4m
+        - idx:4
+EggsReturned:
+    require:
+        - RiceStirFried
+        - EggsScrambled
+    tags:
+        - idx:6
+EggsScrambled:
+    tags:
+        - idx:3
+MealReady:
+    auto: true
+    require:
+        - Seasoned
+RiceAddedToPan:
+    require:
+        - RiceCooled
+        - CarrotsSautéed
+    tags:
+        - idx:5
+RiceCooking:
+    remove:
+        - RiceCooling
+        - RiceCooled
+    tags:
+        - idx:1
+RiceCooled:
+    remove:
+        - RiceCooking
+        - RiceCooling
+    tags:
+        - idx:1
+        - final
+RiceCooling:
+    remove:
+        - RiceCooking
+        - RiceCooled
+    tags:
+        - idx:1
+RiceStirFried:
+    require:
+        - RiceAddedToPan
+    tags:
+        - time:3m
+        - idx:5
+Seasoned:
+    require:
+        - EggsReturned
+    tags:
+        - idx:6

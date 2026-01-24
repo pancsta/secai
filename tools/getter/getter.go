@@ -2,12 +2,13 @@ package getter
 
 import (
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
+	"github.com/pancsta/secai/shared"
 
 	"github.com/pancsta/secai"
-	"github.com/pancsta/secai/schema"
+	"github.com/pancsta/secai/states"
 )
 
-var ss = schema.ToolStates
+var ss = states.ToolStates
 var idPrefix = "getter-"
 
 type Tool struct {
@@ -17,12 +18,12 @@ type Tool struct {
 	getter func() (string, error)
 }
 
-func New(agent secai.AgentAPI, id, title string, getter func() (string, error)) (*Tool, error) {
+func New(agent shared.AgentBaseAPI, id, title string, getter func() (string, error)) (*Tool, error) {
 	var err error
 	t := &Tool{
 		getter: getter,
 	}
-	t.Tool, err = secai.NewTool(agent, idPrefix+id, title, ss.Names(), schema.ToolSchema)
+	t.Tool, err = secai.NewTool(agent, idPrefix+id, title, ss.Names(), states.ToolSchema)
 	if err != nil {
 		return nil, err
 	}

@@ -45,7 +45,6 @@ go.work
 # local dev
 /.dev
 /dist
-/tools/cmd/am-dbg/am-dbg
 *.log
 /*.gob
 /assets/*.cast.yml
@@ -85,3 +84,9 @@ _py
 
 /examples/research/research
 /configs/research.kdl
+/web/app.wasm
+/web/assets/deps
+/web/browser/deps.md
+/web/browser/deps-graph.svg
+/LICENSE.md
+/config/cook.kdl

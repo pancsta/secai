@@ -16,9 +16,9 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/pancsta/secai"
-	baseschema "github.com/pancsta/secai/schema"
 	"github.com/pancsta/secai/shared"
-	sa "github.com/pancsta/secai/tools/colly/schema"
+	baseschema "github.com/pancsta/secai/states"
+	sa "github.com/pancsta/secai/tools/colly/states"
 )
 
 var ss = sa.States
@@ -34,13 +34,13 @@ type Tool struct {
 	*secai.Tool
 	*am.ExceptionHandler
 
-	agent  secai.AgentAPI
+	agent  shared.AgentBaseAPI
 	result sa.Result
 	client *http.Client
 	c      *colly.Collector
 }
 
-func New(agent secai.AgentAPI) (*Tool, error) {
+func New(agent shared.AgentBaseAPI) (*Tool, error) {
 	var err error
 	t := &Tool{}
 	t.Tool, err = secai.NewTool(agent, id, title, ss.Names(), sa.Schema)

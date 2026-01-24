@@ -1,0 +1,67 @@
+CarrotsSautéed:
+    require:
+        - CarrotsSautéing
+    tags:
+        - idx:2
+        - final
+CarrotsSautéing:
+    require:
+        - OilHeated
+    remove:
+        - CarrotsSautéed
+    tags:
+        - idx:2
+EggsScrambled:
+    require:
+        - EggsScrambling
+    tags:
+        - idx:3
+        - final
+EggsScrambling:
+    require:
+        - CarrotsSautéed
+    remove:
+        - EggsScrambled
+    tags:
+        - idx:3
+MealReady:
+    auto: true
+    require:
+        - Seasoned
+OilHeated:
+    require:
+        - OilHeatingUp
+    tags:
+        - idx:1
+        - final
+OilHeatingUp:
+    remove:
+        - OilHeated
+    tags:
+        - idx:1
+RiceMixed:
+    require:
+        - RiceMixing
+    tags:
+        - idx:4
+        - final
+RiceMixing:
+    require:
+        - EggsScrambled
+    remove:
+        - RiceMixed
+    tags:
+        - idx:4
+Seasoned:
+    require:
+        - SoySauceSeasoning
+    tags:
+        - idx:5
+        - final
+SoySauceSeasoning:
+    require:
+        - RiceMixed
+    remove:
+        - Seasoned
+    tags:
+        - idx:5
