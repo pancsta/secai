@@ -20,6 +20,18 @@ jobs:
       -
         name: Set up Go
         uses: actions/setup-go@v4
+
+      # deps
+      -
+        name: Install Task
+        run: ./scripts/deps.sh
+      -
+        name: Install dependencies
+        run: go mod tidy
+      -
+        name: Gen license
+        run: task gen-license
+
       -
         name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
