@@ -40,7 +40,7 @@ type ResearchStatesDef struct {
 	// CheckingRefs string
 	// RefsChecked  string
 
-	// inherit from LLM AgentLLM
+	// inherit from AgentLLM
 	*llm.LLMAgentStatesDef
 }
 
@@ -53,7 +53,7 @@ type ResearchGroupsDef struct {
 
 // ResearchSchema represents all relations and properties of ResearchStates.
 var ResearchSchema = SchemaMerge(
-	// inherit from LLM AgentLLM
+	// inherit from AgentLLM
 	llm.LLMAgentSchema,
 	am.Schema{
 

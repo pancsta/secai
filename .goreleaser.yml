@@ -43,7 +43,7 @@ builds:
     hooks:
       pre:
         - mkdir -p ./tmp/cook
-        - cp ./examples/cook/config.tpl.kdl ./tmp/cook/config.kdl
+        - cp -f ./examples/cook/config.tpl.kdl ./tmp/cook/config.kdl
 
 archives:
 #  TODO update

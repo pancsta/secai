@@ -147,7 +147,7 @@ func ConfigDefault() Config {
 // ///// ///// /////
 
 type Agent struct {
-	// inherit from LLM AgentLLM
+	// inherit from AgentLLM
 	*agentllm.AgentLLM
 
 	// public

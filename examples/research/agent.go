@@ -61,7 +61,7 @@ type Config struct {
 }
 
 type Agent struct {
-	// inherit from LLM AgentLLM
+	// inherit from AgentLLM
 	*llmagent.AgentLLM
 
 	Config Config

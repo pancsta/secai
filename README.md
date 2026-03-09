@@ -386,7 +386,7 @@ type CookStatesDef struct {
 	GenStepComments   string
 	StepCommentsReady string
 
-	// inherit from LLM AgentLLM
+	// inherit from AgentLLM
 	*ssllm.AgentLLMStatesDef
 }
 
@@ -394,7 +394,7 @@ type CookStatesDef struct {
 
 // CookSchema represents all relations and properties of CookStates.
 var CookSchema = SchemaMerge(
-	// inherit from LLM AgentLLM
+	// inherit from AgentLLM
 	ssllm.LLMAgentSchema,
 	am.Schema{
         
