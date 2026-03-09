@@ -1,46 +1,36 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/gdamore/tcell/v2"
 	"github.com/navidys/tvxwidgets"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
 	"github.com/pancsta/cview"
+	"github.com/pancsta/tcell-v2"
 
-	baseschema "github.com/pancsta/secai/schema"
 	"github.com/pancsta/secai/shared"
-	"github.com/pancsta/secai/tui/states"
 )
 
-// aliases
-
-type A = shared.A
-type S = am.S
-
-var ParseArgs = shared.ParseArgs
-var Pass = shared.Pass
-
-var ss = baseschema.AgentBaseStates
-var ssT = states.TUIStates
 var placeholder = "Enter text here..."
 
+// TODO merge into TUI
 type Chat struct {
-	msgs       []*shared.Msg
-	msgsView   *cview.TextView
-	layout     *cview.Flex
-	buttonSend *cview.Button
-	prompt     *cview.InputField
-	clockView  *tvxwidgets.Plot
-	buttonIntt *cview.Button
-	dispose    func() error
-	t          *Tui
-	machChat   *am.Machine
+	msgs      []*shared.Msg
+	msgsView  *cview.TextView
+	layout    *cview.Flex
+	butSend   *cview.Button
+	butInter  *cview.Button
+	prompt    *cview.InputField
+	clockView *tvxwidgets.Plot
+	dispose   func() error
+	t         *TUI
+	machChat  *am.Machine
 }
 
-func NewChat(tui *Tui, msgs []*shared.Msg) *Chat {
+func NewChat(tui *TUI, msgs []*shared.Msg) *Chat {
 
 	c := &Chat{
 		t:    tui,
@@ -52,12 +42,11 @@ func NewChat(tui *Tui, msgs []*shared.Msg) *Chat {
 
 // ///// ///// /////
 
-// ///// HANDLERS (AGENT)
+// ///// HANDLERS
 
 // ///// ///// /////
 
 func (c *Chat) UICleanOutputState(e *am.Event) {
-	c.t.agent.Remove1(ss.UICleanOutput, nil)
 	c.msgs = nil
 	go c.t.app.QueueUpdateDraw(func() {
 		c.msgsView.SetText("")
@@ -70,8 +59,8 @@ func (c *Chat) UIButtonSendState(e *am.Event) {
 	c.t.Redraw()
 }
 
-func (c *Chat) UIButtonInttState(e *am.Event) {
-	c.t.agent.EvRemove1(e, ss.UIButtonIntt, nil)
+func (c *Chat) UIButtonInterState(e *am.Event) {
+	c.t.agent.EvRemove1(e, ss.UIButtonInter, nil)
 
 	if c.t.agent.Is1(ss.Interrupted) {
 		c.t.agent.EvAdd1(e, ss.Resume, nil)
@@ -95,39 +84,13 @@ func (c *Chat) InputBlockedState(e *am.Event) {
 	c.t.Redraw()
 }
 
+// RequestingState with progress indicator
 func (c *Chat) RequestingState(e *am.Event) {
-	ctx := c.t.Mach().NewStateCtx(ss.Requesting)
+	ctx := c.t.agent.NewStateCtx(ss.Requesting)
 
-	// progress indicator
-	go func() {
-		if ctx.Err() != nil {
-			return // expired
-		}
-
-		c.t.app.QueueUpdateDraw(func() {
-			c.prompt.SetTitle("requesting")
-		})
-
-		t := time.NewTicker(1 * time.Second)
-		progress := ""
-		for {
-			select {
-
-			case <-ctx.Done():
-				t.Stop()
-				return // expired
-
-			case <-t.C:
-				progress += "+"
-				c.t.app.QueueUpdateDraw(func() {
-					c.prompt.SetTitle(fmt.Sprintf(" [yellow]%[1]s[-] requesting [yellow]%[1]s[-] ", progress))
-				})
-				if progress == "++++" {
-					progress = "+"
-				}
-			}
-		}
-	}()
+	c.machChat.Fork(ctx, e, func() {
+		c.requestingProgress(ctx)
+	})
 }
 
 func (c *Chat) RequestingEnd(e *am.Event) {
@@ -136,7 +99,7 @@ func (c *Chat) RequestingEnd(e *am.Event) {
 	})
 }
 
-func (c *Chat) MsgEnter(e *am.Event) bool {
+func (c *Chat) UIMsgEnter(e *am.Event) bool {
 	m := ParseArgs(e.Args).Msg
 	l := len(c.msgs)
 
@@ -144,7 +107,7 @@ func (c *Chat) MsgEnter(e *am.Event) bool {
 	return l == 0 || !(m.Text == c.msgs[l-1].Text && m.From == c.msgs[l-1].From)
 }
 
-func (c *Chat) MsgState(e *am.Event) {
+func (c *Chat) UIMsgState(e *am.Event) {
 	c.msgs = append(c.msgs, ParseArgs(e.Args).Msg)
 	text := c.renderMsgs()
 
@@ -155,18 +118,18 @@ func (c *Chat) MsgState(e *am.Event) {
 }
 
 func (c *Chat) InterruptedState(e *am.Event) {
-	c.buttonIntt.SetLabel("Resume")
+	c.butInter.SetLabel("Resume")
 	c.t.Redraw()
 }
 
 func (c *Chat) InterruptedEnd(e *am.Event) {
-	c.buttonIntt.SetLabel("Interrupt")
+	c.butInter.SetLabel("Interrupt")
 	c.t.Redraw()
 }
 
 func (c *Chat) PromptState(e *am.Event) {
 	// set the ignored prompt back into the UI
-	if c.t.Mach().Is1(ss.Interrupted) {
+	if c.t.agent.Is1(ss.Interrupted) {
 		c.prompt.SetText(ParseArgs(e.Args).Prompt)
 		return
 	}
@@ -190,6 +153,7 @@ func (c *Chat) Init() error {
 	c.msgsView.SetWordWrap(true)
 	c.msgsView.ScrollToEnd()
 	c.msgsView.SetText(c.renderMsgs())
+	c.msgsView.ScrollToEnd()
 	c.msgsView.SetTitle("Messages")
 	c.msgsView.SetBorder(true)
 
@@ -222,23 +186,46 @@ func (c *Chat) Init() error {
 		return event
 	})
 
-	c.buttonSend = cview.NewButton("Send Message")
-	c.buttonSend.SetBackgroundColor(themeButtonBg)
-	c.buttonSend.SetSelectedFunc(func() {
+	c.butSend = cview.NewButton("Send Message")
+	c.butSend.SetBackgroundColor(themeButtonBg)
+	c.butSend.SetBackgroundColorFocused(themeButtonBg)
+	c.butSend.SetSelectedFunc(func() {
 		c.t.agent.Add1(ss.UIButtonSend, nil)
-	})
-	c.buttonSend.SetBorder(true)
+		c.butSend.SetBackgroundColor(themeButtonBgClicked)
+		c.butSend.SetBackgroundColorFocused(themeButtonBgClicked)
+		c.t.Redraw()
 
-	c.buttonIntt = cview.NewButton("Interrupt")
-	c.buttonIntt.SetBackgroundColor(themeButtonBg)
-	c.buttonIntt.
-		SetSelectedFunc(func() {
-			c.t.agent.Add1(ss.UIButtonIntt, nil)
-		})
-	if c.t.Mach().Is1(ss.Interrupted) {
-		c.buttonIntt.SetLabel("Resume")
+		// unpressed TODO terrible
+		go func() {
+			time.Sleep(clickDelay)
+			c.butSend.SetBackgroundColor(themeButtonBg)
+			c.butSend.SetBackgroundColorFocused(themeButtonBg)
+			c.t.Redraw()
+		}()
+	})
+	c.butSend.SetBorder(true)
+
+	c.butInter = cview.NewButton("Interrupt")
+	c.butInter.SetBackgroundColor(themeButtonBg)
+	c.butInter.SetBackgroundColorFocused(themeButtonBg)
+	c.butInter.SetSelectedFunc(func() {
+		c.t.agent.Add1(ss.UIButtonInter, nil)
+		c.butInter.SetBackgroundColor(themeButtonBgClicked)
+		c.butInter.SetBackgroundColorFocused(themeButtonBgClicked)
+		c.t.Redraw()
+
+		// unpressed TODO terrible
+		go func() {
+			time.Sleep(clickDelay)
+			c.butInter.SetBackgroundColor(themeButtonBg)
+			c.butInter.SetBackgroundColorFocused(themeButtonBg)
+			c.t.Redraw()
+		}()
+	})
+	if c.t.agent.Is1(ss.Interrupted) {
+		c.butInter.SetLabel("Resume")
 	}
-	c.buttonIntt.SetBorder(true)
+	c.butInter.SetBorder(true)
 
 	// LAYOUT
 
@@ -246,8 +233,8 @@ func (c *Chat) Init() error {
 	c.layout.SetDirection(cview.FlexRow)
 	c.layout.AddItem(c.msgsView, 0, 1, false)
 	c.layout.AddItem(c.prompt, 3, 1, true)
-	c.layout.AddItem(c.buttonSend, 3, 1, false)
-	c.layout.AddItem(c.buttonIntt, 3, 1, false)
+	c.layout.AddItem(c.butSend, 3, 1, false)
+	c.layout.AddItem(c.butInter, 3, 1, false)
 
 	// catch ctrl+c
 	c.t.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
@@ -259,7 +246,38 @@ func (c *Chat) Init() error {
 		return event
 	})
 
+	// sync
+	if c.t.agent.Is1(ss.Requesting) {
+		go c.requestingProgress(c.t.agent.NewStateCtx(ss.Requesting))
+	}
+
 	return nil
+}
+
+func (c *Chat) requestingProgress(ctx context.Context) {
+	c.t.app.QueueUpdateDraw(func() {
+		c.prompt.SetTitle("   requesting   ")
+	})
+
+	t := time.NewTicker(1 * time.Second)
+	progress := ""
+	for {
+		select {
+
+		case <-ctx.Done():
+			t.Stop()
+			return // expired
+
+		case <-t.C:
+			progress += "+"
+			c.t.app.QueueUpdateDraw(func() {
+				c.prompt.SetTitle(fmt.Sprintf(" [yellow]%[1]s[-] requesting [yellow]%[1]s[-] ", progress))
+			})
+			if progress == "++++" {
+				progress = "+"
+			}
+		}
+	}
 }
 
 func (c *Chat) renderMsgs() string {

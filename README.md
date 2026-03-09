@@ -1,333 +1,101 @@
-# AI-gent Workflows
+# secai
 
-**AI-gent Workflows** (aka **secai**) is a platform for AI Agents with a local reasoning layer. It's implemented on top of a
-**unified state graph** and makes a solid foundation for complex, proactive, and **long-lived AI Agents** with deep and
-structured memory. It offers a dedicated set of devtools and is written in the Go programming language. By having
-a graph-based flow, **secai** allows for precise behavior modeling of agents, including interruptions and fault tolerance.
+**secai** is a Golang framework for _Reasoning AI Workflows_, implemented using a unique state machine which thrives in
+complexity. It's a solid foundation for complex, proactive, and **long-lived AI Agents** with deep and structured
+memory. Each bot ships with embedded devtools and several UIs. The execution flow is graph-based, which allows for
+precise behavior modeling of agents, including interruptions, concurrency, and fault tolerance.
+
+It's a sophisticated replacement for frameworks like LangGraph and offers deeply relational consensus of state.
 
 * Demos
-  * [v0.4](#v04-demo)
-  * [User](#user-demo)
-  * [Platform](#platform-demo)
+  * [v0.5 - Fully Embedded](#v05---fully-embedded)
+  * [v0.4 - Local One](#v04---catch-up)
+  * [v0.2 - User Demo](#v02---user-demo)
+  * [v0.1 - Platform Demo](#v01---platform-demo)
 * [Features](#features)
   * [Implementation](#implementation)
-  * [Comparison](#comparison)
 * [Try It](#try-it)
-  * [Examples](#examples)
-* [Screenshots](#screenshots)
-  * [User](#screenshots-user-demo)
-  * [Platform](#screenshots-platform-demo)
-  * [Dashboards](#screenshots-dashboards)
+  * [Schema Examples](#schema-examples)
 * [Documentation](#documentation)
 * [Getting Started](#getting-started)
-* [User Interfaces](#user-interfaces)
-  * [Chat](#chat-tui)
-  * [Stories](#stories-tui)
-  * [Clock](#clockmoji-tui)
-* [Bash Scripts](#bash-scripts)
+* [Scripting](#bash-scripts)
 
-## v0.4 Demo
+## v0.5 - Fully Embedded
+
+[Live debugger](http://ai-gents.work.local:15834/dbg-cook) | [Live SQL](http://ai-gents.work.local:15834/data-cook) | [Read logs](http://ai-gents.work.local:15834/demo/cook.html)
+ | [Browse files](http://ai-gents.work.local:15834/demo)
 
 <div align="center" class="video">
-    <a href="https://github.com/pancsta/asyncmachine-go/blob/main/tools/cmd/am-dbg/README.md">
+    <a href="http://ai-gents.work.local:15834/assets/demo/imgs/demo.gif">
+        <img width="420px"
+            src="http://ai-gents.work.local:15834/demo/imgs/demo.gif"
+            alt="AI-gent Cook" />
+    </a>
+</div>
+
+<table>
+
+  <tr>
+    <td align="center">Debugger</td>
+    <td align="center">REPL</td>
+    <td align="center">DB</td>
+    <td align="center">DB</td>
+    <td align="center">Log</td>
+  </tr>
+  <tr>
+    <td align="center">
+        <img src="http://ai-gents.work.local:15834/demo/imgs/am-dbg.png"/>
+    </td>
+    <td align="center">
+        <img src="http://ai-gents.work.local:15834/demo/imgs/repl.png"/>
+    </td>
+    <td align="center">
+        <img src="http://ai-gents.work.local:15834/demo/imgs/db1.png"/>
+    </td>
+    <td align="center">
+        <img src="http://ai-gents.work.local:15834/demo/imgs/db2.png"/>
+    </td>
+    <td align="center">
+        <img src="http://ai-gents.work.local:15834/demo/imgs/log.png"/>
+    </td>
+  </tr>
+</table>
+
+<details>
+  <summary>Click to see the diagram</summary>
+
+<img src="http://ai-gents.work.local:15834/demo/_diagram.svg" />
+</details>
+
+## v0.4 - Local One
+
+AI-gent Cook on _qwen3-vl-30b_
+
+<div align="center" class="video">
+    <a href="http://ai-gents.work.local:15834/assets/demo-v0.4/_demo.gif">
         <img width="420px"
             src="https://github.com/user-attachments/assets/a387b00f-c2ba-444c-9b58-381d1425edfb"
             alt="AI-gent Cook" />
     </a>
 </div>
 
-- [Diagram](https://ai-gents.work/demo/_diagram.svg)
-- [SQL DBs](https://ai-gents.work/data-cook)
-- [Debugger](https://ai-gents.work/dbg-cook)
-- [Log](https://ai-gents.work/demo/cook.html)
-- [Schema](/examples/cook/schema/sa_cook.go)
-- [Files](https://ai-gents.work/demo)
+<details>
+  <summary>Click to see the diagram</summary>
 
-## User Demo
+<img src="http://ai-gents.work.local:15834/assets/demo-v0.4/_diagram.svg" />
+</details>
 
-[Screenshots](#screenshots-user-demo) and [YouTube](https://youtu.be/rbwXg64poBE) are also available.
+## v0.2 - User Demo
+
+Screenshots and [YouTube](https://youtu.be/rbwXg64poBE) are also available.
 
 <p align="center"><a href="https://pancsta.github.io/assets/secai/demo2/secai-demo2.mp4"><img src="https://pancsta.github.io/assets/secai/demo2/demo2.png?"></a></p>
 
 > [!NOTE]
 > User demo (7m captions-only) showcasing a cooking assistant which helps to pick a recipe from ingredients AND cook it.
 
-## Platform Demo
-
-[Screenshots](#screenshots-platform-demo) and [YouTube](https://youtu.be/0VJzO1S-gV0) are also available.
-
-<p align="center"><a href="https://pancsta.github.io/assets/secai/demo1/secai-demo1.mp4"><img src="https://pancsta.github.io/assets/secai/demo1/demo1.png"></a></p>
-
-> [!NOTE]
-> Platform demo (5m captions-only), showcasing all nine ways an agent can be seen, in addition to the classic chat view.
-
-## Features
-
-- multi-prompt agency
-  - each state can have a prompt bound to it, with dedicated history and documents
-- atomic consensus with relations and negotiation
-  - eg states excluding each other can't be active simultaneously
-- dedicated DSL layer for bot schema 
-  - suitable for non-coding authors
-- structured prompt input/output via JSON schemas
-- declarative flow definitions for non-linear flows
-- cancellation support (interrupts)
-- offer list / menu
-- prompt history
-  - in SQL (embedded SQLite)
-  - in JSONL (stdout)
-- proactive stories with actors
-- LLM triggers (orienting)
-  - on prompts and timeouts
-- dynamic flow graph for the memory
-  - LLM creates an actionable state-machine
-- UI components
-  - chat
-  - stories
-  - clock
-- platforms
-  - SSH (all platforms)
-  - Desktop PWA (all platforms)
-  - Mobile PWA (WIP)
-
-### Goals
-
-- precision
-- traceability
-- privacy
-
-### Goals
-
-- precision
-- traceability
-- privacy
-
-### Devtools
-
-The following devtools are for the agent, the agent's dynamic memory, and tools (all of which are the same type of state machine).
-
-- REPL & CLI
-- TUI debugger (+dashboards)
-- automatic diagrams (D2 SVGs)
-- automatic observability (Prometheus, Grafana, Jaeger)
-
-### Tools
-
-- websearch ([searxng](https://github.com/searxng/searxng))
-- HTML scrape ([colly](https://github.com/gocolly/colly))
-- browser scrape ([chromedp](https://github.com/chromedp/chromedp)) (WIP)
-
-## Implementation
-
-- pure Golang
-- typesafe state-machine and prompt schemas
-- [asyncmachine-go](https://asyncmachine.dev) for graphs and control flow
-- [instructor-go](https://github.com/instructor-ai/instructor-go) for the LLM layer
-  - OpenAI (DeepSeek, LMStudio), Gemini, Anthropic, Cohere
-- [invopop/jsonschema](https://github.com/invopop/jsonschema) for JSON schemas
-- network transparency (aRPC, debugger, REPL)
-- structured concurrency (multigraph-based)
-- [cview](https://codeberg.org/tslocum/cview), and [asciigraph](https://github.com/guptarohit/asciigraph) for UIs
-
-### Components
-
-- Agent (actor)
-  - state-machine schema
-  - prompts
-  - tools
-- Tool (actor)
-  - state-machine schema
-- Memory
-  - state-machine schema
-- Prompt (state)
-  - params schema
-  - result schema
-  - history log
-  - documents
-- Stories (state)
-  - actors
-  - state machines
-- Document
-  - title
-  - content
-
-## Comparison
-
-| Feature       | AI-gent Workflows                                                                                              | [AtomicAgents](https://github.com/BrainBlend-AI/atomic-agents) |
-|---------------|----------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------|
-| Model         | unified state graph                                                                                            | BaseAgent class                                                |
-| Debugger      | multi-client with time travel                                                                                  | X                                                              |
-| Diagrams      | customizable level of details                                                                                  | X                                                              |
-| Observability | logging & Grafana & Otel                                                                                       | X                                                              |
-| REPL & CLI    | network-based                                                                                                  | X                                                              |
-| History       | state-based and prompt-based                                                                                   | prompt-based                                                   |
-| Pkg manager   | Golang                                                                                                         | in-house                                                       |
-| Control Flow  | declarative & fault tolerant                                                                                   | imperative                                                     |
-| CLI           | [bubbletea](https://github.com/charmbracelet/bubbletea), [lipgloss](https://github.com/charmbracelet/lipgloss) | [rich](https://github.com/Textualize/rich)                     |
-| TUI           | [tview](https://github.com/rivo/tview/), [cview](https://code.rocket9labs.com/tslocum/cview)                   | [textual](https://github.com/Textualize/textual)               |
-
-### Go vs Python
-
-- just works, batteries included, no magic
-- 1 package manager **vs** 4
-- single binary **vs** interpreted multi-file source
-- coherent static typing **vs** maybe
-- easy & stable **vs** easy
-- no ecosystem fragmentation
-- million times faster **/s**
-- [relevant xkcd](https://xkcd.com/1987/)
-
-## Try It
-
-Unlike Python apps, you can start it with a single command:
-
-- [Download a binary release](https://github.com/pancsta/secai/releases) (Linux, MacOS, Windows)
-- Set an API key in `config.kdl`
-- Run `./aigent-cook` and copy-paste-run the *SSH* line into another terminal
-- You'll see files being created in `./tmp`
-
-```markdown
-AI-gent Cook v0.4.0
-
-TUI:
-$ ssh localhost -p 7955 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no
-
-Log:
-$ tail -f tmp/cook/cook.jsonl -n 100 | fblog -d -x msg -x time -x level
-
-REPL:
-$ ./arpc --dir tmp/cook
-
-https://ai-gents.work
-```
-
-## Examples
-
-Code snippets from [`/examples/research`](/examples/research/schema/sa_research.go) (ported from [AtomicAgents](https://github.com/BrainBlend-AI/atomic-agents/tree/main/atomic-examples/deep-research/deep_research/agents)).
-Both the state and prompt schemas are pure and debuggable Golang code.
-
-### State Schema
-
-```go
-// ResearchStatesDef contains all the states of the Research state machine.
-type ResearchStatesDef struct {
-    *am.StatesBase
-
-    CheckingInfo string
-    NeedMoreInfo string
-
-    SearchingLLM string
-    SearchingWeb string
-    Scraping     string
-
-    Answering string
-    Answered  string
-
-    *ss.AgentStatesDef
-}
-
-// ResearchGroupsDef contains all the state groups Research state machine.
-type ResearchGroupsDef struct {
-    Info    S
-    Search  S
-    Answers S
-}
-
-// ResearchSchema represents all relations and properties of ResearchStates.
-var ResearchSchema = SchemaMerge(
-    // inherit from Agent
-    ss.AgentSchema,
-
-    am.Schema{
-
-        // Choice "agent"
-        ssR.CheckingInfo: {
-            Require: S{ssR.Start, ssR.Prompt},
-            Remove:  sgR.Info,
-        },
-        ssR.NeedMoreInfo: {
-            Require: S{ssR.Start},
-            Add:     S{ssR.SearchingLLM},
-            Remove:  sgR.Info,
-        },
-
-        // Query "agent"
-        ssR.SearchingLLM: {
-            Require: S{ssR.NeedMoreInfo, ssR.Prompt},
-            Remove:  sgR.Search,
-        },
-        ssR.SearchingWeb: {
-            Require: S{ssR.NeedMoreInfo, ssR.Prompt},
-            Remove:  sgR.Search,
-        },
-        ssR.Scraping: {
-            Require: S{ssR.NeedMoreInfo, ssR.Prompt},
-            Remove:  sgR.Search,
-        },
-
-        // Q&A "agent"
-        ssR.Answering: {
-            Require: S{ssR.Start, ssR.Prompt},
-            Remove:  SAdd(sgR.Info, sgR.Answers),
-        },
-        ssR.Answered: {
-            Require: S{ssR.Start},
-            Remove:  SAdd(sgR.Info, sgR.Answers, S{ssR.Prompt}),
-        },
-    })
-
-var sgR = am.NewStateGroups(ResearchGroupsDef{
-    Info:    S{ssR.CheckingInfo, ssR.NeedMoreInfo},
-    Search:  S{ssR.SearchingLLM, ssR.SearchingWeb, ssR.Scraping},
-    Answers: S{ssR.Answering, ssR.Answered},
-})
-```
-
-### Prompt Schema
-
-```go
-func NewCheckingInfoPrompt(agent secai.AgentApi) *secai.Prompt[ParamsCheckingInfo, ResultCheckingInfo] {
-    return secai.NewPrompt[ParamsCheckingInfo, ResultCheckingInfo](
-        agent, ssR.CheckingInfo, `
-            - You are a decision-making agent that determines whether a new web search is needed to answer the user's question.
-            - Your primary role is to analyze whether the existing context contains sufficient, up-to-date information to
-            answer the question.
-            - You must output a clear TRUE/FALSE decision - TRUE if a new search is needed, FALSE if existing context is
-            sufficient.
-        `, `
-            1. Analyze the user's question to determine whether or not an answer warrants a new search
-            2. Review the available web search results 
-            3. Determine if existing information is sufficient and relevant
-            4. Make a binary decision: TRUE for new search, FALSE for using existing context
-        `, `
-            Your reasoning must clearly state WHY you need or don't need new information
-            If the web search context is empty or irrelevant, always decide TRUE for new search
-            If the question is time-sensitive, check the current date to ensure context is recent
-            For ambiguous cases, prefer to gather fresh information
-            Your decision must match your reasoning - don't contradict yourself
-        `)
-}
-
-// CheckingInfo (Choice "agent")
-
-type ParamsCheckingInfo struct {
-    UserMessage  string
-    DecisionType string
-}
-
-type ResultCheckingInfo struct {
-    Reasoning string `jsonschema:"description=Detailed explanation of the decision-making process"`
-    Decision  bool   `jsonschema:"description=The final decision based on the analysis"`
-}
-```
-
-Read the [schema file in full](/examples/research/schema/sa_research.go).
-
-## Screenshots
-
-### Screenshots User Demo
-
-- [Slide Deck](https://speakerdeck.com/pancsta/ai-gent-workflows/)
+<details>
+  <summary>Click to see screenshots</summary>
 
 <table>
 
@@ -382,7 +150,7 @@ Read the [schema file in full](/examples/research/schema/sa_research.go).
   </tr>
 
   <tr>
-    <td align="center" colspan="5">State Schema</td>
+    <td align="center" colspan="5">Diagram</td>
   </tr>
   <tr>
     <td align="center" colspan="5">
@@ -391,8 +159,19 @@ Read the [schema file in full](/examples/research/schema/sa_research.go).
   </tr>
 
 </table>
+</details>
 
-### Screenshots Platform Demo
+## v0.1 - Platform Demo
+
+Screenshots and [YouTube](https://youtu.be/0VJzO1S-gV0) are also available.
+
+<p align="center"><a href="https://pancsta.github.io/assets/secai/demo1/secai-demo1.mp4"><img src="https://pancsta.github.io/assets/secai/demo1/demo1.png"></a></p>
+
+> [!NOTE]
+> Platform demo (5m captions-only), showcasing all nine ways an agent can be seen, in addition to the classic chat view.
+
+<details>
+  <summary>Click to see screenshots</summary>
 
 <table>
 
@@ -447,7 +226,7 @@ Read the [schema file in full](/examples/research/schema/sa_research.go).
   </tr>
 
   <tr>
-    <td align="center" colspan="5">State Schema</td>
+    <td align="center" colspan="5">Diagram</td>
   </tr>
   <tr>
     <td align="center" colspan="5">
@@ -456,37 +235,277 @@ Read the [schema file in full](/examples/research/schema/sa_research.go).
   </tr>
 
 </table>
+</details>
 
-### Screenshots Dashboards
+## Features
 
-<table>
+- multi-prompt agency
+  - a single agent/bot is built of several AI prompts
+  - each state can have a prompt bound to it, with dedicated history and documents
+- atomic consensus with relations and negotiation
+  - eg states excluding each other can't be active simultaneously
+- dedicated DSL layer for bot schema 
+  - suitable for non-coding authors
+- structured prompt input/output via JSON schemas
+- declarative flow definitions for non-linear flows
+- cancellation support (interrupts)
+- choice menu (list of offers)
+- prompt history
+  - embedded SQLite
+  - JSONL log
+  - "latest prompt" files
+- proactive stories with actors
+  - stories have actions and progress
+- LLM-sourced story switching (orienting)
+  - on prompts and timeouts
+- dynamic flow graph for the memory
+  - LLM creates an actionable state-machine
+- TUIs and WebAssembly PWAs for user interfaces
 
-  <tr>
-    <td align="center" colspan="5">Dashboard 1</td>
-  </tr>
-  <tr>
-    <td align="center" colspan="5">
-        <img src="https://pancsta.github.io/assets/secai/dashboard-2.png"/>
-    </td>
-  </tr>
+### Goals
 
-  <tr>
-    <td align="center" colspan="5">Dashboard 2</td>
-  </tr>
-  <tr>
-    <td align="center" colspan="5">
-        <img src="https://pancsta.github.io/assets/secai/dashboard-1.png"/>
-    </td>
-  </tr>
+- precision
+- correctness
+- granular debugging
 
-</table>
+### Devtools
+
+All devtools are available on the web, some also as TUIs, and some as regular files. Everything is shipped as a single
+file.
+
+- debugger
+- REPL
+- diagrams (D2 SVGs)
+- DB browser
+- log viewer
+- observability (OpenTelemetry, Prometheus, Loki)
+
+### Tools
+
+- websearch (dockerized [searxng](https://github.com/searxng/searxng))
+- HTML scrape (embedded [colly](https://github.com/gocolly/colly))
+
+## Implementation
+
+- Golang & WASM
+- [asyncmachine-go](https://asyncmachine.dev) for graph control flow
+- [instructor-go](https://github.com/instructor-ai/instructor-go) for AI APIs
+- [invopop/jsonschema](https://github.com/invopop/jsonschema) for prompt schemas
+- [aRPC](https://asyncmachine.dev/rpc) for network transparency
+  - a single agent can span across multiple servers and browsers
+- [cview](https://codeberg.org/tslocum/cview) for TUIs
+- [go-app](https://go-app.dev/) for web UIs
+- [ncruces](https://github.com/ncruces/go-sqlite3) for SQLite
+
+### Architecture
+
+- Agent (actor)
+  - state-machine schema
+  - prompts
+  - tools
+- Tool (actor)
+  - state-machine schema
+- Memory
+  - state-machine schema
+- Prompt (state)
+  - params schema
+  - result schema
+  - history log
+  - documents
+- Stories (state)
+  - actors (state machines)
+  - actions
+  - progress
+- Document
+  - title
+  - content
+
+## Try It
+
+- [Download a binary release](https://github.com/pancsta/secai/releases) of AI-gent Cook (Linux, macOS, Windows)
+
+```markdown
+AI-gent Cook v0.5.0
+
+Web:
+- http://localhost:12854
+- http://localhost:12854/agent
+
+Files:
+- config: config.kdl
+- log:    tmp-cook/cook.jsonl
+
+TUI:
+- http://localhost:7856
+- ssh localhost -p 7955 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no
+
+REPL:
+- http://localhost:13179
+- ./cook repl --config config.kdl
+
+Log:
+- http://localhost:12858
+- ./cook log --tail --config config.kdl
+- tail -f tmp-cook/cook.jsonl -n 100 | fblog -d -x msg -x time -x level
+
+Debugger:
+- http://localhost:13178
+- files: http://localhost:13171
+- ssh localhost -p 13172 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no
+
+DB:
+- Base: http://localhost:13180
+- Agent: http://localhost:13181
+- History: http://localhost:13182
+
+https://AI-gents.work
+```
+## Schema Examples
+
+Code snippets from state and prompt schemas of `examples/cook`. Both schemas are pure and debuggable Golang code.
+
+### State Schema
+
+```go
+// CookStatesDef contains all the states of the Cook state machine.
+type CookStatesDef struct {
+	*am.StatesBase
+
+	// ...
+
+	// prompts
+
+	RestoreJokes string
+	GenJokes     string
+	JokesReady   string
+
+	GenSteps string
+	// StepsReady implies the steps have been translated into actionable memory.
+	StepsReady string
+
+	GenStepComments   string
+	StepCommentsReady string
+
+	// inherit from LLM AgentLLM
+	*ssllm.AgentLLMStatesDef
+}
+
+// ...
+
+// CookSchema represents all relations and properties of CookStates.
+var CookSchema = SchemaMerge(
+	// inherit from LLM AgentLLM
+	ssllm.LLMAgentSchema,
+	am.Schema{
+        
+		// gen AI
+
+		ssC.RestoreJokes: {
+			Auto:    true,
+			Require: S{ssC.DBReady, ssC.CharacterReady},
+			Remove:  sgC.Jokes,
+		},
+		ssC.GenJokes: {
+			Require: S{ssC.CharacterReady, ssC.DBReady},
+			Remove:  sgC.Jokes,
+			Tags:    S{ssbase.TagPrompt},
+		},
+		ssC.JokesReady: {Remove: sgC.Jokes},
+
+		ssC.GenSteps: {
+			Auto:    true,
+			Require: S{ssC.StoryCookingStarted},
+			Remove:  S{ssC.StepsReady},
+			Tags:    S{ssbase.TagPrompt},
+		},
+		ssC.StepsReady: {
+			Require: S{ssC.RecipeReady},
+			Remove:  S{ssC.GenSteps},
+		},
+
+		ssC.GenStepComments: {
+			Auto:    true,
+			Require: S{ssC.StoryCookingStarted, ssC.StepsReady},
+			Remove:  S{ssC.StepCommentsReady},
+			Tags:    S{ssbase.TagPrompt},
+		},
+		ssC.StepCommentsReady: {Remove: S{ssC.GenStepComments}},
+
+		ssC.Orienting: {
+			Multi: true,
+			Tags:  S{ssbase.TagPrompt},
+		},
+		ssC.OrientingMove: {},
+	})
+```
+
+### Prompt Schema
+
+```go
+// RECIPE
+
+type PromptRecipePicking = secai.Prompt[ParamsRecipePicking, ResultRecipePicking]
+
+func NewPromptRecipePicking(agent shared.AgentBaseAPI) *PromptRecipePicking {
+	return secai.NewPrompt[ParamsRecipePicking, ResultRecipePicking](
+		agent, ss.StoryRecipePicking, `
+			- You're a database of cooking recipes.
+		`, `
+			1. Suggest recipes based on user's ingredients.
+			2. If possible, find 1 extra recipe, which is well known, but 1-3 ingredients are missing.
+			3. Summarize the propositions using the character's personality.
+		`, `
+			- Limit the amount of recipes to the requested number (excluding the extra recipe).
+			- Include an image URL per each recipe
+		`)
+}
+
+type Recipe struct {
+	Name  string
+	Desc  string
+	Steps string
+}
+
+type ParamsRecipePicking struct {
+	// List of available ingredients.
+	Ingredients []Ingredient
+	// The number of recipes needed.
+	Amount int
+}
+
+type ResultRecipePicking struct {
+	// List of proposed recipes
+	Recipes []Recipe
+	// Extra recipe with unavailable ingredients.
+	ExtraRecipe Recipe
+	// Message to the user, summarizing the recipes. Max 3 sentences.
+	Summary string
+}
+
+// ...
+
+var StoryRecipePicking = &shared.Story{
+	StoryInfo: shared.StoryInfo{
+		State: ss.StoryRecipePicking,
+		Title: "Recipe Picking",
+		Desc:  "The bot offers some recipes, based on the ingredients.",
+	},
+	Agent: shared.StoryActor{
+		Trigger: amhelp.Cond{
+			Is:  am.S{ss.Ready, ss.IngredientsReady},
+			Not: am.S{ss.RecipeReady},
+		},
+	},
+}
+```
+
+Read the full [state schema](examples/cook/states/ss_cook.go) and [prompt schema](examples/cook/schema/sa_cook.go).
 
 ## Documentation
 
 - secai: [API](https://pkg.go.dev/github.com/pancsta/secai) / [Docs](https://github.com/pancsta/secai/wiki/Developer-Docs)
 - [asyncmachine-go](https://asyncmachine.dev): [API](https://pkg.go.dev/github.com/pancsta/asyncmachine-go/pkg/machine) / [Docs](https://github.com/pancsta/asyncmachine-go/blob/main/docs/manual.md)
 - [instructor-go](https://github.com/instructor-ai/instructor-go): [API](https://pkg.go.dev/github.com/instructor-ai/instructor-go) / [Docs](https://go.useinstructor.com/)
-- [tview](https://github.com/rivo/tview/): [API](https://pkg.go.dev/github.com/rivo/tview) / [Docs](https://github.com/rivo/tview/wiki)
 - [cview](https://codeberg.org/tslocum/cview): [API](https://pkg.go.dev/codeberg.org/tslocum/cview)
 
 ## Getting Started
@@ -495,7 +514,7 @@ We can use one of the examples as a starting template. It allows for further sem
 
 1. Choose the source example
    - `export SECAI_EXAMPLE=cook`
-   - `export SECAI_EXAMPLE=research` (broken in `v0.4.0`)
+   - `export SECAI_EXAMPLE=research` (broken since `v0.4.0`)
 2. `git clone https://github.com/pancsta/secai.git`
 3. install task `./secai/scripts/deps.sh`
 4. copy the agent `cp -R secai/examples/$SECAI_EXAMPLE MYAGENT`
@@ -505,33 +524,22 @@ We can use one of the examples as a starting template. It allows for further sem
    2. `task sync-configs`
 7. start it `task start`
 8. look around `task --list-all`
-9. configure dev stuff `cp .env.template .env`
-10. configure the bot `$EDITOR config.kdl`
+9. configure the bot `$EDITOR config.kdl`
 
-## User Interfaces
+## Differences
 
-Several TUIs with dedicated UI states are included in [`/tui`](/tui):
+**secai** differs from other AI agents / workflows frameworks in the way it treats AI prompts. Most frameworks call each
+prompt an "agent", while **secai** treats prompts as simple DB queries with IoC (Inversion of Control). Tools usage
+happens manually through typesafe params / results. This approach increases determinism, safety, and overfall control.
+This multi-prompt workflow forms an actual **bot** / **agent**. This does not mean agents can't be composed into larger
+groups, which happens simply on the state level (via piping / aRPC), as the underlying workflow engine (asyncmachine)
+doesn't depend on AI at all.
 
-### Chat TUI
-
-- **senders & msgs** scrollable view with links
-- multiline **prompt** with blocking and progress
-- send / stop **button**
-
-### Stories TUI
-
-- **list of stories** with activity status (non-actionable)
-- **dynamic buttons** and progress bars (actionable)
-
-### Clockmoji TUI
-
-- recent **clock changes** plotted by [asciigraph](http://github.com/guptarohit/asciigraph)
-
-## Bash Scripts
+## Scripting
 
 `arpc` offers CLI access to remote agents, including subscription. It's perfect for quick and simple integrations, scripts, or experiments.
 
-Example: `arpc -f tmp/research.addr -- when . Requesting && echo "REQUESTING"`
+Example: `$ arpc -f tmp/research.addr -- when . Requesting && echo "REQUESTING"`
 
 1. Connect to the address from `tmp/research.addr`
 2. When the last connected agent (`.`) goes into state `Requesting`

@@ -18,17 +18,14 @@ import (
 type TUIStatesDef struct {
 	*am.StatesBase
 
-	// requests replacement of stories' info and their actions
-	ReqReplaceStories string
-	// throttled UI update, not to be called directly
-	ReplaceStories string
+	// empty
 
 	// inherit from BasicStatesDef
 	*ss.BasicStatesDef
 	// inherit from DisposedStatesDef
 	*ss.DisposedStatesDef
-	// inherit from NetSourceStatesDef
-	*ssrpc.NetSourceStatesDef
+	// inherit from StateSourceStatesDef
+	*ssrpc.StateSourceStatesDef
 }
 
 // TUIGroupsDef contains all the state groups TUI state-machine.
@@ -42,11 +39,10 @@ var TUISchema = SchemaMerge(
 	// inherit from DisposedStruct
 	ss.DisposedSchema,
 	// inherit from WorkerStates
-	ssrpc.NetSourceSchema,
+	ssrpc.StateSourceSchema,
 	am.Schema{
 
-		ssT.ReqReplaceStories: {Multi: true},
-		ssT.ReplaceStories:    {},
+		// empty
 	})
 
 // EXPORTS AND GROUPS

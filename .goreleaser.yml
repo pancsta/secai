@@ -1,4 +1,8 @@
-# .goreleaser.yml
+version: 2
+
+# TODO enable
+#upx:
+#  - enabled: true
 
 builds:
 #  TODO update
@@ -21,8 +25,6 @@ builds:
 #      - -s -w # Remove debug info, strip symbols (common optimization)
 #      - -X main.id=aigent-research
 
-
-
   -
     id: "cook"
     env:
@@ -38,48 +40,10 @@ builds:
       - arm64
     main: ./examples/cook/cmd
     binary: aigent-cook
-    ldflags:
-      - -s -w # Remove debug info, strip symbols (common optimization)
-
-  # TOOLS
-
-  -
-    id: "am-dbg"
-    # 3. CRITICAL: Disable the check for a local main.go file
-    no_main_check: true
-    env:
-      - CGO_ENABLED=0
-      - GO111MODULE=on
-    goos:
-      - linux
-      - darwin
-      - windows
-    goarch:
-      - amd64
-      - arm64
-    main: github.com/pancsta/asyncmachine-go/tools/cmd/am-dbg
-    binary: am-dbg
-    ldflags:
-      - -s -w # Remove debug info, strip symbols (common optimization)
-
-  -
-    id: "arpc"
-    # 3. CRITICAL: Disable the check for a local main.go file
-    no_main_check: true
-    env:
-      - CGO_ENABLED=0
-      - GO111MODULE=on
-    goos:
-      - linux
-      - darwin
-      - windows
-    goarch:
-      - amd64
-      - arm64
-    main: github.com/pancsta/asyncmachine-go/tools/cmd/arpc
-    binary: arpc
-    ldflags:
-      - -s -w # Remove debug info, strip symbols (common optimization)
+    hooks:
+      pre:
+        - mkdir -p ./tmp/cook
+        - cp ./examples/cook/config.tpl.kdl ./tmp/cook/config.kdl
 
 archives:
 #  TODO update
@@ -97,20 +61,16 @@ archives:
     format: zip
     name_template: "aigent-cook_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
-      - src: 'LICENSE'
-        dst: '.'
+      - 'LICENSE.md'
+      - src: 'tmp/cook/config.kdl'
+        dst: "."
         strip_parent: true
       - src: 'examples/cook/README.md'
-        dst: '.'
-        strip_parent: true
-      - src: 'examples/cook/config.kdl'
         dst: '.'
         strip_parent: true
     wrap_in_directory: true
     builds:
       - cook
-      - am-dbg
-      - arpc
 
 checksum:
   name_template: 'checksums.txt'

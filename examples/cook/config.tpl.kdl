@@ -1,0 +1,97 @@
+AI {
+// OpenAI
+  OpenAI {
+    Key ""
+  }
+
+// Gemini
+  Gemini {
+    Key ""
+    Model "gemini-2.5-flash"
+  }
+
+// DeepSeek
+  OpenAI {
+    Key ""
+    URL "https://api.deepseek.com/v1"
+    Model "deepseek-chat"
+  }
+
+// LMStudio
+  OpenAI {
+    Key ""
+    URL "http://localhost:7432/v1"
+    Model "qwen/qwen3-vl-30b"
+    Tags "small" "local"
+  }
+
+  ReqLimit 1_000
+}
+
+Agent {
+  ID "cook"
+  Label "AI-gent Cook"
+  Dir "tmp-cook"
+  Intro "This demo presents data collection, gen AI, offers, stories, workflows, dynamic short-term memory, planning with a DAG, story navigation, progress, and clockmoji."
+  IntroDash "This bot will help you pick a recipe from available ingredients, break it into actionable steps, and follow you during the cooking process. You're using a technology preview of <a href='https://ai-gents.work' target=_blank>secai</a>."
+  Footer "2025-2026 <a href='https://ai-gents.work' target=_blank>AI-gents.work</a>"
+
+  Log {
+  // duplicate agent to state-machine log
+    MachFwd true
+  // state-machine log level
+    MachLevel 3
+  //    MachPrint true
+  // path to log file
+    File "tmp-cook/cook.jsonl"
+  // log prompts
+    Prompts true
+  }
+
+  History {
+  // Available: memory, sqlite, bbolt (default: memory)
+    Backend "sqlite"
+    Max 1_000_000
+  }
+}
+
+Debug {
+// display extra info about these stories in the machine log
+  Story "StoryMealReady" "Joke"
+// run the mock scenario
+//  Mock true
+// show verbose debug messages
+//  Verbose true
+  REPL true
+  ValFiles true
+
+//  DBGAddr "1"
+  DBGAddr "localhost:13170"
+  DBGEmbed true
+  DBGEmbedWeb 13178
+  REPLWeb 13179
+}
+
+TUI {
+//  PortWeb -1
+  PortSSH 7955
+//  PortSSH -1
+  Host "localhost"
+  ClockRange 10
+}
+
+Web {
+//  Addr "-1"
+  DBPort 13180
+}
+
+Cook {
+  MinIngredients 3
+  GenJokesAmount 3
+  SessionTimeout "1h"
+  GenRecipes 3
+  MinPromptLen 2
+  StepCommentFreq 2
+  HeartbeatFreq "1h"
+  OrientingMoveThreshold 0.5
+}

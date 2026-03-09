@@ -1,5 +1,7 @@
 ### Planned
 
+- embed am-dbg, arpc
+- migrate to gotty, drop ttyd
 - parallel LLM requests, incl. for multiple models
 - lambda prompts (unbound)
 - MCP (both client and server)

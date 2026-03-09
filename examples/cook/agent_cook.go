@@ -4,28 +4,32 @@ package cook
 import (
 	"context"
 	"database/sql"
+	"embed"
 	"fmt"
-	"math/rand"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
-	"dario.cat/mergo"
-	"github.com/gliderlabs/ssh"
+	"github.com/charmbracelet/ssh"
+	"github.com/google/go-cmp/cmp"
 	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
 	arpc "github.com/pancsta/asyncmachine-go/pkg/rpc"
-	"github.com/pancsta/secai/examples/cook/db/sqlc"
 
 	agentllm "github.com/pancsta/secai/agent_llm"
+	sallm "github.com/pancsta/secai/agent_llm/schema"
+	"github.com/pancsta/secai/examples/cook/db/sqlc"
 	sa "github.com/pancsta/secai/examples/cook/schema"
-	baseschema "github.com/pancsta/secai/schema"
+	"github.com/pancsta/secai/examples/cook/states"
 	"github.com/pancsta/secai/shared"
+	ssbase "github.com/pancsta/secai/states"
 	"github.com/pancsta/secai/tools/searxng"
 	"github.com/pancsta/secai/tui"
-	ssui "github.com/pancsta/secai/tui/states"
+	"github.com/pancsta/secai/web"
 )
 
 // Mock will run a sample scenario
@@ -73,19 +77,18 @@ var mock = Mock{
 // 	},
 // }
 
-var ss = sa.CookStates
-var ssT = ssui.TUIStates
+var ss = states.CookStates
 var SAdd = am.SAdd
 
 type S = am.S
 
 var WelcomeMessage = "Please wait while loading..."
 
-type StoryUI struct {
-	*sa.Story
+//go:embed web
+var webAssets embed.FS
 
-	Actions []shared.StoryAction
-}
+//go:embed config.tpl.kdl
+var ConfigTpl []byte
 
 // ///// ///// /////
 
@@ -118,7 +121,7 @@ type ConfigCook struct {
 }
 
 func ConfigDefault() Config {
-	return Config{
+	cfg := Config{
 		Config: shared.ConfigDefault(),
 		Cook: ConfigCook{
 			MinIngredients:         3,
@@ -131,6 +134,10 @@ func ConfigDefault() Config {
 			OrientingMoveThreshold: 0.5,
 		},
 	}
+	cfg.Agent.ID = "cook"
+	cfg.Agent.Dir = "tmp-cook"
+
+	return cfg
 }
 
 // ///// ///// /////
@@ -145,25 +152,23 @@ type Agent struct {
 
 	// public
 
-	Config      *Config
-	StoriesList []string
-	Stories     map[string]*StoryUI
-	UIs         []*tui.Tui
-	Msgs        []*shared.Msg
-	MemCutoff   atomic.Uint64
-	UINum       int
+	Config    *Config
+	MemCutoff atomic.Uint64
+
+	storiesOrder []string
+	stories      map[string]*shared.Story
+	tuis         []*tui.TUI
+	msgs         []*shared.Msg
+	tuiNum       int
 
 	// DB
 
-	dbConn        *sql.DB
-	dbQueries     *sqlc.Queries
-	character     atomic.Pointer[sa.ResultGenCharacter]
-	jokes         atomic.Pointer[sa.ResultGenJokes]
-	recipe        atomic.Pointer[sa.Recipe]
-	stepComments  atomic.Pointer[sa.ResultGenStepComments]
-	resources     atomic.Pointer[sa.ResultGenResources]
-	ingredients   atomic.Pointer[[]sa.Ingredient]
-	moveOrienting atomic.Pointer[sa.ResultOrienting]
+	dbConn       *sql.DB
+	dbQueries    *sqlc.Queries
+	jokes        atomic.Pointer[sa.ResultGenJokes]
+	recipe       atomic.Pointer[sa.Recipe]
+	stepComments atomic.Pointer[sa.ResultGenStepComments]
+	ingredients  atomic.Pointer[[]sa.Ingredient]
 
 	// machs
 
@@ -175,15 +180,12 @@ type Agent struct {
 
 	// prompts
 
-	pGenCharacter       *sa.PromptGenCharacter
-	pGenResources       *sa.PromptGenResources
 	pGenJokes           *sa.PromptGenJokes
 	pIngredientsPicking *sa.PromptIngredientsPicking
 	pRecipePicking      *sa.PromptRecipePicking
 	pGenSteps           *sa.PromptGenSteps
 	pGenStepComments    *sa.PromptGenStepComments
 	pCookingStarted     *sa.PromptCookingStarted
-	pOrienting          *sa.PromptOrienting
 
 	// internals
 
@@ -199,14 +201,23 @@ type Agent struct {
 	jokeRefusedMsg   bool
 	orientingPending bool
 	lastStoryCheck   uint64
+	handlersWeb      *web.Handlers
+	clockService     *tui.ClockService
+	lastActions      []shared.ActionInfo
+	lastStories      []shared.StoryInfo
 
-	// pSearchingLLM *secai.Prompt[schema.ParamsSearching, schema.ResultSearching]
-	// pAnswering    *secai.Prompt[schema.ParamsAnswering, schema.ResultAnswering]
+	// pSearchingLLM *secai.Prompt[sa.ParamsSearching, sa.ResultSearching]
+	// pAnswering    *secai.Prompt[sa.ParamsAnswering, sa.ResultAnswering]
 }
+
+var _ shared.AgentAPI = &Agent{}
+var _ agentllm.ChildAPI = &Agent{}
+var _ shared.AgentQueries[sqlc.Queries] = &Agent{}
 
 // NewCook returns a preconfigured instance of Agent.
 func NewCook(ctx context.Context, cfg *Config) (*Agent, error) {
-	a := New(ctx, ss.Names(), sa.CookSchema)
+	// TODO take CLI params
+	a := New(ctx)
 	if err := a.Init(cfg); err != nil {
 		return nil, err
 	}
@@ -215,9 +226,9 @@ func NewCook(ctx context.Context, cfg *Config) (*Agent, error) {
 }
 
 // New returns a custom instance of Agent.
-func New(ctx context.Context, states am.S, schema am.Schema) *Agent {
+func New(ctx context.Context) *Agent {
 	a := &Agent{
-		AgentLLM: agentllm.New(ctx, states, schema),
+		AgentLLM: agentllm.New(ctx, ss.Names(), states.CookSchema),
 	}
 
 	// defaults
@@ -227,7 +238,9 @@ func New(ctx context.Context, states am.S, schema am.Schema) *Agent {
 	a.reqLimitOk.Store(true)
 
 	// predefined msgs
-	a.Msgs = append(a.Msgs, shared.NewMsg(WelcomeMessage, shared.FromSystem))
+	a.msgs = append(a.msgs, shared.NewMsg(WelcomeMessage, shared.FromSystem))
+
+	a.Store().Web = webAssets
 
 	return a
 }
@@ -236,20 +249,13 @@ func (a *Agent) Init(cfg *Config) error {
 	var err error
 
 	APrefix = cfg.Agent.ID
-
-	// build config
 	a.Config = cfg
-	baseDefault := shared.ConfigDefault()
-	if err := mergo.Merge(&baseDefault, cfg.Config, mergo.WithOverride); err != nil {
-		return err
-	}
 
 	// call super
-	err = a.AgentLLM.Init(a, &baseDefault, LogArgs, sa.CookGroups, sa.CookStates, NewArgsRpc())
+	err = a.AgentLLM.Init(a, &a.Config.Config, LogArgs, states.CookGroups, states.CookStates, NewArgsRPC())
 	if err != nil {
 		return err
 	}
-	cfg.Config = baseDefault
 	mach := a.Mach()
 
 	// mach.AddBreakpoint(nil, S{ss.StoryRecipePicking}, true)
@@ -264,14 +270,11 @@ func (a *Agent) Init(cfg *Config) error {
 	}
 
 	// init prompts
-	a.pGenCharacter = sa.NewPromptGenCharacter(a)
-	a.pGenResources = sa.NewPromptGenResources(a)
 	a.pGenJokes = sa.NewPromptGenJokes(a)
 	a.pIngredientsPicking = sa.NewPromptIngredientsPicking(a)
 	a.pRecipePicking = sa.NewPromptRecipePicking(a)
 	a.pCookingStarted = sa.NewPromptCookingStarted(a)
 	a.pGenSteps = sa.NewPromptGenSteps(a)
-	a.pOrienting = sa.NewPromptOrienting(a)
 	a.pGenStepComments = sa.NewPromptGenStepComments(a)
 
 	// register tools
@@ -284,20 +287,252 @@ func (a *Agent) Init(cfg *Config) error {
 	}
 
 	a.initStories()
+	// TODO NewClockService
+	a.clockService = &tui.ClockService{
+		Cfg:       &a.Config.Config,
+		Hist:      a.Hist,
+		Agent:     mach,
+		SeriesLen: 15,
+		Height:    4,
+	}
+	err = mach.BindHandlers(a.clockService)
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
 
-type MemHandlers struct {
-	a *Agent
+func (a *Agent) Queries() *sqlc.Queries {
+	if a.dbQueries == nil {
+		a.dbQueries = sqlc.New(a.dbConn)
+	}
+
+	return a.dbQueries
 }
 
-func (m *MemHandlers) AnyState(_ *am.Event) {
-	// redraw on change
-	for _, ui := range m.a.UIs {
-		ui.Redraw()
-	}
+func (a *Agent) DBAgent() *sql.DB {
+	return a.dbConn
 }
+
+// HistoryStates returns a list of states to track in the history.
+func (a *Agent) HistoryStates() S {
+	trackedStates := slices.Clone(a.Mach().StateNames())
+	trackedStates = slices.DeleteFunc(trackedStates, func(s string) bool {
+		// dont track the global handler
+		return s == ss.CheckStories ||
+			// dont track UI and RemoteUI states
+			strings.HasPrefix(s, "UI") || strings.HasPrefix(s, "RemoteUI") ||
+			// no health states
+			s == ss.Heartbeat || s == ss.Healthcheck
+	})
+
+	return trackedStates
+}
+
+func (a *Agent) Splash() string {
+	cfg := a.Config
+	lines := []string{}
+	l := func(msg string, args ...any) {
+		lines = append(lines, fmt.Sprintf(msg, args...))
+	}
+	version := "devel"
+	if info, ok := debug.ReadBuildInfo(); ok {
+		version = info.Main.Version
+	}
+	logFile := shared.ConfigLogPath(cfg.Agent)
+	logAddr := shared.ConfigWebLogAddr(cfg.Web)
+	binary := shared.BinaryPath(&cfg.Config)
+
+	// HEADER
+
+	l("%s %s", cfg.Agent.Label, version)
+	l("")
+
+	// WEB
+
+	if cfg.Web.Addr != "-1" {
+		l("Web:")
+		l("- %s", cfg.Web.DashURL())
+		l("- %s", cfg.Web.AgentURL())
+		l("")
+	}
+
+	// FILES
+
+	l("Files:")
+	l("- config: %s", cfg.File)
+	l("- log:    %s", logFile)
+	l("")
+
+	// TUI
+
+	if cfg.TUI.PortSSH != -1 {
+		l("TUI:")
+		if cfg.TUI.PortWeb != -1 {
+			l("- http://%s:%d", cfg.TUI.Host, cfg.TUI.PortWeb)
+		}
+		l("- ssh %s -p %d -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no", cfg.TUI.Host, cfg.TUI.PortSSH)
+		l("")
+	}
+
+	// REPL
+
+	if cfg.Debug.REPL {
+		l("REPL:")
+		if cfg.Debug.REPLWeb != -1 {
+			l("- http://localhost:%d", cfg.Debug.REPLWeb)
+		}
+		l("- %s repl --config %s", binary, cfg.File)
+		l("")
+	}
+
+	// LOG
+
+	l("Log:")
+	if logAddr != "" {
+		l("- http://%s", logAddr)
+	}
+	l("- %s log --tail --config %s", binary, cfg.File)
+	l("- tail -f %s/%s.jsonl -n 100 | fblog -d -x msg -x time -x level", cfg.Agent.Dir, cfg.Agent.ID)
+	l("")
+
+	// DEBUGGER
+
+	if cfg.Debug.DBGEmbed && cfg.Debug.DBGAddr != "" {
+		_, httpAddr, sshAddr, err := shared.ConfigDbgAddrs(cfg.Debug)
+		if err == nil {
+			sshAddr2 := strings.Split(sshAddr, ":")
+			l("Debugger:")
+			if cfg.Debug.DBGEmbedWeb != -1 {
+				l("- http://localhost:%d", cfg.Debug.DBGEmbedWeb)
+			}
+			l("- files: http://%s", httpAddr)
+			l("- ssh %s -p %s -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no", sshAddr2[0], sshAddr2[1])
+			l("")
+		}
+	}
+
+	// DB
+
+	addrBase, addrAgent, addrHistory := shared.ConfigWebDBAddrs(cfg.Web)
+	if addrBase != "" {
+		l("DB:")
+		l("- Base: http://%s", addrBase)
+		l("- Agent: http://%s", addrAgent)
+		l("- History: http://%s", addrHistory)
+		l("")
+	}
+
+	// FOOTER
+
+	l("https://AI-gents.work")
+	l("")
+
+	return strings.Join(lines, "\n")
+}
+
+func (a *Agent) MachSchema() (am.Schema, am.S) {
+	return a.Mach().Schema(), a.Mach().StateNames()
+}
+
+func (a *Agent) Msgs() []*shared.Msg {
+	return a.msgs
+}
+
+func (a *Agent) MachMem() *am.Machine {
+	return a.mem
+}
+
+func (a *Agent) Stories() []shared.StoryInfo {
+	var stories []shared.StoryInfo
+	for _, key := range a.storiesOrder {
+		s := a.stories[key]
+		stories = append(stories, s.StoryInfo)
+	}
+
+	return stories
+}
+
+func (a *Agent) Story(state string) *shared.Story {
+	s, ok := a.stories[state]
+	if !ok {
+		return nil
+	}
+	return s
+}
+
+func (a *Agent) Actions() []shared.ActionInfo {
+	mach := a.Mach()
+	var ret []shared.ActionInfo
+	for _, key := range a.storiesOrder {
+		s := a.stories[key]
+
+		for i := range s.Actions {
+			act := &s.Actions[i]
+			if act.Label == "Overall progress" {
+				// TODO DEBUG
+				print()
+			}
+			info := shared.ActionInfo{
+				ID:           act.ID,
+				Label:        act.Label,
+				Desc:         act.Desc,
+				StateAdd:     act.StateAdd,
+				StateRemove:  act.StateRemove,
+				VisibleAgent: act.VisibleAgent.Check(mach),
+				VisibleMem:   act.VisibleMem.Check(a.mem),
+				LabelEnd:     act.LabelEnd,
+				Pos:          act.Pos,
+				PosInferred:  act.PosInferred,
+			}
+			if act.Value != nil {
+				info.Value = act.Value()
+			}
+			if act.ValueEnd != nil {
+				info.ValueEnd = act.ValueEnd()
+			}
+			if act.IsDisabled != nil {
+				info.IsDisabled = act.IsDisabled()
+			}
+			if act.Action != nil {
+				info.Action = true
+			}
+
+			ret = append(ret, info)
+		}
+	}
+
+	a.ValFile(nil, "actions", ret, "")
+	return ret
+}
+
+func (a *Agent) LLMResources() sallm.ParamsGenResources {
+	return sa.LLMResources
+}
+
+func (a *Agent) OrientingMoves() map[string]string {
+	ret := map[string]string{}
+
+	// collect and filter cooking moves
+	movesCooking := a.AgentImpl().MachMem().StateNamesMatch(sa.MatchSteps)
+	movesCooking = slices.DeleteFunc(movesCooking, func(state string) bool {
+		return amhelp.CantAdd1(a.AgentImpl().MachMem(), state, nil)
+	})
+
+	for _, move := range movesCooking {
+		// TODO desc
+		ret[move] = ""
+	}
+
+	return ret
+}
+
+//
+
+// private
+
+//
 
 func (a *Agent) initMem() error {
 	// TODO cook's mem schema
@@ -308,8 +543,8 @@ func (a *Agent) initMem() error {
 		a.MemCutoff.Add(a.mem.Time(nil).Sum(nil))
 	}
 
-	a.mem, err = am.NewCommon(mach.Ctx(), "memory-"+cfg.Agent.ID, baseschema.MemSchema,
-		baseschema.MemStates.Names(), nil, mach, nil)
+	a.mem, err = am.NewCommon(mach.Context(), "memory-"+cfg.Agent.ID, ssbase.MemSchema,
+		ssbase.MemStates.Names(), nil, mach, nil)
 	if err != nil {
 		return err
 	}
@@ -326,13 +561,13 @@ func (a *Agent) initMem() error {
 	// update stories memory change (via basic OnChange)
 	a.mem.OnChange(func(mach *am.Machine, before, after am.Time) {
 		a.renderStories(nil)
-		for _, ui := range a.UIs {
+		for _, ui := range a.tuis {
 			ui.Redraw()
 		}
 	})
 
 	// bind the new machine to all stories
-	for _, s := range a.Stories {
+	for _, s := range a.stories {
 		s.Memory.Mach = a.mem
 		// TODO safe?
 		s.Memory.TimeActivated = nil
@@ -342,252 +577,184 @@ func (a *Agent) initMem() error {
 	return nil
 }
 
-func (a *Agent) Queries() *sqlc.Queries {
-	if a.dbQueries == nil {
-		a.dbQueries = sqlc.New(a.dbConn)
-	}
-
-	return a.dbQueries
-}
-
-// TODO move to base agent
-func (a *Agent) StoryActivate(e *am.Event, story string) am.Result {
-	mach := a.Mach()
-
-	// TODO check the story group for [story] and return am.Canceled
-
-	return mach.EvAdd(e, S{ss.StoryChanged, ss.CheckStories}, PassAA(&AA{
-		StatesList:   S{story},
-		ActivateList: []bool{true},
-	}))
-}
-
-// TODO move to base agent
-func (a *Agent) StoryDeactivate(e *am.Event, story string) am.Result {
-	mach := a.Mach()
-
-	// TODO check the story group for [story] and return am.Canceled
-
-	return mach.EvAdd(e, S{ss.StoryChanged, ss.CheckStories}, PassAA(&AA{
-		StatesList:   S{story},
-		ActivateList: []bool{false},
-	}))
-}
-
-// Phrase returns a random phrase from resources under [key], or an empty string.
-// TODO move to base agent
-func (a *Agent) Phrase(key string, args ...any) string {
-	r := a.resources.Load()
-	if r == nil || len(r.Phrases[key]) == 0 {
-		return ""
-	}
-	txt := r.Phrases[key][rand.Intn(len(r.Phrases[key]))]
-
-	return fmt.Sprintf(txt, args...)
-}
-
-// OutputPhrase is sugar for Phrase followed by Output FromAssistant.
-func (a *Agent) OutputPhrase(key string, args ...any) error {
-	txt := a.Phrase(key, args...)
-	if txt != "" {
-		a.Log("output phrase", "key", key)
-		a.Output(txt, shared.FromAssistant)
-		return nil
-	}
-
-	return fmt.Errorf("phrase not found: %s", key)
-}
-
-// initStories inits Stories and their buttons
+// initStories inits stories and their buttons
 func (a *Agent) initStories() {
 	mach := a.Mach()
 
-	a.Stories = map[string]*StoryUI{
+	// TODO NewAction & merge
+	a.stories = map[string]*shared.Story{
 
 		// waking up (progress bar)
-		sa.CookStates.StoryWakingUp: {
-			Story: sa.StoryWakingUp.Clone(),
-			Actions: []shared.StoryAction{
-				{
-					Label: "Overall progress",
-					Desc:  "This is the progress of the whole cooking session flow",
-					Value: func() int {
-						// TODO switch assumes the first active, when we'd like the last active
-						return slices.Index(sa.CookGroups.MainFlow,
-							mach.Switch(sa.CookGroups.MainFlow))
-					},
-					ValueEnd: func() int {
-						return len(sa.CookGroups.MainFlow) - 1
-					},
+		ss.StoryWakingUp: sa.StoryWakingUp.New([]shared.Action{
+			{
+				ID:    amhelp.RandId(8),
+				Label: "Overall progress",
+				Desc:  "This is the progress of the whole cooking session flow",
+				Value: func() int {
+					// TODO switch assumes the first active, when we'd like the last active
+					return slices.Index(states.CookGroups.MainFlow,
+						mach.Switch(states.CookGroups.MainFlow))
 				},
-				{
-					Label: "Waking up",
-					Desc:  "This button shows the progress of waking up",
-					Value: func() int {
-						return len(mach.ActiveStates(sa.CookGroups.BootGenReady))
-					},
-					ValueEnd: func() int {
-						return len(sa.CookGroups.BootGen)
-					},
-					VisibleCook: amhelp.Cond{
-						Not: S{ss.Ready},
-					},
+				ValueEnd: func() int {
+					return len(states.CookGroups.MainFlow) - 1
 				},
 			},
-		},
+			{
+				ID:    amhelp.RandId(8),
+				Label: "Waking up",
+				Desc:  "This button shows the progress of waking up",
+				Value: func() int {
+					return len(mach.ActiveStates(states.CookGroups.BootGenReady))
+				},
+				ValueEnd: func() int {
+					return len(states.CookGroups.BootGen)
+				},
+				VisibleAgent: amhelp.Cond{
+					Not: S{ss.Ready},
+				},
+			},
+		}),
 
 		// joke (hidden / visible / active)
-		sa.CookStates.StoryJoke: {
-			Story: sa.StoryJoke.Clone(),
-			Actions: []shared.StoryAction{
-				{
-					Label: "Joke?",
-					Desc:  "This button tells a joke",
-					VisibleCook: amhelp.Cond{
-						Any1: S{ss.StoryIngredientsPicking, ss.StoryRecipePicking, ss.StoryCookingStarted, ss.StoryMealReady},
-					},
-					IsDisabled: func() bool {
-						return mach.Is1(ss.StoryJoke)
-					},
-					Action: func() {
-						// TODO extract as TellJokeState
-						s := a.Stories[ss.StoryJoke]
+		ss.StoryJoke: sa.StoryJoke.New([]shared.Action{
+			{
+				ID:    amhelp.RandId(8),
+				Label: "Joke?",
+				Desc:  "This button tells a joke",
+				VisibleAgent: amhelp.Cond{
+					Any1: S{ss.StoryIngredientsPicking, ss.StoryRecipePicking, ss.StoryCookingStarted, ss.StoryMealReady},
+				},
+				IsDisabled: func() bool {
+					return mach.Is1(ss.StoryJoke)
+				},
+				Action: func() {
+					// TODO extract as TellJokeState
+					s := a.stories[ss.StoryJoke]
 
-						if !a.hasJokes() {
-							a.Output("The cook is working on new jokes.", shared.FromNarrator)
-						}
-						s.Epoch = a.MemCutoff.Load()
-						if s.CanActivate(s.Story) {
-							// activate via ChangeStories, not directly
-							_ = a.StoryActivate(nil, ss.StoryJoke)
-						} else if !a.jokeRefusedMsg {
-							// memorize the refusal
-							a.jokeRefusedMsg = true
-							_ = a.OutputPhrase("NoCookingNoJokes")
-						} else {
-							a.Log("repeated no jokes")
-						}
+					if !a.hasJokes() {
+						a.Output("The cook is working on new jokes.", shared.FromNarrator)
+					}
+					s.Epoch = a.MemCutoff.Load()
+					if s.CanActivate(s) {
+						// activate via ChangeStories, not directly
+						_ = a.StoryActivate(nil, ss.StoryJoke)
+					} else if !a.jokeRefusedMsg {
+						// memorize the refusal
+						a.jokeRefusedMsg = true
+						_ = a.OutputPhrase("NoCookingNoJokes")
+					} else {
+						a.Log("repeated no jokes")
+					}
+				},
+			},
+		}),
+
+		ss.StoryIngredientsPicking: sa.StoryIngredientsPicking.New([]shared.Action{
+			{
+				ID: amhelp.RandId(8),
+				Value: func() int {
+					return len(*a.ingredients.Load())
+				},
+				ValueEnd: func() int {
+					return a.Config.Cook.MinIngredients
+				},
+				Label:    "Collecting ingredients",
+				LabelEnd: "Ingredients ready",
+				Desc:     "This button shows a progress of collecting ingredients",
+				VisibleAgent: amhelp.Cond{
+					Is:  S{ss.Ready},
+					Not: S{ss.StoryCookingStarted},
+				},
+			},
+		}),
+
+		ss.StoryRecipePicking: sa.StoryRecipePicking.New(nil),
+
+		ss.StoryCookingStarted: sa.StoryCookingStarted.New([]shared.Action{
+			{
+				ID: amhelp.RandId(8),
+				Value: func() int {
+					return 1 + len(a.mem.ActiveStates(a.allSteps()))
+				},
+				ValueEnd: func() int {
+					// fix the progress for optional steps
+					if mach.Is1(ss.StoryMealReady) {
+						return len(a.mem.ActiveStates(a.allSteps()))
+					}
+
+					return 1 + len(a.allSteps())
+				},
+				Label:    "Cooking steps",
+				LabelEnd: "Cooking completed",
+				Desc:     "This button shows the progress of cooking",
+				VisibleAgent: amhelp.Cond{
+					Any: []S{
+						{ss.StoryCookingStarted, ss.StepsReady},
+						{ss.StoryMealReady},
 					},
 				},
 			},
-		},
+			// other buttons are created by [Agent.StoryCookingStartedState]
+		}),
 
-		sa.CookStates.StoryIngredientsPicking: {
-			Story: sa.StoryIngredientsPicking,
-			Actions: []shared.StoryAction{
-				{
-					Value: func() int {
-						return len(*a.ingredients.Load())
-					},
-					ValueEnd: func() int {
-						return a.Config.Cook.MinIngredients
-					},
-					Label:    "Collecting ingredients",
-					LabelEnd: "Ingredients ready",
-					Desc:     "This button shows a progress of collecting ingredients",
-					VisibleCook: amhelp.Cond{
-						Is:  S{ss.Ready},
-						Not: S{ss.StoryCookingStarted},
-					},
+		ss.StoryMealReady: sa.StoryMealReady.New(nil),
+
+		ss.StoryStartAgain: sa.StoryStartAgain.New([]shared.Action{
+			{
+				ID:    amhelp.RandId(8),
+				Label: sa.StoryStartAgain.Title,
+				Desc:  sa.StoryStartAgain.Desc,
+				VisibleAgent: amhelp.Cond{
+					Is:  S{ss.StoryMealReady},
+					Not: S{ss.StoryStartAgain},
+				},
+				Action: func() {
+					a.StoryActivate(nil, ss.StoryStartAgain)
 				},
 			},
-		},
+		}),
 
-		sa.CookStates.StoryRecipePicking: {
-			Story: sa.StoryRecipePicking,
-			// TODO buttons?
-		},
-
-		sa.CookStates.StoryCookingStarted: {
-			Story: sa.StoryCookingStarted,
-			Actions: []shared.StoryAction{
-				{
-					Value: func() int {
-						return 1 + len(a.mem.ActiveStates(a.allSteps()))
-					},
-					ValueEnd: func() int {
-						// fix the progress for optional steps
-						if mach.Is1(ss.StoryMealReady) {
-							return len(a.mem.ActiveStates(a.allSteps()))
-						}
-
-						return 1 + len(a.allSteps())
-					},
-					Label:    "Cooking steps",
-					LabelEnd: "Cooking completed",
-					Desc:     "This button shows the progress of cooking",
-					VisibleCook: amhelp.Cond{
-						Any1: S{ss.StoryCookingStarted, ss.StoryMealReady},
-					},
+		ss.StoryMemoryWipe: sa.StoryMemoryWipe.New([]shared.Action{
+			{
+				ID:    amhelp.RandId(8),
+				Label: sa.StoryMemoryWipe.Title,
+				Desc:  sa.StoryMemoryWipe.Desc,
+				VisibleAgent: amhelp.Cond{
+					Is:  S{ss.StoryMealReady},
+					Not: S{ss.StoryMemoryWipe},
+				},
+				Action: func() {
+					a.StoryActivate(nil, ss.StoryMemoryWipe)
 				},
 			},
-			// other buttons are created by [AgentLLM.StoryCookingStartedState]
-		},
-
-		sa.CookStates.StoryMealReady: {
-			Story: sa.StoryMealReady,
-		},
-
-		sa.CookStates.StoryStartAgain: {
-			Story: sa.StoryStartAgain,
-			Actions: []shared.StoryAction{
-				{
-					Label: sa.StoryStartAgain.Title,
-					Desc:  sa.StoryStartAgain.Desc,
-					VisibleCook: amhelp.Cond{
-						Is:  S{ss.StoryMealReady},
-						Not: S{ss.StoryStartAgain},
-					},
-					Action: func() {
-						a.StoryActivate(nil, ss.StoryStartAgain)
-					},
-				},
-			},
-		},
-
-		sa.CookStates.StoryMemoryWipe: {
-			Story: sa.StoryMemoryWipe,
-			Actions: []shared.StoryAction{
-				{
-					Label: sa.StoryMemoryWipe.Title,
-					Desc:  sa.StoryMemoryWipe.Desc,
-					VisibleCook: amhelp.Cond{
-						Is:  S{ss.StoryMealReady},
-						Not: S{ss.StoryMemoryWipe},
-					},
-					Action: func() {
-						a.StoryActivate(nil, ss.StoryMemoryWipe)
-					},
-				},
-			},
-		},
+		}),
 	}
 
 	// sort stories according to the schema
 	var list []string
-	for _, s := range sa.CookGroups.Stories {
-		if _, ok := a.Stories[s]; !ok {
+	for _, s := range states.CookGroups.Stories {
+		if _, ok := a.stories[s]; !ok {
 			// TODO log
 			continue
 		}
 
 		list = append(list, s)
 	}
-	a.StoriesList = list
+	a.storiesOrder = list
 
 	// bind the machines to all the stories
-	for _, s := range a.Stories {
-		s.Cook.Mach = mach
+	for _, s := range a.stories {
+		s.Agent.Mach = mach
 		s.Memory.Mach = a.mem
 	}
 }
 
-// allSteps returns all the step states (but only final or solo ines) from the memory machine.
+// allSteps returns all the step states (but only final or solo ones) from the memory machine.
 func (a *Agent) allSteps() S {
 	memSchema := a.mem.Schema()
 	ret := S{}
 	for _, name := range a.mem.StateNamesMatch(sa.MatchSteps) {
-		if name == sa.MemMealReady {
+		if name == states.MemMealReady {
 			continue
 		}
 
@@ -604,60 +771,50 @@ func (a *Agent) allSteps() S {
 	return ret
 }
 
-// HistoryStates returns a list of states to track in the history.
-func (a *Agent) HistoryStates() S {
-	trackedStates := a.Mach().StateNames()
-
-	// dont track a global handler
-	trackedStates = shared.SlicesWithout(trackedStates, ss.CheckStories)
-
-	return trackedStates
-}
-
 func (a *Agent) renderStories(e *am.Event) {
-	for _, ui := range a.UIs {
-		stories := ui.MachTUI
-		if stories == nil {
-			continue
-		}
+	// gen
+	actions := a.Actions()
+	stories := a.Stories()
 
-		// pass to the UI
-		stories.EvAdd1(e, ssT.ReqReplaceStories, PassAA(&AA{
-			Actions: a.storiesButtons(),
-			Stories: a.storiesInfo(),
-		}))
+	// check diff
+	if cmp.Diff(actions, a.lastActions) == "" {
+		actions = nil
 	}
-}
-
-// storiesInfo extracts stories info from the stories map, according to the ordered list.
-func (a *Agent) storiesInfo() []shared.StoryInfo {
-	var stories []shared.StoryInfo
-	for _, key := range a.StoriesList {
-		s := a.Stories[key]
-		stories = append(stories, s.StoryInfo)
+	if cmp.Diff(stories, a.lastStories) == "" {
+		stories = nil
+	}
+	if actions == nil && stories == nil {
+		return
 	}
 
-	return stories
+	// render and cache
+	a.Mach().EvAdd1(e, ss.UIRenderStories, Pass3RPC(&A3{
+		Actions: actions,
+		Stories: stories,
+	}))
+	a.lastActions = actions
+	a.lastStories = stories
 }
 
-func (a *Agent) storiesButtons() []shared.StoryAction {
-	mach := a.Mach()
-	var buts []shared.StoryAction
-	for _, key := range a.StoriesList {
-		s := a.Stories[key]
-
-		for _, but := range s.Actions {
-			// skip invisible ones
-			if !but.VisibleCook.Check(mach) || !but.VisibleMem.Check(a.mem) {
-				continue
-			}
-
-			buts = append(buts, but)
-		}
-	}
-
-	return buts
-}
+// TODO remove?
+// func (a *Agent) actions() []shared.Action {
+// 	mach := a.Mach()
+// 	var ret []shared.Action
+// 	for _, key := range a.storiesOrder {
+// 		s := a.stories[key]
+//
+// 		for _, but := range s.Actions {
+// 			// skip invisible ones
+// 			if !but.VisibleAgent.Check(mach) || !but.VisibleMem.Check(a.mem) {
+// 				continue
+// 			}
+//
+// 			ret = append(ret, but)
+// 		}
+// 	}
+//
+// 	return ret
+// }
 
 func (a *Agent) hasJokes() bool {
 	j := a.jokes.Load()
@@ -678,15 +835,18 @@ func (a *Agent) runOrienting(ctx context.Context, e *am.Event) {
 	}
 
 	// run parallel orienting
-	mach.EvAdd1(e, ss.Orienting, PassAA(&AA{
+	mach.EvAdd1(e, ss.Orienting, Pass3(&A3{
 		Prompt: a.UserInput,
 	}))
 }
 
 func (a *Agent) nextUIName() string {
-	idx := strconv.Itoa(len(a.UIs))
-	a.UINum++
+	idx := strconv.Itoa(len(a.tuis))
+	a.tuiNum++
 	return idx
+}
+
+func (a *Agent) redrawClock(e *am.Event) {
 }
 
 // ///// ///// /////
@@ -694,6 +854,24 @@ func (a *Agent) nextUIName() string {
 // ///// MISC
 
 // ///// ///// /////
+
+func validateStepSchema(schema am.Schema, stepStates, allStates am.S) error {
+	// TODO check min steps amount
+
+	// check if going 1,2,3..n will end on MealReady
+	mach := am.New(context.Background(), schema, nil)
+	for _, step := range stepStates {
+		mach.Add1(step, nil)
+	}
+
+	if !mach.Is1(states.MemMealReady) {
+		return fmt.Errorf("step schema is invalid: %s", stepStates)
+	}
+
+	// TODO should fail when actiavted from the end
+
+	return nil
+}
 
 // sorting steps
 
@@ -752,62 +930,71 @@ func (s sortStepsByIdx) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
 
 // aliases
 
-type AA = shared.A
-type AARpc = shared.ARpc
+// AgentLLM args
 
-// PassAA is shared.Pass.
-var PassAA = shared.Pass
+type A2 = agentllm.A
+type A2RPC = agentllm.ARPC
+
+var Pass2 = agentllm.Pass
+var Pass2RPC = agentllm.PassRPC
+
+// secai args
+
+type A3 = shared.A
+type A3RPC = shared.ARPC
+
+var Pass3 = shared.Pass
+var Pass3RPC = shared.PassRPC
 
 // APrefix is the args prefix, set from config.
 var APrefix = "cook"
 
 // A is a struct for node arguments. It's a typesafe alternative to [am.A].
 type A struct {
-	// base args of the framework
-	*shared.A
+	// base args
+	*agentllm.A
 
 	// agent's args
-	Move *sa.ResultOrienting `log:"move"`
-	TUI  *tui.Tui
+	TUI *tui.TUI
 
 	// agent's non-RPC args
+
 	// TODO
 }
 
 func NewArgs() A {
-	return A{A: &shared.A{}}
+	return A{A: &agentllm.A{}}
 }
 
-func NewArgsRpc() ARpc {
-	// TODO should be shared.ARpc
-	return ARpc{A: &shared.A{}}
+func NewArgsRPC() ARPC {
+	return ARPC{A: &shared.A{}}
 }
 
-// ARpc is a subset of [A] that can be passed over RPC (eg no channels, conns, etc)
-type ARpc struct {
+// ARPC is a subset of [A] that can be passed over RPC (eg no channels, conns, etc)
+type ARPC struct {
 	// base args of the framework
 	*shared.A
 
 	// agent's args
-	Move *sa.ResultOrienting `log:"move"`
+	Move *sallm.ResultOrienting `log:"move"`
 }
 
 // ParseArgs extracts A from [am.Event.Args][APrefix] (decoder).
 func ParseArgs(args am.A) *A {
 	// RPC-only args (pointer)
-	if r, ok := args[APrefix].(*ARpc); ok {
+	if r, ok := args[APrefix].(*ARPC); ok {
 		a := amhelp.ArgsToArgs(r, &A{})
 		// decode base args
-		a.A = shared.ParseArgs(args)
+		a.A = agentllm.ParseArgs(args)
 
 		return a
 	}
 
 	// RPC-only args (value, eg from a network transport)
-	if r, ok := args[APrefix].(ARpc); ok {
+	if r, ok := args[APrefix].(ARPC); ok {
 		a := amhelp.ArgsToArgs(&r, &A{})
 		// decode base args
-		a.A = shared.ParseArgs(args)
+		a.A = agentllm.ParseArgs(args)
 
 		return a
 	}
@@ -815,14 +1002,14 @@ func ParseArgs(args am.A) *A {
 	// regular args (pointer)
 	if a, _ := args[APrefix].(*A); a != nil {
 		// decode base args
-		a.A = shared.ParseArgs(args)
+		a.A = agentllm.ParseArgs(args)
 
 		return a
 	}
 
 	// defaults
 	return &A{
-		A: shared.ParseArgs(args),
+		A: agentllm.ParseArgs(args),
 	}
 }
 
@@ -835,18 +1022,18 @@ func Pass(args *A) am.A {
 	out := am.A{APrefix: &clone}
 
 	// merge with base args
-	return am.AMerge(out, shared.Pass(args.A))
+	return am.AMerge(out, agentllm.Pass(args.A))
 }
 
-// PassRpc is a network-safe version of Pass. Use it when mutating aRPC workers.
-func PassRpc(args *A) am.A {
+// PassRPC is a network-safe version of Pass. Use it when mutating aRPC workers.
+func PassRPC(args *A) am.A {
 	// dont nest in plain maps
-	clone := *amhelp.ArgsToArgs(args, &ARpc{})
+	clone := *amhelp.ArgsToArgs(args, &ARPC{})
 	clone.A = nil
 	out := am.A{APrefix: clone}
 
 	// merge with base args
-	return am.AMerge(out, shared.PassRpc(args.A))
+	return am.AMerge(out, agentllm.PassRPC(args.A))
 }
 
 // LogArgs is an args logger for A and [secai.A].

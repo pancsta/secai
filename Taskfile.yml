@@ -1,168 +1,56 @@
 version: '3'
-dotenv: [ '.env' ]
+dotenv: [ '.env', '{{.SECAI_AGENT_DIR}}/config.env' ]
 includes:
   shared:
     taskfile: ./config
     flatten: true
-    excludes: [install-deps]
 
 tasks:
 
-  gen-sql-agent:
+  secai-start:
+    requires:
+      vars: [ SECAI_AGENT_DIR ]
+    dir: '{{.SECAI_AGENT_DIR}}'
+    cmd: task build
+
+  secai-build:
+    requires:
+      vars: [ SECAI_AGENT_DIR ]
+    dir: '{{.SECAI_AGENT_DIR}}'
+    cmd: task build
+
+  secai-gen-sql:
+    cmds:
+      - go run ./scripts/gen_sql_schema
+      - go tool sqlc generate
+
+  secai-gen-sql-agent:
     requires:
       vars: [ SECAI_AGENT_DIR ]
     dir: "{{.SECAI_AGENT_DIR}}"
     cmd: task gen-sql
 
-  docker-build:
-    env:
-      DOCKER_BUILDKIT: 1
-    cmd: docker build -t secai/{{.SECAI_ID}}
-      --build-arg SECAI_ID="{{.SECAI_ID}}"
-      -f deploy/agent/Dockerfile ..
+  deps-wasm-graph:
+    dir: web/browser
+    cmd: godepgraph -tags "wasm,js" -s . | dot -Tsvg -o deps-graph.svg
 
-  docker-compose-start:
-    dotenv: ["deploy/agent/agent.env"]
-#    cmd: env
-    cmd: docker-compose -f ./deploy/agent/docker-compose.yml
-      up -d
-#      up -d --force-recreate
+  deps-wasm:
+    dir: web/browser
+    cmd: go list -deps 
+      -f '{{ "{{" }}.ImportPath{{ "}}" }} {{ "{{" }}.Imports{{ "}}" }}'
+      -tags wasm,js .
+        > deps.md
 
-  docker-compose-stop:
-    cmd: docker-compose -f ./deploy/agent/docker-compose.yml
-      down
+  release:
+    cmds:
+      - task --dir {{.SECAI_AGENT_DIR}} build-wasm
+      - task: gen-license
+      - rm -R dist/*
+      - go tool goreleaser release --clean --skip publish --skip validate
 
-  dev-docker-build:
-    env:
-      DOCKER_BUILDKIT: 1
-    cmd: docker build -t secai/{{.SECAI_ID}}-dev
-      --build-arg SECAI_ID="{{.SECAI_ID}}"
-      -f deploy/agent/Dockerfile ..
-
-  dev-docker-compose-start:
-    dotenv: ["deploy/agent/agent.env"]
-    env:
-      SECAI_ENV: "-dev"
-#    cmd: env
-    cmd: docker-compose -f ./deploy/agent/docker-compose.yml
-      up -d
-#      up -d --force-recreate
-
-  dev-docker-compose-stop:
-    env:
-      SECAI_ENV: "-dev"
-    cmd: docker-compose -f ./deploy/agent/docker-compose.yml
-      down
-
-  install-deps:
+  gen-license:
     ignore_error: true
     cmds:
-      - task: shared:install-deps
-      - cargo install fblog
-
-  am-dbg-update:
-    dir: ../asyncmachine-go
-    cmds:
-      - go install ./tools/cmd/am-dbg
-
-  repl-update:
-    dir: ../asyncmachine-go
-    cmds:
-      - go install ./tools/cmd/arpc
-
-  am-dbg-dev:
-    requires:
-      vars: [AM_DBG_ADDR]
-    env:
-      AM_DBG_ADDR: '{{.AM_DBG_ADDR}}'
-    desc: Start the TUI debugger
-    silent: false
-    ignore_error: true
-    dir: ../asyncmachine-go
-    cmd: task am-dbg -- 
-      --log-level 2
-      --dir "{{.SECAI_DIR_ABS}}"
-      --output-diagrams 3
-      --output-clients
-      --listen-on {{.AM_DBG_ADDR}}
-      {{.CLI_ARGS}}
-
-  dashboard-repl-dev:
-    ignore_error: true
-    requires:
-      vars: [SECAI_DIR, SECAI_ID]
-    env:
-      SECAI_DIR_ABS: "{{.SECAI_DIR_ABS}}"
-    dir: ../asyncmachine-go
-    desc: Start a dashboard with am-dbg and a REPL
-    cmds:
-      - task: am-dbg-dashboard-exit
-      - zellij --session secai-dash-{{.SECAI_ID}}
-          --new-session-with-layout {{.USER_WORKING_DIR}}/config/dash-repl.kdl
-      - task: am-dbg-dashboard-exit
-
-  dashboard-wide-narrow-dev:
-    ignore_error: true
-    requires:
-      vars: [SECAI_DIR, SECAI_ID]
-    dir: ../asyncmachine-go
-    desc: Start a dashboard with 2 instances of am-dbg
-    env:
-      SECAI_DIR_ABS: "{{.SECAI_DIR_ABS}}"
-    cmds:
-      - task: am-dbg-dashboard-exit
-      - zellij --session secai-dash-{{.SECAI_ID}}
-          --new-session-with-layout {{.USER_WORKING_DIR}}/config/dash-wide-narrow.kdl
-      - task: am-dbg-dashboard-exit
-
-  dashboard-wn-repl-dev:
-    ignore_error: true
-    requires:
-      vars: [SECAI_DIR, SECAI_ID]
-    env:
-      SECAI_DIR_ABS: "{{.SECAI_DIR_ABS}}"
-    dir: ../asyncmachine-go
-    desc: Start a dashboard with 2 instances of am-dbg and a REPL
-    cmds:
-      - task: am-dbg-dashboard-exit
-      - zellij --session secai-dash-{{.SECAI_ID}}
-          --new-session-with-layout {{.USER_WORKING_DIR}}/config/dash-wide-narrow-repl.kdl
-      - task: am-dbg-dashboard-exit
-
-  am-dbg-delve:
-    silent: false
-    dir: ../asyncmachine-go
-    cmd: dlv debug --headless --listen=:2345 --api-version=2 --accept-multiclient
-      ./tools/cmd/am-dbg -- 
-        --dir {{.SECAI_DIR}}
-        --graph 3
-        --clean-on-connect 
-        {{.CLI_ARGS}}
-
-  am-dbg-debug:
-    silent: false
-    cmd: task am-dbg -- 
-      --am-dbg-addr localhost:9913
-      --log-level 2
-      --dir {{.SECAI_DIR}}
-      --graph 3
-      {{.CLI_ARGS}}
-
-  am-dbg-delve-debug:
-    silent: false
-    dir: ../asyncmachine-go
-    cmd: dlv debug --headless --listen=:2345 --api-version=2 --accept-multiclient
-      ./tools/cmd/am-dbg -- 
-        --am-dbg-addr localhost:9913
-        --log-level 2
-        --dir {{.SECAI_DIR}}
-        --graph 3
-        --clean-on-connect 
-        {{.CLI_ARGS}}
-
-  start-metrics-docker:
-    desc: Start docker-compose with Grafana for Docker Engine
-    cmds:
-      - docker-compose -f deploy/docker-metrics/docker-compose.yml up -d --force-recreate
-      - |
-        echo Grafana: http://localhost:3001
+      - go tool go-licenses check .
+      - cp LICENSE LICENSE.md
+      - go tool go-licenses report ./ --template config/license.tpl >> LICENSE.md

@@ -21,11 +21,11 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/pancsta/secai"
-	baseschema "github.com/pancsta/secai/schema"
-	"github.com/pancsta/secai/tools/searxng/schema"
+	baseschema "github.com/pancsta/secai/states"
+	"github.com/pancsta/secai/tools/searxng/states"
 )
 
-var ss = schema.States
+var ss = states.States
 var id = "searxng"
 var title = "Web Search Results"
 
@@ -34,19 +34,19 @@ type Tool struct {
 	*am.ExceptionHandler
 
 	queries []string
-	result  *schema.Result
+	result  *states.Result
 	cfg     shared.ConfigSearXNG
 }
 
 //go:embed config
 var cfgFolder embed.FS
 
-func New(agent secai.AgentAPI) (*Tool, error) {
+func New(agent shared.AgentBaseAPI) (*Tool, error) {
 	var err error
 	t := &Tool{
 		cfg: agent.ConfigBase().Tools.SearXNG,
 	}
-	t.Tool, err = secai.NewTool(agent, id, title, ss.Names(), schema.Schema)
+	t.Tool, err = secai.NewTool(agent, id, title, ss.Names(), states.Schema)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +77,7 @@ func (t *Tool) Document() *secai.Document {
 }
 
 // Search is a blocking method that performs the search.
-func (t *Tool) Search(ctx context.Context, params *schema.Params) (*schema.Result, error) {
+func (t *Tool) Search(ctx context.Context, params *states.Params) (*states.Result, error) {
 	mach := t.Mach()
 	mach.Add1(ss.Working, nil)
 	defer mach.Add1(ss.Idle, nil)
@@ -130,7 +130,7 @@ func (t *Tool) Search(ctx context.Context, params *schema.Params) (*schema.Resul
 			}
 			defer resp.Body.Close()
 
-			var result schema.Result
+			var result states.Result
 			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 				mach.AddErr(err, nil)
 				return nil
@@ -163,7 +163,7 @@ func (t *Tool) Search(ctx context.Context, params *schema.Params) (*schema.Resul
 		}
 	}
 
-	t.result = &schema.Result{
+	t.result = &states.Result{
 		Results:  merged,
 		Category: params.Category,
 	}

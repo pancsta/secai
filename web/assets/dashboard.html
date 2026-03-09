@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" class="bg-base-300">
+<head>
+  <meta charset="UTF-8">
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>AI-gent Cook</title>
+  <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css"/>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css"/>
+</head>
+<body class="p-10 bg-base-300">
+<div id="app">
+
+  <div class="card card-border bg-base-100 mb-5">
+    <div class="card-body">
+      <h2 class="card-title text-warning">AI-gent Cook Dashboard</h2>
+      <p>This bot will help you pick a recipe from available ingredients, break it into actionable steps, and follow you
+        during the cooking process. You're using a technology preview of <a class="text-info hover:underline"
+            href="https://ai-gents.work">secai</a>.</p>
+    </div>
+
+    <div class="text-right pb-3 pr-3">
+      <div class="badge badge-success">Connection OK</div>
+      <div class="badge badge-error">Config Error</div>
+    </div>
+  </div>
+
+  <div class="content-center">
+    <fieldset class="fieldset bg-base-100 border-base-300 rounded-box w-xs border p-4 mb-5 mx-auto">
+      <legend class="fieldset-legend text-lg">Config</legend>
+      <label class="select">
+        <span class="label">AI backend</span>
+        <select class="select">
+          <option>OpenAI</option>
+          <option>DeepSeek</option>
+          <option>Gemini</option>
+          <option>OpenAI compatible</option>
+        </select>
+      </label>
+
+      <input class="input validator" type="password" required placeholder="API key"/>
+      <div class="validator-hint">API key not valid</div>
+
+      <input class="input validator" type="url" required placeholder="Base URL"/>
+      <div class="validator-hint">URL not valid</div>
+      <input class="input validator" type="password" required placeholder="API Key"/>
+      <div class="validator-hint">API key not valid</div>
+      <input class="input" required placeholder="Model name"/>
+
+      <button class="btn btn-neutral mt-4">Save</button>
+    </fieldset>
+  </div>
+
+  <div class="mockup-code w-full mb-5">
+    <pre>AI-gent Cook v0.4.1-0.20260213101021-da4ea2c7db71+dirty</pre>
+    <pre></pre>
+    <pre>Config:</pre>
+    <pre>- config/cook.kdl</pre>
+    <pre></pre>
+    <pre>Web TUI:</pre>
+    <pre>- <a target=_blank class="text-info hover:underline"
+        href="http://localhost:12854">http://localhost:12854</a></pre>
+    <pre></pre>
+    <pre>TUI:</pre>
+    <pre>- ssh localhost -p 7955 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no</pre>
+    <pre></pre>
+    <pre>Log:</pre>
+    <pre>- tail -f tmp/cook/cook.jsonl -n 100 | fblog -d -x msg -x time -x level</pre>
+    <pre></pre>
+    <pre>Web REPL:</pre>
+    <pre>- <a target=_blank class="text-info hover:underline"
+        href="http://localhost:12855">http://localhost:12855</a></pre>
+    <pre></pre>
+    <pre>REPL:</pre>
+    <pre>- ./arpc --dir tmp/cook</pre>
+    <pre></pre>
+    <pre>https://ai-gents.work</pre>
+    <pre>WASM relay debug, loading .env</pre>
+    <pre>WASM relay listening on localhost:12854</pre>
+  </div>
+
+  <h2 class="text-xl mb-5">Active Requests</h2>
+  <ul class="list bg-base-100 rounded-box mb-5">
+
+    <li class="list-row">
+      <div class="size-10 pt-3">AI</div>
+      <div class="tooltip" data-tip="5">
+        <progress class="progress mt-4" value="5" max="10"></progress>
+      </div>
+      <div class="size-3 pt-3">1</div>
+    </li>
+
+    <li class="list-row">
+      <div class="size-10 pt-3">Tools</div>
+      <div class="tooltip" data-tip="0">
+        <progress class="progress mt-4" value="0" max="10"></progress>
+      </div>
+      <div class="size-3 pt-3">1</div>
+    </li>
+  </ul>
+
+  <footer class="footer sm:footer-horizontal footer-center rounded-box bg-base-100 text-base-content p-4">
+    <aside>
+      <p>2025-2026 <a class="text-info hover:underline" href="https://ai-gents.work">AI-gents.work</a></p>
+    </aside>
+  </footer>
+</div>
+</body>
+</html>

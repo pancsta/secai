@@ -6,34 +6,49 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 
-	"github.com/gdamore/tcell/v2"
-	"github.com/gdamore/tcell/v2/terminfo"
-	"github.com/gliderlabs/ssh"
+	"github.com/charmbracelet/ssh"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
 	arpc "github.com/pancsta/asyncmachine-go/pkg/rpc"
+	ssam "github.com/pancsta/asyncmachine-go/pkg/states"
 	"github.com/pancsta/cview"
+	"github.com/pancsta/tcell-v2"
+	"github.com/pancsta/tcell-v2/terminfo"
 
-	baseschema "github.com/pancsta/secai/schema"
 	"github.com/pancsta/secai/shared"
+	ssbase "github.com/pancsta/secai/states"
 	"github.com/pancsta/secai/tui/states"
 )
 
-type Tui struct {
-	MachTUI *am.Machine
+// aliases
+
+type A = shared.A
+type S = am.S
+
+var ParseArgs = shared.ParseArgs
+var Pass = shared.Pass
+var PassRPC = shared.PassRPC
+
+var ss = ssbase.AgentBaseStates
+var ssT = states.TUIStates
+
+type TUI struct {
+	*ssam.DisposedHandlers
+
+	MachTUI    *am.Machine
+	ClientAddr string
 
 	chat    *Chat
 	clock   *Clock
 	stories *Stories
 
-	agent        *am.Machine
-	logger       *slog.Logger
-	app          *cview.Application
-	layout       *cview.Grid
-	focusManager *cview.FocusManager
-	dispose      func() error
-	clockStates  am.S
-	cfg          *shared.Config
+	agent   *am.Machine
+	logger  *slog.Logger
+	app     *cview.Application
+	layout  *cview.Grid
+	dispose func() error
+	cfg     *shared.Config
 }
 
 // theme
@@ -42,12 +57,17 @@ var (
 	themeButtonBg         = tcell.ColorBlue
 	themeButtonBgClicked  = tcell.ColorGreen
 	themeButtonBgDisabled = tcell.ColorDarkGray
+	themeBgColor          = tcell.ColorIsRGB | tcell.ColorValid | 0x242424
+	clickDelay            = 500 * time.Millisecond
 )
 
-func NewTui(mach *am.Machine, logger *slog.Logger, config *shared.Config) *Tui {
+func NewTui(agent *am.Machine, logger *slog.Logger, config *shared.Config, clientAddr string) *TUI {
 
-	c := &Tui{
-		agent:  mach,
+	c := &TUI{
+		DisposedHandlers: &ssam.DisposedHandlers{},
+		ClientAddr:       clientAddr,
+
+		agent:  agent,
 		logger: logger,
 		app:    cview.NewApplication(),
 		cfg:    config,
@@ -62,7 +82,7 @@ func NewTui(mach *am.Machine, logger *slog.Logger, config *shared.Config) *Tui {
 
 // ///// ///// /////
 
-func (t *Tui) Init(
+func (t *TUI) Init(
 	screen tcell.Screen, name string, stories *Stories, clock *Clock, chat *Chat,
 ) error {
 
@@ -71,19 +91,19 @@ func (t *Tui) Init(
 	t.chat = chat
 
 	id := "tui-" + t.agent.Id() + "-" + name
-	machTUI, err := am.NewCommon(t.agent.NewStateCtx(ss.UIMode), id, states.TUISchema, ssT.Names(), nil, t.agent, nil)
+	machTUI, err := am.NewCommon(t.agent.NewStateCtx(ss.UIMode), id, states.TUISchema, ssT.Names(), t, t.agent, nil)
 	if err != nil {
 		return err
 	}
 	machTUI.SetGroups(states.TUIGroups, states.TUIStates)
 	shared.MachTelemetry(machTUI, nil)
 	t.MachTUI = machTUI
-	mach := t.Mach()
+	mach := t.agent
 	if t.cfg.Debug.REPL {
 		opts := arpc.ReplOpts{
-			AddrDir:    t.cfg.Agent.Dir,
-			ArgsPrefix: shared.APrefix,
-			Args:       shared.ARpc{},
+			AddrDir:  t.cfg.Agent.Dir,
+			Args:     shared.ARPC{},
+			ParseRpc: shared.ParseRpc,
 		}
 		if err := arpc.MachRepl(mach, "", &opts); err != nil {
 			return err
@@ -92,7 +112,7 @@ func (t *Tui) Init(
 
 	// TODO read from groups and schema org
 	trackedStates := mach.StateNames()
-	lastState := slices.Index(trackedStates, baseschema.AgentBaseStates.UICleanOutput)
+	lastState := slices.Index(trackedStates, ssbase.AgentBaseStates.UICleanOutput)
 	trackedStates = trackedStates[0 : lastState+1]
 
 	if err := t.stories.Init(); err != nil {
@@ -116,7 +136,15 @@ func (t *Tui) Init(
 	return nil
 }
 
-func (t *Tui) InitComponents() {
+func (t *TUI) DisposingState(e *am.Event) {
+	t.DisposedHandlers.DisposingState(e)
+	if t.dispose != nil {
+		_ = t.dispose()
+	}
+	t.app.Stop()
+}
+
+func (t *TUI) InitComponents() {
 	leftColumn := cview.NewFlex()
 	leftColumn.SetDirection(cview.FlexRow)
 	leftColumn.AddItem(t.clock.layout, 5, 1, false)
@@ -133,25 +161,6 @@ func (t *Tui) InitComponents() {
 	t.app.SetRoot(t.layout, true)
 	t.app.EnableMouse(true)
 
-	// tab navigation TODO tab manager
-	// focusable := []cview.Primitive{t.msgsView, t.prompt, t.buttonSend, t.buttonIntt}
-	// // TODO reuse across cviews
-	// t.layout.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-	// 	if event.Key() == tcell.KeyTab {
-	// 		cycleFocus(t.app, focusable, false)
-	// 		return nil
-	// 	} else if event.Key() == tcell.KeyBacktab {
-	// 		cycleFocus(t.app, focusable, true)
-	// 		return nil
-	// 	}
-	//
-	// 	// data
-	// 	t.msgsView.SetText(t.renderMsgs())
-	// 	t.Redraw()
-	//
-	// 	return event
-	// })
-
 	// catch ctrl+c
 	t.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyCtrlC {
@@ -163,22 +172,23 @@ func (t *Tui) InitComponents() {
 	})
 }
 
-func (t *Tui) Stop() error {
+func (t *TUI) Stop() error {
 	_ = t.dispose()
 	t.app.Stop()
 
 	return nil
 }
 
-func (t *Tui) Redraw() {
+func (t *TUI) Redraw() {
 	t.app.SetAfterDrawFunc(func(screen tcell.Screen) {
+		// over-draw in cview
 		t.clock.Redraw()
 	})
 	go t.app.QueueUpdateDraw(func() {})
 }
 
 // Start starts the UI and optionally returns the error and mutates with UIErr.
-func (t *Tui) Start(dispose func() error) error {
+func (t *TUI) Start(dispose func() error) error {
 	t.dispose = dispose
 
 	// start the UI
@@ -194,18 +204,8 @@ func (t *Tui) Start(dispose func() error) error {
 	return err
 }
 
-func (t *Tui) Logger() *slog.Logger {
+func (t *TUI) Logger() *slog.Logger {
 	return t.logger
-}
-
-// Mach returns the agent machine.
-func (t *Tui) Mach() *am.Machine {
-	return t.agent
-}
-
-// BindHandlers binds transition handlers to the state machine. Overwrite it to bind methods from a subclass.
-func (t *Tui) BindHandlers() error {
-	return t.Mach().BindHandlers(t)
 }
 
 // ///// ///// /////

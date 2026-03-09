@@ -8,3 +8,12 @@ sql:
         emit_json_tags: true
         package: "sqlc"
         out: "db/sqlc"
+
+  - engine: "sqlite"
+    queries: "agent_llm/db/query.sql"
+    schema: "db/schema.sql"
+    gen:
+      go:
+        emit_json_tags: true
+        package: "sqlc"
+        out: "agent_llm/db/sqlc"

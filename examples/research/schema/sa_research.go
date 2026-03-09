@@ -9,9 +9,9 @@ import (
 	llm "github.com/pancsta/secai/agent_llm/schema"
 
 	"github.com/pancsta/secai"
-	ss "github.com/pancsta/secai/schema"
 	"github.com/pancsta/secai/shared"
-	websearch "github.com/pancsta/secai/tools/searxng/schema"
+	ss "github.com/pancsta/secai/states"
+	websearch "github.com/pancsta/secai/tools/searxng/states"
 )
 
 var Sp = shared.Sp
@@ -133,7 +133,7 @@ func NewResearch(ctx context.Context) *am.Machine {
 // ///// ///// /////
 // Comments are automatically converted to a jsonschema_description tag.
 
-func NewCheckingInfoPrompt(agent secai.AgentAPI) *secai.Prompt[ParamsCheckingInfo, ResultCheckingInfo] {
+func NewCheckingInfoPrompt(agent shared.AgentBaseAPI) *secai.Prompt[ParamsCheckingInfo, ResultCheckingInfo] {
 	return secai.NewPrompt[ParamsCheckingInfo, ResultCheckingInfo](
 		agent, ssR.CheckingInfo, `
 			- You are a decision-making agent that determines whether a new web search is needed to answer the user's question.
@@ -155,7 +155,7 @@ func NewCheckingInfoPrompt(agent secai.AgentAPI) *secai.Prompt[ParamsCheckingInf
 		`)
 }
 
-func NewSearchingLLMPrompt(agent secai.AgentAPI) *secai.Prompt[ParamsSearching, ResultSearching] {
+func NewSearchingLLMPrompt(agent shared.AgentBaseAPI) *secai.Prompt[ParamsSearching, ResultSearching] {
 	return secai.NewPrompt[ParamsSearching, ResultSearching](
 		agent, ssR.SearchingLLM, `
 			- You are an expert search engine query generator with a deep understanding of which queries will maximize the
@@ -171,7 +171,7 @@ func NewSearchingLLMPrompt(agent secai.AgentAPI) *secai.Prompt[ParamsSearching, 
 		`)
 }
 
-func NewAnsweringPrompt(agent secai.AgentAPI) *secai.Prompt[ParamsAnswering, ResultAnswering] {
+func NewAnsweringPrompt(agent shared.AgentBaseAPI) *secai.Prompt[ParamsAnswering, ResultAnswering] {
 	return secai.NewPrompt[ParamsAnswering, ResultAnswering](
 		agent, ssR.Answering, `
 			- You are an expert question answering agent focused on providing factual information and encouraging deeper topic
