@@ -22,13 +22,13 @@ It's a sophisticated replacement for frameworks like LangGraph and offers deeply
 
 ## v0.5 - Fully Embedded
 
-[Live debugger](http://ai-gents.work.local:15834/dbg-cook) | [Live SQL](http://ai-gents.work.local:15834/data-cook) | [Read logs](http://ai-gents.work.local:15834/demo/cook.html)
- | [Browse files](http://ai-gents.work.local:15834/demo)
+[Live debugger](https://ai-gents.work/dbg-cook) | [Live SQL](https://ai-gents.work/data-cook) | [Read logs](https://ai-gents.work/demo/cook.html)
+ | [Browse files](https://ai-gents.work/demo)
 
 <div align="center" class="video">
-    <a href="http://ai-gents.work.local:15834/assets/demo/imgs/demo.gif">
+    <a href="https://ai-gents.work/assets/demo/imgs/demo.gif">
         <img width="420px"
-            src="http://ai-gents.work.local:15834/demo/imgs/demo.gif"
+            src="https://github.com/user-attachments/assets/a9fcd634-1b37-4add-800b-ca8c06865279"
             alt="AI-gent Cook" />
     </a>
 </div>
@@ -44,19 +44,19 @@ It's a sophisticated replacement for frameworks like LangGraph and offers deeply
   </tr>
   <tr>
     <td align="center">
-        <img src="http://ai-gents.work.local:15834/demo/imgs/am-dbg.png"/>
+        <img src="https://ai-gents.work/demo/imgs/am-dbg.png"/>
     </td>
     <td align="center">
-        <img src="http://ai-gents.work.local:15834/demo/imgs/repl.png"/>
+        <img src="https://ai-gents.work/demo/imgs/repl.png"/>
     </td>
     <td align="center">
-        <img src="http://ai-gents.work.local:15834/demo/imgs/db1.png"/>
+        <img src="https://ai-gents.work/demo/imgs/db1.png"/>
     </td>
     <td align="center">
-        <img src="http://ai-gents.work.local:15834/demo/imgs/db2.png"/>
+        <img src="https://ai-gents.work/demo/imgs/db2.png"/>
     </td>
     <td align="center">
-        <img src="http://ai-gents.work.local:15834/demo/imgs/log.png"/>
+        <img src="https://ai-gents.work/demo/imgs/log.png"/>
     </td>
   </tr>
 </table>
@@ -64,7 +64,7 @@ It's a sophisticated replacement for frameworks like LangGraph and offers deeply
 <details>
   <summary>Click to see the diagram</summary>
 
-<img src="http://ai-gents.work.local:15834/demo/_diagram.svg" />
+<img src="https://ai-gents.work/demo/_diagram.svg" />
 </details>
 
 ## v0.4 - Local One
@@ -72,7 +72,7 @@ It's a sophisticated replacement for frameworks like LangGraph and offers deeply
 AI-gent Cook on _qwen3-vl-30b_
 
 <div align="center" class="video">
-    <a href="http://ai-gents.work.local:15834/assets/demo-v0.4/_demo.gif">
+    <a href="https://ai-gents.work/assets/demo-v0.4/_demo.gif">
         <img width="420px"
             src="https://github.com/user-attachments/assets/a387b00f-c2ba-444c-9b58-381d1425edfb"
             alt="AI-gent Cook" />
@@ -82,7 +82,7 @@ AI-gent Cook on _qwen3-vl-30b_
 <details>
   <summary>Click to see the diagram</summary>
 
-<img src="http://ai-gents.work.local:15834/assets/demo-v0.4/_diagram.svg" />
+<img src="https://ai-gents.work/assets/demo-v0.4/_diagram.svg" />
 </details>
 
 ## v0.2 - User Demo
@@ -322,7 +322,7 @@ file.
 
 ## Try It
 
-- [Download a binary release](https://github.com/pancsta/secai/releases) of AI-gent Cook (Linux, macOS, Windows)
+- [Download a binary release](https://github.com/pancsta/secai/releases/latest) of AI-gent Cook (Linux, macOS, Windows)
 
 ```markdown
 AI-gent Cook v0.5.0
