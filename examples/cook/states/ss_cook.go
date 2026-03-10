@@ -12,7 +12,7 @@ import (
 // aliases
 
 var ssLLM = ssllm.AgentLLMStates
-var saLLM = ssllm.LLMAgentSchema
+var saLLM = ssllm.AgentLLMSchema
 
 // ///// ///// /////
 
@@ -37,9 +37,6 @@ type CookStatesDef struct {
 	RecipeReady string
 	// One of the cooking steps have been completed.
 	StepCompleted string
-	// TODO
-	// No msgs or steps have been completed in a (defined) while.
-	// StaleDialog string
 
 	// stories
 
@@ -98,7 +95,7 @@ type CookGroupsDef struct {
 // CookSchema represents all relations and properties of CookStates.
 var CookSchema = SchemaMerge(
 	// inherit from AgentLLM
-	ssllm.LLMAgentSchema,
+	ssllm.AgentLLMSchema,
 	am.Schema{
 
 		// errors
@@ -111,8 +108,6 @@ var CookSchema = SchemaMerge(
 		ssC.IngredientsReady: {},
 		ssC.RecipeReady:      {Require: S{ssC.IngredientsReady}},
 		ssC.StepCompleted:    {Multi: true},
-		// TODO
-		// ssC.StaleDialog:          {Require: S{ssC.Ready}},
 
 		// stories
 
@@ -127,9 +122,6 @@ var CookSchema = SchemaMerge(
 		},
 		ssC.StoryMemoryWipe: {Tags: S{ssbase.TagPrompt}},
 		ssC.StoryStartAgain: {Tags: S{ssbase.TagPrompt}},
-		// TODO
-		// ssC.StorySmallTalk:          {Tags: S{ssbase.TagPrompt}},
-		// ssC.StoryWeatherTalk:        {Tags: S{ssbase.TagPrompt}},
 
 		// gen AI
 
@@ -198,9 +190,6 @@ var (
 		ssC.StoryMealReady,
 		ssC.StoryMemoryWipe,
 		ssC.StoryStartAgain,
-		// TODO
-		// ssC.StorySmallTalk,
-		// ssC.StoryWeatherTalk,
 	}
 
 	ssC = am.NewStates(CookStatesDef{})

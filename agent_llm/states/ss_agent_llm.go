@@ -31,7 +31,8 @@ type AgentLLMStatesDef struct {
 	GenResources     string
 	ResourcesReady   string
 
-	// The LLM is given possible moves and checks if the user wants to make any. Orienting usually runs in parallel with other prompts. After de-activation, it leaves results in handler struct `h.oriented`.
+	// The LLM is given possible moves and checks if the user wants to make any. Orienting usually runs in parallel with
+	// other prompts. After reaching the required level of certainty, it fills outs `h.MoveOrienting`.
 	Orienting string
 	// OrientingMove performs a move decided upon by Orienting.
 	OrientingMove string
@@ -49,8 +50,8 @@ type AgentLLMGroupsDef struct {
 	Resources S
 }
 
-// LLMAgentSchema represents all relations and properties of AgentLLMStates.
-var LLMAgentSchema = SchemaMerge(
+// AgentLLMSchema represents all relations and properties of AgentLLMStates.
+var AgentLLMSchema = SchemaMerge(
 	// inherit from AgentLLM
 	ss.AgentSchema,
 
@@ -102,5 +103,5 @@ var (
 
 // NewAgentLLM will create the most basic LLMAgent state machine.
 func NewAgentLLM(ctx context.Context) *am.Machine {
-	return am.New(ctx, LLMAgentSchema, nil)
+	return am.New(ctx, AgentLLMSchema, nil)
 }

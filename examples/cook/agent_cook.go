@@ -343,6 +343,10 @@ func (a *Agent) Splash() string {
 	logFile := shared.ConfigLogPath(cfg.Agent)
 	logAddr := shared.ConfigWebLogAddr(cfg.Web)
 	binary := shared.BinaryPath(&cfg.Config)
+	argCfg := ""
+	if cfg.File != "config.kdl" {
+		argCfg = "--config " + cfg.File
+	}
 
 	// HEADER
 
@@ -383,7 +387,7 @@ func (a *Agent) Splash() string {
 		if cfg.Debug.REPLWeb != -1 {
 			l("- http://localhost:%d", cfg.Debug.REPLWeb)
 		}
-		l("- %s repl --config %s", binary, cfg.File)
+		l("- %s repl%s", binary, argCfg)
 		l("")
 	}
 
@@ -393,7 +397,7 @@ func (a *Agent) Splash() string {
 	if logAddr != "" {
 		l("- http://%s", logAddr)
 	}
-	l("- %s log --tail --config %s", binary, cfg.File)
+	l("- %s log --tail%s", binary, argCfg)
 	l("- tail -f %s/%s.jsonl -n 100 | fblog -d -x msg -x time -x level", cfg.Agent.Dir, cfg.Agent.ID)
 	l("")
 

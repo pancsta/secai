@@ -22,7 +22,7 @@ It's a sophisticated replacement for frameworks like LangGraph and offers deeply
 
 ## v0.5 - Fully Embedded
 
-[Live debugger](https://ai-gents.work/dbg-cook) | [Live SQL](https://ai-gents.work/data-cook) | [Read logs](https://ai-gents.work/demo/cook.html)
+[Live debugger](https://ai-gents.work/devtools) | [Live SQL](https://ai-gents.work/data-cook) | [Read logs](https://ai-gents.work/demo/cook.html)
  | [Browse files](https://ai-gents.work/demo)
 
 <div align="center" class="video">
@@ -57,6 +57,27 @@ It's a sophisticated replacement for frameworks like LangGraph and offers deeply
     </td>
     <td align="center">
         <img src="https://ai-gents.work/demo/imgs/log.png"/>
+    </td>
+  </tr>
+
+  <tr>
+    <td align="center">Dashboard</td>
+    <td align="center"></td>
+    <td align="center"></td>
+    <td align="center"></td>
+    <td align="center"></td>
+  </tr>
+  <tr>
+    <td align="center">
+        <img src="https://ai-gents.work/demo/imgs/dashboard.png"/>
+    </td>
+    <td align="center">
+    </td>
+    <td align="center">
+    </td>
+    <td align="center">
+    </td>
+    <td align="center">
     </td>
   </tr>
 </table>
@@ -325,6 +346,7 @@ file.
 - [Download a binary release](https://github.com/pancsta/secai/releases/latest) of AI-gent Cook (Linux, macOS, Windows)
 
 ```markdown
+$ ./ai-gent-cook
 AI-gent Cook v0.5.0
 
 Web:
@@ -341,11 +363,11 @@ TUI:
 
 REPL:
 - http://localhost:13179
-- ./cook repl --config config.kdl
+- ./cook repl
 
 Log:
 - http://localhost:12858
-- ./cook log --tail --config config.kdl
+- ./cook log --tail
 - tail -f tmp-cook/cook.jsonl -n 100 | fblog -d -x msg -x time -x level
 
 Debugger:
@@ -362,7 +384,8 @@ https://AI-gents.work
 ```
 ## Schema Examples
 
-Code snippets from state and prompt schemas of `examples/cook`. Both schemas are pure and debuggable Golang code.
+Code snippets from state and prompt schemas of `examples/cook`. Both schemas are pure and debuggable Golang code. The
+comments attached to `Params*` and `Result*` are sent over to AI models.
 
 ### State Schema
 
@@ -534,6 +557,10 @@ happens manually through typesafe params / results. This approach increases dete
 This multi-prompt workflow forms an actual **bot** / **agent**. This does not mean agents can't be composed into larger
 groups, which happens simply on the state level (via piping / aRPC), as the underlying workflow engine (asyncmachine)
 doesn't depend on AI at all.
+
+The flow graph, unlike in regular workflows, is not path-based - each node (state) can be activated anytime (same as calling a function),
+and the edges between nodes are meant to resolve the **state consensus**. It's a directed multi-graph of states with a 
+negotiation phase.
 
 ## Scripting
 

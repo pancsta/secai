@@ -587,7 +587,7 @@ func (a *Agent) PromptState(e *am.Event) {
 			a.MoveOrienting.Store(nil)
 
 			// exec the move
-			mach.Add1(ss.OrientingMove, Pass2(&A2{
+			mach.EvAdd1(e, ss.OrientingMove, Pass2(&A2{
 				Move: move,
 			}))
 		}()
