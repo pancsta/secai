@@ -13,11 +13,12 @@ It's a sophisticated replacement for frameworks like LangGraph and offers deeply
   * [v0.2 - User Demo](#v02---user-demo)
   * [v0.1 - Platform Demo](#v01---platform-demo)
 * [Features](#features)
-  * [Implementation](#implementation)
+* [Implementation](#implementation)
 * [Try It](#try-it)
   * [Schema Examples](#schema-examples)
 * [Documentation](#documentation)
 * [Getting Started](#getting-started)
+* [Differences](#differences)
 * [Scripting](#bash-scripts)
 
 ## v0.5 - Fully Embedded
@@ -384,8 +385,7 @@ https://AI-gents.work
 ```
 ## Schema Examples
 
-Code snippets from state and prompt schemas of `examples/cook`. Both schemas are pure and debuggable Golang code. The
-comments attached to `Params*` and `Result*` are sent over to AI models.
+Code snippets from state and prompt schemas of `examples/cook`. Both schemas are pure and debuggable Golang code.
 
 ### State Schema
 
@@ -463,6 +463,8 @@ var CookSchema = SchemaMerge(
 ```
 
 ### Prompt Schema
+
+The comments attached to `Params*` and `Result*` are sent over to AI models.
 
 ```go
 // RECIPE
@@ -552,7 +554,7 @@ We can use one of the examples as a starting template. It allows for further sem
 ## Differences
 
 **secai** differs from other AI agents / workflows frameworks in the way it treats AI prompts. Most frameworks call each
-prompt an "agent", while **secai** treats prompts as simple DB queries with IoC (Inversion of Control). Tools usage
+prompt an "agent", while **secai** treats prompts as simple DB queries with IoC (Inversion of Control). Tool usage
 happens manually through typesafe params / results. This approach increases determinism, safety, and overfall control.
 This multi-prompt workflow forms an actual **bot** / **agent**. This does not mean agents can't be composed into larger
 groups, which happens simply on the state level (via piping / aRPC), as the underlying workflow engine (asyncmachine)

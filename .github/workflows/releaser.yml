@@ -27,7 +27,7 @@ jobs:
         run: ./scripts/deps.sh
       -
         name: Install dependencies
-        run: go mod tidy
+        run: task install-deps
       -
         name: Gen license
         run: task gen-license

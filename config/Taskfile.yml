@@ -17,20 +17,23 @@ tasks:
 
   # BUILD
 
-  install-deps: go mod tidy
-  install-dep-wasm:
+  install-deps:
+    - task: install-deps-wasm
+    - go mod tidy
+
+  install-deps-wasm:
     silent: true
     cmds:
       - mkdir -p web/assets/deps
-      - wget -O web/assets/deps/chart.js
+      - wget -O web/assets/deps/chart.js --no-verbose
           https://cdn.jsdelivr.net/npm/chart.js/dist/chart.umd.js
-      - wget -O web/assets/deps/daisyui@5.css
+      - wget -O web/assets/deps/daisyui@5.css --no-verbose
           https://cdn.jsdelivr.net/npm/daisyui@5
-      - wget -O web/assets/deps/themes.css
+      - wget -O web/assets/deps/themes.css --no-verbose
           https://cdn.jsdelivr.net/npm/daisyui@5/themes.css
-      - wget -O web/assets/deps/tailwind@4.js 
+      - wget -O web/assets/deps/tailwind@4.js --no-verbose
           https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4
-      - wget -O web/assets/deps/utils.js 
+      - wget -O web/assets/deps/utils.js --no-verbose
           https://raw.githubusercontent.com/imhvost/chart-utils/refs/heads/master/dist/chart-utils.min.js
 
   gen-sql:
