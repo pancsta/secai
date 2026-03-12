@@ -27,11 +27,17 @@ jobs:
         run: ./scripts/deps.sh
       -
         name: Install dependencies
-        run: task install-deps
+        run: task --dir examples/cook install-deps
+
+      # build
+      -
+        name: WASM
+        run: task --dir examples/cook build-wasm
       -
         name: Gen license
         run: task gen-license
 
+      # release
       -
         name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7

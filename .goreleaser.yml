@@ -38,12 +38,16 @@ builds:
     goarch:
       - amd64
       - arm64
-    main: ./examples/cook/cmd
+    main: ./cmd
+    dir: examples/cook
     binary: aigent-cook
     hooks:
       pre:
         - mkdir -p ./tmp/cook
-        - cp -f ./examples/cook/config.tpl.kdl ./tmp/cook/config.kdl
+        - cp -f ./examples/cook/config.tpl.kdl ./tmp/cook/config.kdl 2>/dev/null
+        # check deps
+        - test -s ./examples/cook/web/app.wasm
+        - test -s ./examples/cook/web/assets/deps/chart.js
 
 archives:
 #  TODO update

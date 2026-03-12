@@ -59,6 +59,7 @@ tasks:
     env:
       GOOS: js
       GOARCH: wasm
+    deps: [install-deps-wasm]
     cmds:
       - mkdir -p web
       - go build -o web/app.wasm
@@ -68,6 +69,7 @@ tasks:
     env:
       GOOS: js
       GOARCH: wasm
+    deps: [install-deps-wasm]
     cmds:
       - mkdir -p web
       - go build -ldflags="-s -w" -o web/app.wasm

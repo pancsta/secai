@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -509,6 +510,7 @@ func (h *Handlers) StartHTTP(e *am.Event) error {
 		},
 		ServiceWorkerTemplate: " ",
 		RawHeaders:            []string{"<script>\n" + string(clockmojiJS) + "\n</script>"},
+		Resources:             ResourceFS(h.A.Store().Web),
 	}
 
 	goapp.RouteWithRegexp("/.*", goapp.NewZeroComponentFactory(&splashScreen{}))
@@ -555,7 +557,6 @@ func (h *Handlers) StartHTTP(e *am.Event) error {
 	relay.Start(e)
 	<-relay.Mach.When1(ssr.RelayStates.HttpReady, nil)
 	relay.HttpMux.Handle("/", goappHandler)
-	relay.HttpMux.Handle("/web", http.FileServer(http.FS(h.A.Store().Web)))
 	relay.HttpMux.HandleFunc("/bootstrap", h.handleBootstrap)
 
 	// TODO maybe race
@@ -707,6 +708,8 @@ func (h *Handlers) newAgentUIFunc(e *am.Event) amrelayt.NewClientFunc {
 
 // ///// ///// /////
 
+// splash
+
 type splashScreen struct{ goapp.Compo }
 
 func (c *splashScreen) Render() goapp.UI {
@@ -735,4 +738,25 @@ func AddErrPTY(
 	}
 	err = fmt.Errorf("%w: %w", ErrWebPTY, err)
 	return mach.EvAddErrState(event, ss.ErrWebPTY, err, shared.OptArgs(args))
+}
+
+// embed resolver
+
+var _ goapp.ResourceResolver = (*embeddedResourceResolver)(nil)
+
+func ResourceFS(web fs.FS) goapp.ResourceResolver {
+	return embeddedResourceResolver{
+		Handler: http.FileServer(http.FS(web)),
+	}
+}
+
+type embeddedResourceResolver struct {
+	http.Handler
+}
+
+func (r embeddedResourceResolver) Resolve(location string) string {
+	if location == "" {
+		return "/"
+	}
+	return location
 }

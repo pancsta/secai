@@ -43,7 +43,7 @@ tasks:
 
   release:
     cmds:
-      - task: install-deps-wasm
+      - task --dir {{.SECAI_AGENT_DIR}} install-deps-wasm
       - task --dir {{.SECAI_AGENT_DIR}} build-wasm
       - task: gen-license
       - rm -R dist/*
