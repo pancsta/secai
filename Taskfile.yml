@@ -55,3 +55,9 @@ tasks:
       - go tool go-licenses check .
       - cp LICENSE LICENSE.md
       - go tool go-licenses report ./ --template config/license.tpl >> LICENSE.md
+
+  test:
+    requires:
+      vars: [ SECAI_AGENT_DIR ]
+    dir: "{{.SECAI_AGENT_DIR}}"
+    cmd: go test ./... {{.CLI_ARGS}}

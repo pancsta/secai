@@ -8,6 +8,10 @@ This demo presents data collection, gen AI, offers, stories, workflows, dynamic 
 2. Run `./aigent-cook`
 3. Check the newly open browser window or go to http://localhost:12854
 
+## Demo
+
+To see the mock scenario from the demo video, uncomment `Mock true` in `config.kdl`, then restart.
+
 ## Credits
 
 - [ai-gents.work](https://ai-gents.work)

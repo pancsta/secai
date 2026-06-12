@@ -29,7 +29,7 @@ func New(agent shared.AgentBaseAPI, id, title string, getter func() (string, err
 	}
 
 	// bind handlers
-	err = t.Mach().BindHandlers(t)
+	_, err = t.Mach().HandlersBind(t)
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +37,7 @@ func New(agent shared.AgentBaseAPI, id, title string, getter func() (string, err
 	return t, nil
 }
 
-func (t *Tool) Document() *secai.Document {
+func (t *Tool) Document() *shared.Document {
 	doc := t.Doc.Clone()
 	doc.Clear()
 

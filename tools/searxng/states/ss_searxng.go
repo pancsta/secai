@@ -30,30 +30,26 @@ type GroupsDef struct {
 }
 
 // Schema represents all relations and properties of States.
-var Schema = SchemaMerge(
-	// inherit from Tool
-	states.ToolSchema,
+// inherit from Tool
+var Schema = states.ToolSchema.Merge(am.Schema{
+	ss.Ready: {
+		Require: S{ss.Start},
+		Remove:  S{ss.DockerStarting},
+	},
 
-	am.Schema{
-
-		ss.Ready: {
-			Require: S{ss.Start},
-			Remove:  S{ss.DockerStarting},
-		},
-
-		ss.DockerChecking: {
-			Require: S{ss.Start},
-			Remove:  S{ss.DockerAvailable},
-		},
-		ss.DockerAvailable: {
-			Require: S{ss.Start},
-			Remove:  S{ss.DockerChecking},
-		},
-		ss.DockerStarting: {
-			Auto:    true,
-			Require: S{ss.DockerAvailable},
-		},
-	})
+	ss.DockerChecking: {
+		Require: S{ss.Start},
+		Remove:  S{ss.DockerAvailable},
+	},
+	ss.DockerAvailable: {
+		Require: S{ss.Start},
+		Remove:  S{ss.DockerChecking},
+	},
+	ss.DockerStarting: {
+		Auto:    true,
+		Require: S{ss.DockerAvailable},
+	},
+})
 
 // EXPORTS AND GROUPS
 

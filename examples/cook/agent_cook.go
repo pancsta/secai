@@ -5,10 +5,10 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"encoding/gob"
 	"fmt"
 	"runtime/debug"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -18,8 +18,6 @@ import (
 	"github.com/google/go-cmp/cmp"
 	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
-	arpc "github.com/pancsta/asyncmachine-go/pkg/rpc"
-
 	agentllm "github.com/pancsta/secai/agent_llm"
 	sallm "github.com/pancsta/secai/agent_llm/schema"
 	"github.com/pancsta/secai/examples/cook/db/sqlc"
@@ -30,6 +28,7 @@ import (
 	"github.com/pancsta/secai/tools/searxng"
 	"github.com/pancsta/secai/tui"
 	"github.com/pancsta/secai/web"
+	ssp "github.com/pancsta/secai/web/browser/states"
 )
 
 // Mock will run a sample scenario
@@ -79,6 +78,10 @@ var mock = Mock{
 
 var ss = states.CookStates
 var SAdd = am.SAdd
+var ssP = ssp.PageStates
+
+// EnvCookDev enabled dev mode (local config and data dir).
+var EnvCookDev = "COOK_DEV"
 
 type S = am.S
 
@@ -201,7 +204,7 @@ type Agent struct {
 	jokeRefusedMsg   bool
 	orientingPending bool
 	lastStoryCheck   uint64
-	handlersWeb      *web.Handlers
+	handlersWeb      *Web
 	clockService     *tui.ClockService
 	lastActions      []shared.ActionInfo
 	lastStories      []shared.StoryInfo
@@ -252,22 +255,31 @@ func (a *Agent) Init(cfg *Config) error {
 	a.Config = cfg
 
 	// call super
-	err = a.AgentLLM.Init(a, &a.Config.Config, LogArgs, states.CookGroups, states.CookStates, NewArgsRPC())
+	err = a.AgentLLM.Init(a, &a.Config.Config, agentllm.AgentLLMDeps{
+		LogArgs:            amhelp.LogArgsMapper,
+		Groups:             states.CookGroups,
+		States:             states.CookStates,
+		ArgsREPL:           shared.ArgsRPC,
+		PromptGenCharacter: sa.NewPromptGenCharacter(a),
+		PromptGenResources: sa.NewPromptGenResources(a),
+		PromptOrienting:    sa.NewPromptOrienting(a),
+	})
 	if err != nil {
 		return err
 	}
 	mach := a.Mach()
 
-	// mach.AddBreakpoint(nil, S{ss.StoryRecipePicking}, true)
+	// mach.AddBreakpoint1(ss.Disposing, "", true)
+	// mach.AddBreakpoint1(ss.Disposing, "", false)
 
 	// loop guards
 	a.loop = amhelp.NewStateLoop(mach, ss.Loop, nil)
 
 	// init searxng - websearch tool
-	a.tSearxng, err = searxng.New(a)
-	if err != nil {
-		return err
-	}
+	// a.tSearxng, err = searxng.New(a)
+	// if err != nil {
+	// 	return err
+	// }
 
 	// init prompts
 	a.pGenJokes = sa.NewPromptGenJokes(a)
@@ -295,7 +307,9 @@ func (a *Agent) Init(cfg *Config) error {
 		SeriesLen: 15,
 		Height:    4,
 	}
-	err = mach.BindHandlers(a.clockService)
+	_, err = mach.HandlersBind(a.clockService, am.BindOpts{
+		Id: "tui.ClockService",
+	})
 	if err != nil {
 		return err
 	}
@@ -340,12 +354,21 @@ func (a *Agent) Splash() string {
 	if info, ok := debug.ReadBuildInfo(); ok {
 		version = info.Main.Version
 	}
-	logFile := shared.ConfigLogPath(cfg.Agent)
-	logAddr := shared.ConfigWebLogAddr(cfg.Web)
-	binary := shared.BinaryPath(&cfg.Config)
+	logFile := cfg.Agent.LogPath(false)
+	logAddr := cfg.Web.ConfigWebLogAddr()
+	binary := shared.BinaryPath(true)
 	argCfg := ""
 	if cfg.File != "config.kdl" {
-		argCfg = "--config " + cfg.File
+		argCfg = " --config " + cfg.File
+	}
+	// single config in prod
+	if cfg.ProdBuild {
+		argCfg = ""
+	}
+
+	// dev env
+	if !cfg.ProdBuild {
+		binary = "env " + EnvCookDev + "=1 " + binary
 	}
 
 	// HEADER
@@ -371,9 +394,9 @@ func (a *Agent) Splash() string {
 
 	// TUI
 
-	if cfg.TUI.PortSSH != -1 {
+	if cfg.TUI.PortSSH > 0 {
 		l("TUI:")
-		if cfg.TUI.PortWeb != -1 {
+		if cfg.TUI.PortWeb > 0 {
 			l("- http://%s:%d", cfg.TUI.Host, cfg.TUI.PortWeb)
 		}
 		l("- ssh %s -p %d -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no", cfg.TUI.Host, cfg.TUI.PortSSH)
@@ -404,11 +427,11 @@ func (a *Agent) Splash() string {
 	// DEBUGGER
 
 	if cfg.Debug.DBGEmbed && cfg.Debug.DBGAddr != "" {
-		_, httpAddr, sshAddr, err := shared.ConfigDbgAddrs(cfg.Debug)
+		_, httpAddr, sshAddr, err := cfg.Debug.DbgAddrs()
 		if err == nil {
 			sshAddr2 := strings.Split(sshAddr, ":")
 			l("Debugger:")
-			if cfg.Debug.DBGEmbedWeb != -1 {
+			if cfg.Debug.DBGEmbedWeb > 0 {
 				l("- http://localhost:%d", cfg.Debug.DBGEmbedWeb)
 			}
 			l("- files: http://%s", httpAddr)
@@ -419,7 +442,7 @@ func (a *Agent) Splash() string {
 
 	// DB
 
-	addrBase, addrAgent, addrHistory := shared.ConfigWebDBAddrs(cfg.Web)
+	addrBase, addrAgent, addrHistory := cfg.Web.DBAddrs()
 	if addrBase != "" {
 		l("DB:")
 		l("- Base: http://%s", addrBase)
@@ -474,10 +497,6 @@ func (a *Agent) Actions() []shared.ActionInfo {
 
 		for i := range s.Actions {
 			act := &s.Actions[i]
-			if act.Label == "Overall progress" {
-				// TODO DEBUG
-				print()
-			}
 			info := shared.ActionInfo{
 				ID:           act.ID,
 				Label:        act.Label,
@@ -519,7 +538,7 @@ func (a *Agent) OrientingMoves() map[string]string {
 	ret := map[string]string{}
 
 	// collect and filter cooking moves
-	movesCooking := a.AgentImpl().MachMem().StateNamesMatch(sa.MatchSteps)
+	movesCooking := a.AgentImpl().MachMem().StateNames().FilterMatch(sa.MatchSteps)
 	movesCooking = slices.DeleteFunc(movesCooking, func(state string) bool {
 		return amhelp.CantAdd1(a.AgentImpl().MachMem(), state, nil)
 	})
@@ -553,18 +572,21 @@ func (a *Agent) initMem() error {
 		return err
 	}
 	shared.MachTelemetry(a.mem, nil)
-	if cfg.Debug.REPL {
-		opts := arpc.ReplOpts{
-			AddrDir: cfg.Agent.Dir,
-		}
-		if err := arpc.MachRepl(a.mem, "", &opts); err != nil {
-			return err
-		}
-	}
+	// TODO REPL
+	// if cfg.Debug.REPL {
+	// 	opts := arpc.ReplOpts{
+	// 		AddrDir:   cfg.Agent.Dir,
+	// 		ArgsBase:      ARPC{},
+	// 		ArgsParse: ParseRpc,
+	// 	}
+	// 	if err := arpc.MachRepl(a.mem, "", &opts); err != nil {
+	// 		return err
+	// 	}
+	// }
 
 	// update stories memory change (via basic OnChange)
 	a.mem.OnChange(func(mach *am.Machine, before, after am.Time) {
-		a.renderStories(nil)
+		a.hRenderStories(nil)
 		for _, ui := range a.tuis {
 			ui.Redraw()
 		}
@@ -757,7 +779,7 @@ func (a *Agent) initStories() {
 func (a *Agent) allSteps() S {
 	memSchema := a.mem.Schema()
 	ret := S{}
-	for _, name := range a.mem.StateNamesMatch(sa.MatchSteps) {
+	for _, name := range a.mem.StateNames().FilterMatch(sa.MatchSteps) {
 		if name == states.MemMealReady {
 			continue
 		}
@@ -775,7 +797,7 @@ func (a *Agent) allSteps() S {
 	return ret
 }
 
-func (a *Agent) renderStories(e *am.Event) {
+func (a *Agent) hRenderStories(e *am.Event) {
 	// gen
 	actions := a.Actions()
 	stories := a.Stories()
@@ -792,7 +814,7 @@ func (a *Agent) renderStories(e *am.Event) {
 	}
 
 	// render and cache
-	a.Mach().EvAdd1(e, ss.UIRenderStories, Pass3RPC(&A3{
+	a.Mach().EvAdd1(e, ss.UIRenderStories, Pass(&shared.AUIRenderStories{
 		Actions: actions,
 		Stories: stories,
 	}))
@@ -839,7 +861,7 @@ func (a *Agent) runOrienting(ctx context.Context, e *am.Event) {
 	}
 
 	// run parallel orienting
-	mach.EvAdd1(e, ss.Orienting, Pass3(&A3{
+	mach.EvAdd1(e, ss.Orienting, Pass(&shared.APrompt{
 		Prompt: a.UserInput,
 	}))
 }
@@ -853,78 +875,70 @@ func (a *Agent) nextUIName() string {
 func (a *Agent) redrawClock(e *am.Event) {
 }
 
+func (a *Agent) storyRecipePickingCleanup(e *am.Event) bool {
+	mach := a.Mach()
+
+	// remove recipe
+	a.recipe.Store(nil)
+	mach.EvRemove1(e, ss.RecipeReady, nil)
+
+	return a.storyCookingStartedCleanup(e)
+}
+
+func (a *Agent) storyCookingStartedCleanup(e *am.Event) bool {
+	mach := a.Mach()
+
+	// remove step states
+	mach.EvRemove(e, S{ss.StepsReady, ss.StepCompleted}, nil)
+
+	return true
+}
+
+func (a *Agent) storyIngredientsPickingCleanup(e *am.Event) bool {
+	mach := a.Mach()
+
+	mach.EvRemove1(e, ss.IngredientsReady, nil)
+
+	return a.storyRecipePickingCleanup(e)
+}
+
 // ///// ///// /////
 
 // ///// MISC
 
 // ///// ///// /////
 
-func validateStepSchema(schema am.Schema, stepStates, allStates am.S) error {
-	// TODO check min steps amount
-
-	// check if going 1,2,3..n will end on MealReady
-	mach := am.New(context.Background(), schema, nil)
-	for _, step := range stepStates {
-		mach.Add1(step, nil)
-	}
-
-	if !mach.Is1(states.MemMealReady) {
-		return fmt.Errorf("step schema is invalid: %s", stepStates)
-	}
-
-	// TODO should fail when actiavted from the end
-
-	return nil
-}
-
-// sorting steps
-
 func sortSteps(schema am.Schema) S {
-	steps := []StepsByReqFinal{}
+	steps := make(S, 0, len(schema))
 	for name := range schema {
-		steps = append(steps, StepsByReqFinal{
-			Name:   name,
-			Schema: schema,
-		})
+		steps = append(steps, name)
 	}
 
-	sort.Sort(sortStepsByIdx(steps))
+	slices.SortFunc(steps, func(name1, name2 string) int {
+		state1 := schema[name1]
+		state2 := schema[name2]
 
-	return shared.Map(steps, func(s StepsByReqFinal) string {
-		return s.Name
+		idx1Int, _ := strconv.Atoi(amhelp.TagValue(state1.Tags, "idx"))
+		idx2Int, _ := strconv.Atoi(amhelp.TagValue(state2.Tags, "idx"))
+		if idx1Int != idx2Int {
+			return idx1Int - idx2Int
+		}
+
+		isFinal1 := amhelp.TagValue(state1.Tags, "final") != ""
+		isFinal2 := amhelp.TagValue(state2.Tags, "final") != ""
+		if isFinal1 != isFinal2 {
+			if isFinal1 {
+				return 1
+			}
+
+			return -1
+		}
+
+		return strings.Compare(name1, name2)
 	})
+
+	return steps
 }
-
-type StepsByReqFinal struct {
-	Name   string
-	Schema am.Schema
-}
-
-type sortStepsByIdx []StepsByReqFinal
-
-func (s sortStepsByIdx) Len() int { return len(s) }
-func (s sortStepsByIdx) Less(n1, n2 int) bool {
-	el1 := s[n1]
-	name1 := el1.Name
-	state1 := el1.Schema[name1]
-	idx1 := amhelp.TagValue(state1.Tags, "idx")
-	idx1Int, _ := strconv.Atoi(idx1)
-	isFinal1 := amhelp.TagValue(state1.Tags, "final") != ""
-
-	el2 := s[n2]
-	name2 := el2.Name
-	state2 := el2.Schema[name2]
-	idx2 := amhelp.TagValue(state2.Tags, "idx")
-	idx2Int, _ := strconv.Atoi(idx2)
-	isFinal2 := amhelp.TagValue(state2.Tags, "final") != ""
-
-	if idx1Int < idx2Int || (idx1 == idx2 && !isFinal1 && isFinal2) {
-		return true
-	}
-
-	return false
-}
-func (s sortStepsByIdx) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
 
 // ///// ///// /////
 
@@ -932,121 +946,64 @@ func (s sortStepsByIdx) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
 
 // ///// ///// /////
 
-// aliases
-
-// AgentLLM args
-
-type A2 = agentllm.A
-type A2RPC = agentllm.ARPC
-
-var Pass2 = agentllm.Pass
-var Pass2RPC = agentllm.PassRPC
-
-// secai args
-
-type A3 = shared.A
-type A3RPC = shared.ARPC
-
-var Pass3 = shared.Pass
-var Pass3RPC = shared.PassRPC
-
 // APrefix is the args prefix, set from config.
 var APrefix = "cook"
 
-// A is a struct for node arguments. It's a typesafe alternative to [am.A].
-type A struct {
-	// base args
-	*agentllm.A
-
-	// agent's args
-	TUI *tui.TUI
-
-	// agent's non-RPC args
-
-	// TODO
+type Args struct {
+	am.ArgsBase
 }
 
-func NewArgs() A {
-	return A{A: &agentllm.A{}}
+func (Args) ArgsPrefix() string {
+	return APrefix
 }
 
-func NewArgsRPC() ARPC {
-	return ARPC{A: &shared.A{}}
+// -----
+
+type AStepCompleted struct {
+	Args
+	ID string `log:"id"`
 }
 
-// ARPC is a subset of [A] that can be passed over RPC (eg no channels, conns, etc)
-type ARPC struct {
-	// base args of the framework
-	*shared.A
-
-	// agent's args
-	Move *sallm.ResultOrienting `log:"move"`
+func (AStepCompleted) ArgsState() string {
+	return ss.StepCompleted
 }
 
-// ParseArgs extracts A from [am.Event.Args][APrefix] (decoder).
-func ParseArgs(args am.A) *A {
-	// RPC-only args (pointer)
-	if r, ok := args[APrefix].(*ARPC); ok {
-		a := amhelp.ArgsToArgs(r, &A{})
-		// decode base args
-		a.A = agentllm.ParseArgs(args)
+// ----- RPC boilerplate
 
-		return a
-	}
-
-	// RPC-only args (value, eg from a network transport)
-	if r, ok := args[APrefix].(ARPC); ok {
-		a := amhelp.ArgsToArgs(&r, &A{})
-		// decode base args
-		a.A = agentllm.ParseArgs(args)
-
-		return a
-	}
-
-	// regular args (pointer)
-	if a, _ := args[APrefix].(*A); a != nil {
-		// decode base args
-		a.A = agentllm.ParseArgs(args)
-
-		return a
-	}
-
-	// defaults
-	return &A{
-		A: agentllm.ParseArgs(args),
+func init() {
+	for _, arg := range ArgsRPC {
+		gob.Register(arg)
 	}
 }
 
-// Pass prepares [am.A] from A to be passed to further mutations (encoder).
-func Pass(args *A) am.A {
-	// dont nest in plain maps
-	clone := *args
-	clone.A = nil
-	// ref the clone
-	out := am.A{APrefix: &clone}
+var ArgsRPC = []am.ArgsApi{AStepCompleted{}}
 
-	// merge with base args
-	return am.AMerge(out, agentllm.Pass(args.A))
+// ///// ///// /////
+
+// ///// WEB
+
+// ///// ///// /////
+
+type Web struct {
+	*web.Handlers
 }
 
-// PassRPC is a network-safe version of Pass. Use it when mutating aRPC workers.
-func PassRPC(args *A) am.A {
-	// dont nest in plain maps
-	clone := *amhelp.ArgsToArgs(args, &ARPC{})
-	clone.A = nil
-	out := am.A{APrefix: clone}
-
-	// merge with base args
-	return am.AMerge(out, agentllm.PassRPC(args.A))
+func NewWeb(a *Agent) *Web {
+	w := &Web{}
+	w.Handlers = web.NewHandlers(a, w)
+	return w
 }
 
-// LogArgs is an args logger for A and [secai.A].
-func LogArgs(args am.A) map[string]string {
-	a1 := shared.ParseArgs(args)
-	a2 := ParseArgs(args)
-	if a1 == nil && a2 == nil {
-		return nil
-	}
-
-	return am.AMerge(amhelp.ArgsToLogMap(a1, 0), amhelp.ArgsToLogMap(a2, 0))
-}
+// custom page data
+// func (w *Web) PushDashData(
+// 	e *am.Event, client *arpc.Client, dash *typesweb.DataDashboard,
+// ) am.Result {
+// 	return client.NetMach.EvAdd1(e, ssP.Data, am.Pass(
+// 		&typesweb.AData{
+// 			DataDash: dash,
+// 		},
+// 		&shared.AData{
+// 			Browsers: shared.DetectBrowsers(),
+// 		},
+// 	))
+// }

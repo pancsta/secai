@@ -1,0 +1,145 @@
+{
+	"Schema": {
+		"ButterMelted": {
+			"tags": [
+				"idx:3"
+			]
+		},
+		"CarrotsGrated": {
+			"tags": [
+				"idx:2"
+			]
+		},
+		"CarrotsSautéed": {
+			"remove": [
+				"ButterMelted",
+				"ButterSizzling"
+			],
+			"tags": [
+				"idx:3",
+				"final"
+			]
+		},
+		"EggsBoiling": {
+			"require": [
+				"RiceSimmering"
+			],
+			"remove": [
+				"WaterHeated"
+			],
+			"tags": [
+				"idx:8"
+			]
+		},
+		"EggsPeeledSliced": {
+			"require": [
+				"EggsSteeping"
+			],
+			"remove": [
+				"EggsSteeping"
+			],
+			"tags": [
+				"idx:9"
+			]
+		},
+		"EggsSteeping": {
+			"require": [
+				"EggsBoiling"
+			],
+			"remove": [
+				"EggsBoiling"
+			],
+			"tags": [
+				"time:9m",
+				"idx:8",
+				"final"
+			]
+		},
+		"MealReady": {
+			"auto": true,
+			"require": [
+				"RiceFluffed",
+				"EggsPeeledSliced"
+			]
+		},
+		"RiceCoated": {
+			"require": [
+				"RiceDrained",
+				"CarrotsSautéed"
+			],
+			"remove": [
+				"RiceDrained"
+			],
+			"tags": [
+				"idx:5"
+			]
+		},
+		"RiceDrained": {
+			"tags": [
+				"idx:4"
+			]
+		},
+		"RiceFluffed": {
+			"require": [
+				"RiceRested"
+			],
+			"remove": [
+				"RiceRested"
+			],
+			"tags": [
+				"idx:11"
+			]
+		},
+		"RiceRested": {
+			"require": [
+				"RiceSimmering"
+			],
+			"remove": [
+				"RiceSimmering"
+			],
+			"tags": [
+				"time:5m",
+				"idx:10"
+			]
+		},
+		"RiceSimmering": {
+			"require": [
+				"WaterBoiling"
+			],
+			"remove": [
+				"WaterBoiling",
+				"WaterBoiled"
+			],
+			"tags": [
+				"time:15m",
+				"idx:7",
+				"final"
+			]
+		},
+		"RiceSoaked": {
+			"tags": [
+				"idx:1"
+			]
+		},
+		"WaterAdded": {
+			"require": [
+				"RiceCoated"
+			],
+			"remove": [
+				"RiceCoated"
+			],
+			"tags": [
+				"idx:6"
+			]
+		},
+		"WaterBoiling": {
+			"remove": [
+				"WaterAdded",
+				"WaterHeated"
+			],
+			"tags": [
+				"idx:7"
+			]
+		}
+	}
+}

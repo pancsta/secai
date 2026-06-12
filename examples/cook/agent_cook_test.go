@@ -14,10 +14,11 @@ func TestSortSteps(t *testing.T) {
 				"idx:0",
 			},
 		},
-		"1": {
-			Remove: S{"2", "3"},
+		"3": {
+			Remove: S{"1", "2"},
 			Tags: []string{
 				"idx:1",
+				"final",
 			},
 		},
 		"2": {
@@ -26,16 +27,15 @@ func TestSortSteps(t *testing.T) {
 				"idx:1",
 			},
 		},
-		"3": {
-			Remove: S{"1", "2"},
-			Tags: []string{
-				"idx:1",
-				"final",
-			},
-		},
 		"4": {
 			Tags: []string{
 				"idx:2",
+			},
+		},
+		"1": {
+			Remove: S{"2", "3"},
+			Tags: []string{
+				"idx:1",
 			},
 		},
 	}

@@ -4,12 +4,12 @@ import (
 	"slices"
 	"sync/atomic"
 
+	"github.com/gdamore/tcell/v2"
 	"github.com/pancsta/asciigraph-tcell"
 	amhist "github.com/pancsta/asyncmachine-go/pkg/history"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
 	"github.com/pancsta/cview"
 	"github.com/pancsta/secai/shared"
-	"github.com/pancsta/tcell-v2"
 )
 
 // TODO merge into TUI
@@ -35,13 +35,34 @@ func NewClock(tui *TUI, diff [][]int) *Clock {
 
 // ///// ///// /////
 
+var _ = ss.UIRenderClock
+
 func (c *Clock) UIRenderClockEnter(e *am.Event) bool {
-	return ParseArgs(e.Args).ClockDiff != nil
+	return am.ParseArgs[shared.AUIRenderClock](e.Args).ClockDiff != nil
 }
 
 func (c *Clock) UIRenderClockState(e *am.Event) {
-	diff := ParseArgs(e.Args).ClockDiff
+	diff := am.ParseArgs[shared.AUIRenderClock](e.Args).ClockDiff
 	c.diff.Store(&diff)
+}
+
+// ///// ///// /////
+
+// ///// METHODS
+
+// ///// ///// /////
+
+func (c *Clock) Init() error {
+	opts := am.BindOpts{Id: "tui.Clock"}
+	if _, err := c.t.agent.HandlersBind(c, opts); err != nil {
+		return err
+	}
+	c.layout = cview.NewGrid()
+	c.layout.AddItem(cview.NewBox(), 0, 0, 1, 1, 4, 0, true)
+	c.layout.SetBackgroundTransparent(false)
+	c.layout.SetBackgroundColor(themeBgColor)
+
+	return nil
 }
 
 func (c *Clock) Redraw() {
@@ -92,24 +113,6 @@ func (c *Clock) Redraw() {
 			tcell.ColorYellow,
 			tcell.ColorGreen,
 		))
-}
-
-// ///// ///// /////
-
-// ///// METHODS
-
-// ///// ///// /////
-
-func (c *Clock) Init() error {
-	if err := c.t.agent.BindHandlers(c); err != nil {
-		return err
-	}
-	c.layout = cview.NewGrid()
-	c.layout.AddItem(cview.NewBox(), 0, 0, 1, 1, 4, 0, true)
-	c.layout.SetBackgroundTransparent(false)
-	c.layout.SetBackgroundColor(themeBgColor)
-
-	return nil
 }
 
 // ///// ///// /////
@@ -226,7 +229,7 @@ func (c *ClockService) UIUpdateClockState(e *am.Event) {
 			}
 		}
 
-		c.Agent.EvAdd1(e, ss.UIRenderClock, PassRPC(&A{
+		c.Agent.EvAdd1(e, ss.UIRenderClock, am.Pass(&shared.AUIRenderClock{
 			ClockDiff: plots,
 		}))
 	})

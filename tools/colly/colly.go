@@ -49,7 +49,7 @@ func New(agent shared.AgentBaseAPI) (*Tool, error) {
 	}
 
 	// bind handlers
-	err = t.Mach().BindHandlers(t)
+	_, err = t.Mach().HandlersBind(t)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +60,7 @@ func New(agent shared.AgentBaseAPI) (*Tool, error) {
 	return t, nil
 }
 
-func (t *Tool) Document() *secai.Document {
+func (t *Tool) Document() *shared.Document {
 	doc := t.Doc.Clone()
 	doc.Clear()
 	if len(t.result.Websites) == 0 {

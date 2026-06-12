@@ -33,9 +33,7 @@ type TUIGroupsDef struct {
 }
 
 // TUISchema represents all relations and properties of TUIStates.
-var TUISchema = SchemaMerge(
-	// inherit from BasicStruct
-	ss.BasicSchema,
+var TUISchema = ss.BasicSchema.Merge(
 	// inherit from DisposedStruct
 	ss.DisposedSchema,
 	// inherit from WorkerStates

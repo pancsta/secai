@@ -14,6 +14,12 @@ type Character struct {
 	Result string `json:"result"`
 }
 
+type KeyValue struct {
+	Key   string         `json:"key"`
+	Value string         `json:"value"`
+	Group sql.NullString `json:"group"`
+}
+
 type Prompt struct {
 	ID          int64          `json:"id"`
 	SessionID   string         `json:"session_id"`

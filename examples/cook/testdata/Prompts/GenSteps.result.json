@@ -1,0 +1,47 @@
+{
+	"Schema": {
+		"CarrotsDiced": {
+			"tags": [
+				"idx:2"
+			]
+		},
+		"CarrotsSautéed": {
+			"require": [
+				"CarrotsDiced"
+			],
+			"tags": [
+				"idx:3",
+				"final"
+			]
+		},
+		"EggsReturnedAndCombined": {
+			"require": [
+				"EggsScrambled",
+				"RiceStirFried"
+			],
+			"tags": [
+				"idx:5"
+			]
+		},
+		"EggsScrambled": {
+			"tags": [
+				"idx:1"
+			]
+		},
+		"MealReady": {
+			"auto": true,
+			"require": [
+				"EggsReturnedAndCombined"
+			]
+		},
+		"RiceStirFried": {
+			"require": [
+				"CarrotsSautéed"
+			],
+			"tags": [
+				"idx:4",
+				"time:2m"
+			]
+		}
+	}
+}

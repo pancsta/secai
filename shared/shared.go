@@ -1,15 +1,22 @@
 package shared
 
 import (
+	"bytes"
+	"context"
 	"encoding/gob"
-	"encoding/json"
+	"encoding/xml"
+	"errors"
 	"fmt"
+	"io/fs"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,18 +24,23 @@ import (
 	"unicode"
 
 	"github.com/BooleanCat/go-functional/v2/it"
+	"github.com/jxnl/instructor-go/pkg/instructor/core"
 	"github.com/lithammer/dedent"
 	"github.com/orsinium-labs/enum"
 	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
 	"github.com/pancsta/asyncmachine-go/pkg/telemetry/dbg"
+	"github.com/sblinch/kdl-go"
+	"github.com/sblinch/kdl-go/document"
+
+	"github.com/pancsta/secai/states"
 )
 
 const (
-	// EnvConfig config location
-	EnvConfig   = "SECAI_CONFIG"
 	EnvNoDotEnv = "SECAI_NO_DOTENV"
 )
+
+var ss = states.AgentBaseStates
 
 // From enum
 
@@ -67,93 +79,143 @@ func (m *Msg) String() string {
 	return m.Text
 }
 
+type AgentStore struct {
+	M         map[string]any
+	ClockDiff [][]int
+	Web       fs.FS
+}
+
 // ///// ///// /////
 
 // ///// ARGS
 
 // ///// ///// /////
 
-func init() {
-	gob.Register(ARPC{})
-}
-
 const APrefix = "secai"
 
-// ARPC is a subset of [am.A] that can be passed over RPC.
-type ARPC struct {
-	// ID is a general string ID param.
+type Args struct {
+	am.ArgsBase
+}
+
+func (Args) ArgsPrefix() string {
+	return APrefix
+}
+
+// -----
+
+type AStoryAction struct {
+	Args
+	// ID of the action.
 	ID string `log:"id"`
-	// Addr is a network address.
-	Addr string `log:"addr"`
-	// Timeout is a generic timeout.
-	Timeout time.Duration `log:"timeout"`
-	// Prompt is a prompt to be sent to LLM.
-	Prompt string `log:"prompt"`
-	// IntByTimeout means the interruption was caused by timeout.
-	IntByTimeout bool `log:"int_by_timeout"`
+}
+
+func (AStoryAction) ArgsState() string {
+	return ss.StoryAction
+}
+
+// -----
+
+type AUIRenderStories struct {
+	Args
+	Actions []ActionInfo `log:"actions"`
+	Stories []StoryInfo  `log:"stories"`
+}
+
+func (AUIRenderStories) ArgsState() string {
+	return ss.UIRenderStories
+}
+
+// -----
+
+type AUIMsg struct {
+	Args
 	// Msg is a single message with an author and text.
 	Msg *Msg `log:"msg"`
-	// Perform additional checks via LLM
-	CheckLLM bool `log:"check_llm"`
-	// List of choices
-	Choices []string
-	// Actions are a list of buttons to be displayed in the UI.
-	Actions      []ActionInfo `log:"actions"`
-	Stories      []StoryInfo  `log:"stories"`
-	StatesList   []string     `log:"states_list"`
-	ActivateList []bool       `log:"activate_list"`
-	Result       am.Result
-	ConfigAI     *ConfigAI
-	ClockDiff    [][]int
 }
 
-// ParseArgs extracts A from [am.Event.Args][APrefix].
-func ParseArgs(args am.A) *A {
-	// RPC args
-	if r, ok := args[APrefix].(*ARPC); ok {
-		return amhelp.ArgsToArgs(r, &A{})
-	} else if r, ok := args[APrefix].(ARPC); ok {
-		return amhelp.ArgsToArgs(&r, &A{})
+func (AUIMsg) ArgsState() string {
+	return ss.UIMsg
+}
+
+// -----
+
+type APrompt struct {
+	Args
+	// Prompt is a prompt to be sent to LLM.
+	Prompt string `log:"prompt"`
+}
+
+func (APrompt) ArgsState() string {
+	return ss.Prompt
+}
+
+// -----
+
+type AStoryChanged struct {
+	Args
+	StatesList   []string `log:"states_list"`
+	ActivateList []bool   `log:"activate_list"`
+}
+
+func (AStoryChanged) ArgsState() string {
+	return ss.StoryChanged
+}
+
+// -----
+
+type AInterrupted struct {
+	Args
+	IntByTimeout bool `log:"int_by_timeout"`
+}
+
+func (AInterrupted) ArgsState() string {
+	return ss.Interrupted
+}
+
+// -----
+
+type AConfigUpdate struct {
+	Args
+	ConfigAI *ConfigAI
+}
+
+func (AConfigUpdate) ArgsState() string {
+	return ss.ConfigUpdate
+}
+
+// -----
+
+type AUIRenderClock struct {
+	Args
+	ClockDiff [][]int
+}
+
+func (AUIRenderClock) ArgsState() string {
+	return ss.UIRenderClock
+}
+
+// -----
+
+type ASSHDisconn struct {
+	Args
+	Addr string `log:"addr"`
+	// Id of the disconnected TUI.
+	Id string `log:"id"`
+}
+
+func (ASSHDisconn) ArgsState() string {
+	return ss.SSHDisconn
+}
+
+// -----
+
+func init() {
+	for _, arg := range ArgsRPC {
+		gob.Register(arg)
 	}
-
-	// non-RPC args
-	if a, _ := args[APrefix].(*A); a != nil {
-		return a
-	}
-	return &A{}
 }
 
-// Pass prepares [am.A] from A to pass to further mutations.
-func Pass(args *A) am.A {
-	return am.A{APrefix: args}
-}
-
-// PassRPC prepares [am.A] from A to pass over RPC.
-func PassRPC(args *A) am.A {
-	return am.A{APrefix: amhelp.ArgsToArgs(args, &ARPC{})}
-}
-
-// LogArgs is an args logger for A and [secai.A].
-func LogArgs(args am.A) map[string]string {
-	a1 := ParseArgs(args)
-	if a1 == nil {
-		return nil
-	}
-
-	return amhelp.ArgsToLogMap(a1, 0)
-}
-
-// ParseRpc parses am.A to *ARPC wrapped in am.A. Useful for REPLs.
-func ParseRpc(args am.A) am.A {
-	ret := am.A{APrefix: &ARPC{}}
-	jsonArgs, err := json.Marshal(args)
-	// TODO pre-gen json
-	if err == nil {
-		json.Unmarshal(jsonArgs, ret[APrefix])
-	}
-
-	return ret
-}
+var ArgsRPC = []am.ArgsApi{AStoryAction{}, AUIRenderStories{}, AUIMsg{}, APrompt{}, AInterrupted{}, AConfigUpdate{}, AUIRenderClock{}}
 
 // ///// ///// /////
 
@@ -299,11 +361,19 @@ func isWSL() bool {
 	return strings.Contains(strings.ToLower(string(releaseData)), "microsoft")
 }
 
+func TextCut(txt string, maxLen int) string {
+	if len(txt) > maxLen {
+		return txt[:maxLen] + "..."
+	}
+	return txt
+}
+
 // ///// ///// /////
 
 // ///// STORY
 
 // ///// ///// /////
+
 // TODO add pro-active state triggers based on historical data
 
 // StoryInfo is a static model for [Story].
@@ -477,14 +547,18 @@ func (s StoryActionsByIdx) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
 // ///// ///// /////
 
 type Config struct {
-	// File is the path to the loaded config file.
-	File  string `kdl:"-"`
 	AI    ConfigAI
 	Agent ConfigAgent
 	Web   ConfigWeb
 	TUI   ConfigTUI
 	Tools ConfigTools
 	Debug ConfigDebug
+
+	// internal
+
+	// File is the path to the loaded config file.
+	File      string `kdl:"-"`
+	ProdBuild bool   `kdl:"-"`
 }
 
 type ConfigAI struct {
@@ -494,21 +568,54 @@ type ConfigAI struct {
 	ReqLimit int
 }
 
-type ConfigAIOpenAI struct {
+// ConfigAICommon are shared fields across all AI providers.
+type ConfigAICommon struct {
+	Model    string
 	Key      string
 	Disabled bool
-	URL      string
-	Model    string
-	Tags     []string
-	Retries  int `kdl:",omitempty"`
+	// Def: 3
+	Retries  int      `kdl:",omitempty"`
+	Tags     []string `kdl:",omitempty"`
+	Priority int      `kdl:",omitempty"`
+	// For how long blacklist this provider on error (def 1h).
+	FallbackTimeout time.Duration `kdl:",omitempty"`
+	// Number of concurrent req for this provider TODO
+	Concurrency int
+
+	// internal
+
+	// temporarily disabled (eg offline)
+	DisabledUntil time.Time `kdl:"-"`
+	// provider name
+	Provider string `kdl:"-"`
+	// num of times this backend was called without errs
+	Calls int `kdl:"-"`
+}
+
+func (c *ConfigAICommon) IsEnabled() bool {
+	if c.Disabled {
+		return false
+	}
+	if c.Key == "" {
+		return false
+	}
+	if !c.DisabledUntil.IsZero() && c.DisabledUntil.After(time.Now()) {
+		return false
+	}
+
+	return true
+}
+
+type ConfigAIOpenAI struct {
+	ConfigAICommon
+
+	URL string
+	// NoEnforceSchema skips `instr.WithMode(instr.ModeJSONSchema)` for local models
+	NoEnforceSchema bool
 }
 
 type ConfigAIGemini struct {
-	Key      string
-	Disabled bool
-	Model    string
-	Tags     []string
-	Retries  int
+	ConfigAICommon
 }
 
 type ConfigAgent struct {
@@ -535,6 +642,8 @@ type ConfigAgentLog struct {
 	MachLevel am.LogLevel
 	// print machine log
 	MachPrint bool
+	// agent log level
+	Level slog.Level
 }
 
 type ConfigAgentHistory struct {
@@ -548,8 +657,6 @@ type ConfigWeb struct {
 	// - main HTTP server
 	// - +1 WebSocket addr of the agent's RPC server (dashboard)
 	// - +2 WebSocket addr of the agent's RPC server (agent UI)
-	// - +3 TCP addr of the dashboard REPL server (WS tunnel)
-	// - +4 TCP addr of the agent UI REPL server (WS tunnel)
 	Addr string
 	// Start a DBPort web UI on http://localhost:{DBPort[0-2]}
 	DBPort int
@@ -592,8 +699,8 @@ type ConfigDebug struct {
 	// Start pprof on addr
 	ProfilerAddr string
 	// Enable misc debugging modes (SQL history, am-relay, browser RPC)
-	// TODO extract SQL
-	Verbose bool
+	Verbose    bool
+	VerboseSQL bool
 	// Create value files for inspection
 	ValFiles bool
 	// Enable REPL for agent, mem, and tools
@@ -605,7 +712,7 @@ type ConfigDebug struct {
 
 	// embeds
 
-	// Start an embedded debugger on localhost:{DBGEmbed}
+	// Start an embedded debugger on localhost:{DBGAddr}
 	DBGEmbed bool
 	// Expose the embedded debugger on http://localhost:{DBGEmbedWeb}
 	DBGEmbedWeb int
@@ -615,6 +722,7 @@ type ConfigDebug struct {
 
 // defaults
 
+// ConfigDefault produces a default config with ports in the range 12800-12900.
 func ConfigDefault() Config {
 	return Config{
 		Agent: ConfigAgent{
@@ -623,6 +731,9 @@ func ConfigDefault() Config {
 				Backend: "memory",
 				Max:     1_000_000,
 			},
+			Log: ConfigAgentLog{
+				Level: slog.LevelInfo,
+			},
 		},
 		Web: ConfigWeb{
 			Addr:    "localhost:12854",
@@ -630,8 +741,8 @@ func ConfigDefault() Config {
 			DBPort:  -1,
 		},
 		TUI: ConfigTUI{
-			PortSSH:    7855,
-			PortWeb:    7856,
+			PortSSH:    12868,
+			PortWeb:    12878,
 			Host:       "localhost",
 			ClockRange: 10,
 		},
@@ -640,29 +751,42 @@ func ConfigDefault() Config {
 				Port: "7452",
 			},
 		},
+		Debug: ConfigDebug{
+			REPLWeb: -1,
+		},
 	}
 }
 
-func ConfigDefaultOpenAI() ConfigAIOpenAI {
+func ConfigDefaultAIOpenAI() ConfigAIOpenAI {
 	return ConfigAIOpenAI{
-		Retries: 3,
-		// TODO breaks WASM linking
-		// Model:   openai.GPT4o,
-		Model: "gpt-4o",
+		ConfigAICommon: ConfigAICommon{
+			Retries: 3,
+			// TODO breaks WASM linking
+			// Model:   openai.GPT4o,
+			Model: "gpt-4o",
+			// TODO enum
+			Provider:        "openai",
+			FallbackTimeout: time.Hour,
+		},
 	}
 }
 
-func ConfigDefaultGemini() ConfigAIGemini {
+func ConfigDefaultAIGemini() ConfigAIGemini {
 	return ConfigAIGemini{
-		Retries: 3,
-		// TODO link from genai pkg
-		Model: "gemini-2.5-flash",
+		ConfigAICommon: ConfigAICommon{
+			Retries: 3,
+			// TODO link from genai pkg
+			Model: "gemini-2.5-flash",
+			// TODO enum
+			Provider:        "gemini",
+			FallbackTimeout: time.Hour,
+		},
 	}
 }
 
-// TODO config method
-func ConfigDbgAddrs(cfg ConfigDebug) (dbgAddr, httpAddr, sshAddr string, err error) {
-	dbgAddr = cfg.DBGAddr
+// TODO keep in sync with debugger.Params
+func (c *ConfigDebug) DbgAddrs() (dbgAddr, httpAddr, sshAddr string, err error) {
+	dbgAddr = c.DBGAddr
 	if dbgAddr == "1" {
 		dbgAddr = dbg.DbgAddr
 	}
@@ -692,17 +816,17 @@ func ConfigDbgAddrs(cfg ConfigDebug) (dbgAddr, httpAddr, sshAddr string, err err
 // }
 //
 // func (l *LogDB) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
-//	log.Printf("[DUMP] Exec: %s | Args: %v", query, args)
+//	log.Printf("[DUMP] Exec: %s | ArgsBase: %v", query, args)
 //	return l.DB.ExecContext(ctx, query, args...)
 // }
 //
 // func (l *LogDB) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
-//	log.Printf("[DUMP] Query: %s | Args: %v", query, args)
+//	log.Printf("[DUMP] Query: %s | ArgsBase: %v", query, args)
 //	return l.DB.QueryContext(ctx, query, args...)
 // }
 //
 // func (l *LogDB) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
-//	log.Printf("[DUMP] QueryRow: %s | Args: %v", query, args)
+//	log.Printf("[DUMP] QueryRow: %s | ArgsBase: %v", query, args)
 //	return l.DB.QueryRowContext(ctx, query, args...)
 // }
 //
@@ -710,51 +834,66 @@ func ConfigDbgAddrs(cfg ConfigDebug) (dbgAddr, httpAddr, sshAddr string, err err
 // // realDB, _ := sql.Open(...)
 // // queries := db.New(&LogDB{DB: realDB})
 
-// TODO config method
-func ConfigWebDBAddrs(cfg ConfigWeb) (base, agent, mach string) {
-	if cfg.DBPort == -1 {
+func (c *ConfigWeb) DBAddrs() (base, agent, mach string) {
+	if c.DBPort == -1 {
 		return "", "", ""
 	}
 
-	port := cfg.DBPort
+	port := c.DBPort
 	return "localhost:" + strconv.Itoa(port),
 		"localhost:" + strconv.Itoa(port+1),
 		"localhost:" + strconv.Itoa(port+2)
 }
 
-// TODO config method
-func ConfigWebLogAddr(cfg ConfigWeb) string {
-	if cfg.LogPort == -1 {
+func (c *ConfigWeb) ConfigWebLogAddr() string {
+	if c.LogPort == -1 {
 		return ""
 	}
 
-	return "localhost:" + strconv.Itoa(cfg.LogPort)
+	return "localhost:" + strconv.Itoa(c.LogPort)
 }
 
-// TODO config method
-func ConfigLogPath(cfg ConfigAgent) string {
-	logFile := filepath.Join(cfg.Dir, cfg.ID+".jsonl")
-	if v := cfg.Log.File; v != "" {
+// DirPath returns an absolute path to the agent's data directory.
+func (c *ConfigAgent) DirPath() string {
+	dir, err := filepath.Abs(c.Dir)
+	if err != nil {
+		return c.Dir
+	}
+	return dir
+}
+
+func (c *ConfigAgent) LogPath(absolute bool) string {
+	logFile := filepath.Join(c.Dir, "logs", c.ID+".jsonl")
+	if v := c.Log.File; v != "" {
 		logFile = v
 	}
 
+	if absolute {
+		logFile, _ = filepath.Abs(logFile)
+	}
 	return logFile
 }
 
-// TODO config method
-func BinaryPath(cfg *Config) string {
-	bin := "./" + cfg.Agent.ID
-	if runtime.GOOS == "windows" {
-		bin += ".exe"
+func BinaryPath(absolute bool) string {
+	exePath, err := os.Executable()
+	if err != nil {
+		return ""
 	}
-	if v := os.Getenv("SECAI_AGENT_DIR"); v != "" {
-		bin = filepath.Join(v, bin)
+	bin := filepath.Base(exePath)
+
+	// go build
+	if strings.HasPrefix(bin, "__") || absolute {
+		return exePath
 	}
 
+	if !absolute && runtime.GOOS != "windows" {
+		bin = "./" + bin
+	}
 	return bin
 }
 
-func (c *ConfigWeb) AgentWSAddrDash() string {
+// TODO extract to configAPIs
+func (c *ConfigWeb) AddrAgent() string {
 	host, port, err := net.SplitHostPort(c.Addr)
 	if err != nil {
 		return ""
@@ -766,41 +905,24 @@ func (c *ConfigWeb) AgentWSAddrDash() string {
 	return host + ":" + strconv.Itoa(webPort+1)
 }
 
-// TODO remove when dialing via relay lands
-func (c *ConfigWeb) AgentWSAddrRemoteUI() string {
-	host, port, err := net.SplitHostPort(c.Addr)
-	if err != nil {
-		return ""
-	}
-	webPort, err := strconv.Atoi(port)
-	if err != nil {
-		return ""
-	}
-	return host + ":" + strconv.Itoa(webPort+2)
-}
-
 func (c *ConfigWeb) REPLAddrDash() string {
-	host, port, err := net.SplitHostPort(c.Addr)
+	host, _, err := net.SplitHostPort(c.Addr)
 	if err != nil {
 		return ""
 	}
-	webPort, err := strconv.Atoi(port)
-	if err != nil {
-		return ""
-	}
-	return host + ":" + strconv.Itoa(webPort+3)
+
+	// REPLs are always random, as they'd collide without tunnel matchers
+	return host + ":0"
 }
 
 func (c *ConfigWeb) REPLAddrAgentUI() string {
-	host, port, err := net.SplitHostPort(c.Addr)
+	host, _, err := net.SplitHostPort(c.Addr)
 	if err != nil {
 		return ""
 	}
-	webPort, err := strconv.Atoi(port)
-	if err != nil {
-		return ""
-	}
-	return host + ":" + strconv.Itoa(webPort+4)
+
+	// REPLs are always random, as they'd collide without tunnel matchers
+	return host + ":0"
 }
 
 func (c *ConfigWeb) DashURL() string {
@@ -848,8 +970,7 @@ func (cfg *Config) DotEnv() string {
 	sb.WriteString("# WEB CONFIGURATION\n")
 	sb.WriteString("# ==========================================\n")
 	writeEnv("WEB_ADDR", cfg.Web.Addr)
-	writeEnv("WEB_WS_ADDR_DASH", cfg.Web.AgentWSAddrDash())
-	writeEnv("WEB_WS_ADDR_REMOTEUI", cfg.Web.AgentWSAddrRemoteUI())
+	writeEnv("WEB_ADDR_AGENT", cfg.Web.AddrAgent())
 	writeEnv("WEB_DASH_REPL_ADDR", cfg.Web.REPLAddrDash())
 	writeEnv("WEB_AGENTUI_REPL_ADDR", cfg.Web.REPLAddrAgentUI())
 	writeEnv("WEB_DB_PORT", cfg.Web.DBPort)
@@ -877,6 +998,7 @@ func (cfg *Config) DotEnv() string {
 	writeEnv("DEBUG_MOCK", cfg.Debug.Mock)
 	writeEnv("DEBUG_PROFILER_ADDR", cfg.Debug.ProfilerAddr)
 	writeEnv("DEBUG_VERBOSE", cfg.Debug.Verbose)
+	writeEnv("DEBUG_VERBOSE_SQL", cfg.Debug.VerboseSQL)
 	writeEnv("DEBUG_REPL", cfg.Debug.REPL)
 	writeEnv("DEBUG_DBG_ADDR", cfg.Debug.DBGAddr)
 	writeEnv("DEBUG_DBG_EMBED", cfg.Debug.DBGEmbed)
@@ -884,4 +1006,524 @@ func (cfg *Config) DotEnv() string {
 	writeEnv("DEBUG_REPL_WEB", cfg.Debug.REPLWeb)
 
 	return sb.String()
+}
+
+// ///// ///// /////
+
+// ///// KDL FORMAT
+
+// ///// ///// /////
+
+// KdlFormat parses a raw KDL string and returns it formatted with proper
+// newlines, inherited indentation, and names resolved from the Config struct.
+func KdlFormat(input []byte, cfg any) string {
+	nameMap := kdlBuildNameMap(cfg)
+
+	doc, err := kdl.Parse(bytes.NewReader(input))
+	if err != nil {
+		return fmt.Sprintf("kdlfmt: parse error: %v\n", err)
+	}
+
+	var b strings.Builder
+	for _, n := range doc.Nodes {
+		b.WriteString(kdlFormatNode(n, 0, nameMap))
+	}
+	return b.String()
+}
+
+// kdlBuildNameMap walks the cfg struct via reflection and returns a map from
+// lowercase KDL names to the corresponding Go field names.
+func kdlBuildNameMap(v any) map[string]string {
+	m := make(map[string]string)
+	kdlCollectFields(reflect.ValueOf(v), m)
+	return m
+}
+
+func kdlCollectFields(val reflect.Value, m map[string]string) {
+	if val.Kind() == reflect.Ptr {
+		val = val.Elem()
+	}
+	if val.Kind() != reflect.Struct {
+		return
+	}
+	t := val.Type()
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		kdlTag := f.Tag.Get("kdl")
+		if kdlTag == "-" {
+			continue
+		}
+		kdlName := kdlTagName(kdlTag, f.Name)
+		m[kdlName] = f.Name
+
+		// recurse into struct fields for child node names
+		fv := val.Field(i)
+		if fv.Kind() == reflect.Struct {
+			kdlCollectFields(fv, m)
+		} else if fv.Kind() == reflect.Ptr && fv.Type().Elem().Kind() == reflect.Struct {
+			kdlCollectFields(fv, m)
+		} else if fv.Kind() == reflect.Slice && fv.Type().Elem().Kind() == reflect.Struct {
+			kdlCollectFields(reflect.New(fv.Type().Elem()).Elem(), m)
+		}
+	}
+}
+
+func kdlTagName(tag, goName string) string {
+	if tag != "" {
+		if comma := strings.IndexByte(tag, ','); comma >= 0 {
+			name := tag[:comma]
+			if name != "" {
+				return strings.ToLower(name)
+			}
+		} else {
+			return strings.ToLower(tag)
+		}
+	}
+	return strings.ToLower(goName)
+}
+
+func kdlResolveName(kdlName string, nameMap map[string]string) string {
+	if name, ok := nameMap[strings.ToLower(kdlName)]; ok {
+		return name
+	}
+	return kdlCapitalizeFallback(kdlName)
+}
+
+func kdlCapitalizeFallback(s string) string {
+	if s == "" {
+		return s
+	}
+	r := []rune(s)
+	r[0] = unicode.ToUpper(r[0])
+	return string(r)
+}
+
+func kdlFormatNode(n *document.Node, depth int, nameMap map[string]string) string {
+	var b strings.Builder
+	indent := strings.Repeat("  ", depth)
+
+	name := kdlResolveName(n.Name.Value.(string), nameMap)
+	b.WriteString(indent)
+	b.WriteString(name)
+
+	children := n.Children
+	props := n.Properties.Unordered()
+	hasBraces := len(children) > 0 || len(props) > 0
+
+	if !hasBraces {
+		b.WriteString("\n")
+		return b.String()
+	}
+
+	b.WriteString(" {\n")
+
+	childIndent := strings.Repeat("  ", depth+1)
+	for k, v := range props {
+		// if kdlIsZeroValue(v) {
+		// 	continue
+		// }
+		key := kdlResolveName(k, nameMap)
+		b.WriteString(childIndent)
+		b.WriteString(key)
+		if v.Value != nil {
+			b.WriteString(" ")
+			b.WriteString(kdlFormatValue(v))
+		}
+		b.WriteString("\n")
+	}
+
+	// output arguments (positional values without keys)
+	for _, arg := range n.Arguments {
+		b.WriteString(childIndent)
+		b.WriteString(kdlFormatValue(arg))
+		b.WriteString("\n")
+	}
+
+	for _, child := range children {
+		b.WriteString(kdlFormatNode(child, depth+1, nameMap))
+	}
+
+	b.WriteString(indent)
+	b.WriteString("}\n")
+
+	return b.String()
+}
+
+// func kdlIsZeroValue(v *document.Value) bool {
+// 	if v.Value == nil {
+// 		return true
+// 	}
+// 	switch x := v.Value.(type) {
+// 	case string:
+// 		return x == ""
+// 	case bool:
+// 		return !x
+// 	case int:
+// 		return x == 0
+// 	case int8:
+// 		return x == 0
+// 	case int16:
+// 		return x == 0
+// 	case int32:
+// 		return x == 0
+// 	case int64:
+// 		return x == 0
+// 	case uint:
+// 		return x == 0
+// 	case uint8:
+// 		return x == 0
+// 	case uint16:
+// 		return x == 0
+// 	case uint32:
+// 		return x == 0
+// 	case uint64:
+// 		return x == 0
+// 	case float32:
+// 		return x == 0.0
+// 	case float64:
+// 		return x == 0.0
+// 	}
+// 	return false
+// }
+
+func kdlFormatValue(v *document.Value) string {
+	if v.Value == nil {
+		return "null"
+	}
+	switch x := v.Value.(type) {
+	case bool:
+		return strconv.FormatBool(x)
+	case string:
+		return strconv.Quote(x)
+	case int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64:
+		return fmt.Sprint(x)
+	default:
+		return strconv.Quote(fmt.Sprint(x))
+	}
+}
+
+// ///// ///// /////
+
+// ///// RSS
+
+// ///// ///// /////
+
+type FeedItem struct {
+	Title  string
+	Author string
+	Link   string
+	Date   string
+	Desc   string
+}
+
+func escapeXML(input string) string {
+	var buffer bytes.Buffer
+	// xml.EscapeText writes safely escaped XML text to the buffer
+	if err := xml.EscapeText(&buffer, []byte(input)); err != nil {
+		// This error is very rare (buffer write error), but good to handle
+		return ""
+	}
+	return buffer.String()
+}
+
+func GenerateAtomFeed(items []FeedItem, title string) string {
+	now := time.Now().Format(time.RFC3339)
+	feed := fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?>
+		<feed xmlns="http://www.w3.org/2005/Atom">
+		  <title>%s</title>
+		  <link href="https://github.com"/>
+		  <updated>%s</updated>
+		  <id>starred-repos-feed</id>
+		`, title, now)
+
+	for _, item := range items {
+		title := escapeXML(item.Title)
+		feed += fmt.Sprintf(`
+			<entry>
+		    <title>%s</title>
+		    <link href="%s"/>
+		    <updated>%s</updated>
+		    <author>%s</author>
+		    <description>%s</description>
+		  </entry>
+		`, title, item.Link, item.Date, item.Author, item.Desc)
+	}
+
+	feed += `</feed>`
+	return feed
+}
+
+// ///// ///// /////
+
+// ///// LOGGER
+
+// ///// ///// /////
+
+// SlogWriter adapts an slog.Logger to the io.Writer interface.
+type SlogWriter struct {
+	logger *slog.Logger
+	level  slog.Level
+}
+
+// NewSlogWriter creates a new io.Writer that writes to the provided slog.Logger
+// at the specified log level.
+func NewSlogWriter(logger *slog.Logger, level slog.Level) *SlogWriter {
+	return &SlogWriter{
+		logger: logger,
+		level:  level,
+	}
+}
+
+// Write implements the io.Writer interface.
+func (w *SlogWriter) Write(p []byte) (n int, err error) {
+	// Trim trailing newlines because slog will append its own formatting.
+	// This prevents empty lines in your log output.
+	msg := bytes.TrimSuffix(p, []byte{'\n'})
+
+	// Log the message using the stored logger and level.
+	// context.Background() is used because the io.Writer interface
+	// does not provide a way to pass a context.
+	w.logger.Log(context.Background(), w.level, string(msg))
+
+	// Return the original length of p to satisfy the io.Writer contract,
+	// even though we trimmed the newline internally.
+	return len(p), nil
+}
+
+// ///// ///// /////
+
+// ///// PROMPT
+
+// ///// ///// /////
+
+// TODO RemoveTool, RemoveDoc
+
+type PromptMsg struct {
+	From    core.Role
+	Content string
+}
+
+type PromptOpts struct {
+	// required provider tags
+	Tags []string
+	// disallowed provider tags
+	NoTags []string
+	// skip checking if state is active
+	SkipState bool
+}
+
+// optBindOpts will return the first [BindOpts] from a list.
+func optPromptOpts(args []PromptOpts) PromptOpts {
+	if len(args) > 0 {
+		return args[0]
+	}
+	return PromptOpts{}
+}
+
+// TODO incomplete?
+type PromptApi interface {
+	AddTool(tool ToolApi)
+	AddDoc(doc *Document)
+
+	GenSysPrompt() string
+	Conversation() (*core.Conversation, string)
+	HistClean()
+}
+
+type PromptSchemaless = Prompt[any, any]
+
+var _ PromptApi = &Prompt[any, any]{}
+
+// AddTool registers a SECAI TOOL which then exports it's documents into the system prompt. This is different from an AI tool.
+func (p *Prompt[P, R]) AddTool(tool ToolApi) {
+	p.tools[tool.Mach().Id()] = tool
+}
+
+// AddDoc adds a document into the system prompt.
+func (p *Prompt[P, R]) AddDoc(doc *Document) {
+	p.docs[doc.Title()] = doc
+}
+
+// GenSysPrompt generates a system prompt.
+func (p *Prompt[P, R]) GenSysPrompt() string {
+
+	// documents
+	docs := ""
+	for _, t := range p.tools {
+		doc := t.Document()
+		c := doc.Parts()
+		if len(c) == 0 {
+			continue
+		}
+		docs += "## " + doc.Title() + "\n\n" + strings.Join(doc.Parts(), "\n") + "\n\n"
+	}
+	for _, d := range p.docs {
+		c := d.Parts()
+		if len(c) == 0 {
+			continue
+		}
+		docs += "## " + d.Title() + "\n\n" + strings.Join(d.Parts(), "\n") + "\n\n"
+	}
+	if docs != "" {
+		docs = "# EXTRA INFORMATION AND CONTEXT\n\n" + docs
+	}
+
+	// other sections
+
+	cond := ""
+	if p.Conditions != "" {
+		cond = "# IDENTITY and PURPOSE\n\n" + p.Conditions + "\n"
+	}
+
+	steps := ""
+	if p.Steps != "" {
+		steps = "# INTERNAL ASSISTANT STEPS\n\n" + p.Steps + "\n"
+	}
+
+	result := ""
+	if p.Result != "" {
+		result = "# OUTPUT INSTRUCTIONS\n\n" + p.Result + "\n"
+	}
+
+	// template
+	return strings.Trim(Sp(`
+		%s
+		%s
+		%s
+		%s
+		`, cond, steps, result, docs), "\n ")
+}
+
+// Conversation will create a conversation with history and system prompt, return sys prompt on the side.
+func (p *Prompt[P, R]) Conversation() (*core.Conversation, string) {
+	sys := p.GenSysPrompt()
+	// TODO marshal sys prompts, add generic params schema for attached documents
+	c := core.NewConversation(sys)
+	limit := max(100, p.HistoryMsgLen)
+	if l := len(p.Msgs); l > limit {
+		p.Msgs = p.Msgs[l-limit:]
+	}
+	for i := len(p.Msgs) - 1; i >= 0; i-- {
+		msg := p.Msgs[i]
+		c.AddMessage(msg.From, msg.Content)
+	}
+
+	return c, sys
+}
+
+func (p *Prompt[P, R]) HistClean() {
+	p.Msgs = nil
+}
+
+var (
+	ErrHistNil = errors.New("history is nil")
+)
+
+// DOCUMENT
+
+type Document struct {
+	title string
+	parts []string
+}
+
+func NewDocument(title string, content ...string) *Document {
+	return &Document{
+		title: title,
+		parts: content,
+	}
+}
+
+func (d *Document) Title() string {
+	return d.title
+}
+
+func (d *Document) Parts() []string {
+	return slices.Clone(d.parts)
+}
+
+func (d *Document) AddPart(parts ...string) *Document {
+	d.parts = append(d.parts, parts...)
+	return d
+}
+
+func (d *Document) Clear() *Document {
+	d.parts = nil
+	return d
+}
+
+func (d *Document) Clone() Document {
+	return *NewDocument(d.title, d.parts...)
+}
+
+func (d *Document) AddToPrompts(prompts ...PromptApi) {
+	for _, p := range prompts {
+		p.AddDoc(d)
+	}
+}
+
+// TOOL
+
+type ToolApi interface {
+	Mach() *am.Machine
+	SetMach(*am.Machine)
+	Document() *Document
+}
+
+// ///// ///// /////
+
+// ///// ERRORS
+
+// ///// ///// /////
+
+// ErrDB is for [states.AgentBaseStatesDef.ErrDB].
+var ErrDB = errors.New("DB error")
+
+// AddErrDB adds [ErrDB].
+func AddErrDB(
+	event *am.Event, mach *am.Machine, err error, args ...am.A,
+) am.Result {
+	if err == nil {
+		return am.Executed
+	}
+	err = fmt.Errorf("%w: %w", ErrDB, err)
+	return mach.EvAddErrState(event, ss.ErrDB, err, OptArgs(args))
+}
+
+// ErrAI is for [states.AgentBaseStatesDef.ErrAI].
+var ErrAI = errors.New("AI error")
+
+// AddErrAI adds [ErrAI].
+func AddErrAI(
+	event *am.Event, mach *am.Machine, err error, args ...am.A,
+) am.Result {
+	if err == nil {
+		return am.Executed
+	}
+	err = fmt.Errorf("%w: %w", ErrAI, err)
+	return mach.EvAddErrState(event, ss.ErrAI, err, OptArgs(args))
+}
+
+// ///// ///// /////
+
+// ///// UTILS
+
+// ///// ///// /////
+
+func GetVersion() string {
+	build, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "(devel)"
+	}
+
+	ver := build.Main.Version
+	if ver == "" {
+		return "(devel)"
+	}
+
+	return ver
 }

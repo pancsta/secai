@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	filepath "path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -33,21 +34,34 @@ import (
 	"github.com/teivah/onecontext"
 
 	"github.com/pancsta/secai/shared"
-	sabase "github.com/pancsta/secai/states"
-	ssb "github.com/pancsta/secai/web/browser/states"
+	"github.com/pancsta/secai/states"
+	ssp "github.com/pancsta/secai/web/browser/states"
 	"github.com/pancsta/secai/web/types"
 )
 
 //go:embed browser/browser.js
-var clockmojiJS []byte
+var browserJS []byte
 
-var ss = sabase.AgentBaseStates
-var ssB = ssb.PageStates
-var Pass = shared.Pass
-var PassRpc = types.PassRpc
+var ssDbg = ssdbg.DebuggerStates
+var ss = states.AgentBaseStates
+var ssP = ssp.PageStates
 
-type A = types.A
-type ABase = shared.A
+type Args struct {
+	am.ArgsBase
+}
+
+func (Args) ArgsPrefix() string {
+	return shared.APrefix
+}
+
+type ASSHDisconn struct {
+	Args
+	Addr string `log:"addr"`
+}
+
+func (ASSHDisconn) ArgsState() string {
+	return ss.SSHDisconn
+}
 
 var (
 	// ErrWeb is for [sabase.AgentBaseStatesDef.ErrWeb].
@@ -56,16 +70,42 @@ var (
 	ErrWebPTY = errors.New("web PTY UI error")
 )
 
-type Handlers struct {
-	A shared.AgentBaseAPI
+type HandersImpl interface {
+	PushDashData(
+		e *am.Event, client *arpc.Client, dash *types.DataDashboard,
+	) am.Result
+	PushUIData(
+		e *am.Event, client *arpc.Client, data *types.DataAgent,
+	) am.Result
+}
 
-	rpcDash        *arpc.Server
+type Handlers struct {
+	A    shared.AgentBaseAPI
+	ID   string
+	impl HandersImpl
+
+	rpcMux         *arpc.Mux
 	dashboards     []*arpc.Client
 	agentUIs       []*arpc.Client
 	relay          *amrelay.Relay
 	nextDashNum    int
 	nextAgentUINum int
-	rpcUI          *arpc.Server
+}
+
+// NewHandlers creates new web handlers.
+func NewHandlers(a shared.AgentBaseAPI, impl HandersImpl) *Handlers {
+	h := &Handlers{
+		ID:   "web.Handlers",
+		A:    a,
+		impl: impl,
+	}
+
+	// TODO check typed nil
+	if h.impl == nil {
+		h.impl = h
+	}
+
+	return h
 }
 
 // ///// ///// /////
@@ -74,8 +114,10 @@ type Handlers struct {
 
 // ///// ///// /////
 
+var _ = ss.WebSSHReady
+
 func (h *Handlers) WebSSHReadyEnter(e *am.Event) bool {
-	return h.A.ConfigBase().TUI.PortWeb != -1
+	return h.A.ConfigBase().TUI.PortWeb > 0
 }
 
 func (h *Handlers) WebSSHReadyState(e *am.Event) {
@@ -95,7 +137,7 @@ func (h *Handlers) WebSSHReadyState(e *am.Event) {
 				if !ok {
 					return
 				}
-				mach.EvAdd1(e, ss.SSHDisconn, Pass(&ABase{
+				mach.EvAdd1(e, ss.SSHDisconn, am.Pass(&ASSHDisconn{
 					Addr: addr,
 				}))
 			case <-ctx.Done():
@@ -110,17 +152,19 @@ func (h *Handlers) WebSSHReadyState(e *am.Event) {
 	})
 }
 
+var _ = ss.UIMode
+
 func (h *Handlers) UIModeState(e *am.Event) {
 	mach := h.A.Mach()
 	ctx := mach.NewStateCtx(ss.UIMode)
 	cfg := h.A.ConfigBase()
 
-	// web log
+	// web log TODO full config path
 	if cfg.Web.LogPort != -1 {
 		mach.Fork(ctx, e, func() {
 			title := "log / " + h.A.ConfigBase().Agent.Label
 			AddErrPTY(e, mach,
-				h.ExposeCmd(ctx, e, title, strconv.Itoa(cfg.Web.LogPort), shared.BinaryPath(cfg),
+				h.ExposeCmd(ctx, e, title, strconv.Itoa(cfg.Web.LogPort), shared.BinaryPath(true),
 					[]string{"log", "--tail", "--config", cfg.File}, nil))
 		})
 	}
@@ -137,61 +181,58 @@ func (h *Handlers) UIModeState(e *am.Event) {
 			h.StartHTTP(e))
 	})
 
-	// RPC Servers TODO keep one mux when relay dialing lands
+	// RPC Muxer TODO extract to APIs
 
-	// dashboard
+	// TODO ID gen
+	mux, err := arpc.NewMux(ctx, cfg.Web.AddrAgent(), "server-"+mach.Id(), mach, &arpc.MuxOpts{
+		Parent: mach,
+		NewServerFn: func(mux *arpc.Mux, id string, conn net.Conn) (*arpc.Server, error) {
+			srv, err := mux.NewDefaultServer(id)
+			if err != nil {
+				return nil, err
+			}
 
-	srv, err := arpc.NewServer(ctx, cfg.Web.AgentWSAddrDash(), "server-dash-"+mach.Id(), mach, &arpc.ServerOpts{
-		Parent:    mach,
-		WebSocket: true,
+			// instant push
+			srv.PushInterval.Store(new(10 * time.Millisecond))
+			srv.Conn = conn
+			srv.Start(e)
+
+			return srv, nil
+		},
 	})
 	if err != nil {
 		AddErr(e, mach, err, nil)
 		return
 	}
-	err = arpc.BindServer(srv.Mach, mach, ss.WebRPCReady, ss.WebConnected)
-	if err != nil {
+
+	// pipes
+	if _, err := ampipe.BindReady(mux.Mach, mach, ss.WebRPCReady, ""); err != nil {
 		AddErr(e, mach, err, nil)
 		return
 	}
-	srv.PushInterval.Store(new(10 * time.Millisecond))
+	if _, err := arpc.BindMux(mux.Mach, mach, ss.WebConnected, ""); err != nil {
+		AddErr(e, mach, err, nil)
+		return
+	}
 
 	// save & start
-	h.rpcDash = srv
-	srv.Start(e)
-
-	// remote UI
-
-	srv, err = arpc.NewServer(ctx, cfg.Web.AgentWSAddrRemoteUI(), "server-agentui-"+mach.Id(), mach, &arpc.ServerOpts{
-		Parent:    mach,
-		WebSocket: true,
-	})
-	if err != nil {
-		AddErr(e, mach, err, nil)
-		return
-	}
-	err = arpc.BindServer(srv.Mach, mach, ss.WebRPCReady, ss.WebConnected)
-	if err != nil {
-		AddErr(e, mach, err, nil)
-		return
-	}
-	srv.PushInterval.Store(new(10 * time.Millisecond))
-
-	// save & start
-	h.rpcUI = srv
-	srv.Start(e)
+	h.rpcMux = mux
+	mux.Start(e)
 }
 
 func (h *Handlers) UIModeEnd(e *am.Event) {
-	for _, b := range h.dashboards {
-		_ = b.Stop(nil, e, true)
+	for _, srv := range h.agentUIs {
+		_ = srv.Stop(nil, e, true)
 	}
-	h.rpcDash.Stop(e, true)
-
-	// TODO dispose agent UIs
+	for _, srv := range h.dashboards {
+		_ = srv.Stop(nil, e, true)
+	}
+	h.rpcMux.Stop(e, true)
 
 	// TODO dispose relay
 }
+
+var _ = ss.BaseDBReady
 
 func (h *Handlers) BaseDBReadyState(e *am.Event) {
 	mach := h.A.Mach()
@@ -203,7 +244,7 @@ func (h *Handlers) BaseDBReadyState(e *am.Event) {
 	}
 
 	mach.Fork(mach.NewStateCtx(ss.BaseDBReady), e, func() {
-		addr, _, _ := shared.ConfigWebDBAddrs(cfg)
+		addr, _, _ := cfg.DBAddrs()
 		err := sqliter.New(addr, h.A.DBBase())
 		if err != nil {
 			AddErr(e, mach, err, nil)
@@ -211,6 +252,8 @@ func (h *Handlers) BaseDBReadyState(e *am.Event) {
 		}
 	})
 }
+
+var _ = ss.DBReady
 
 func (h *Handlers) DBReadyState(e *am.Event) {
 	mach := h.A.Mach()
@@ -223,7 +266,7 @@ func (h *Handlers) DBReadyState(e *am.Event) {
 
 	// TODO move state to ss_secai
 	mach.Fork(mach.NewStateCtx("DBReady"), e, func() {
-		_, addr, _ := shared.ConfigWebDBAddrs(cfg)
+		_, addr, _ := cfg.DBAddrs()
 		err := sqliter.New(addr, h.A.AgentImpl().DBAgent())
 		if err != nil {
 			AddErr(e, mach, err, nil)
@@ -231,6 +274,8 @@ func (h *Handlers) DBReadyState(e *am.Event) {
 		}
 	})
 }
+
+var _ = ss.HistoryDBReady
 
 func (h *Handlers) HistoryDBReadyState(e *am.Event) {
 	mach := h.A.Mach()
@@ -242,7 +287,7 @@ func (h *Handlers) HistoryDBReadyState(e *am.Event) {
 	}
 
 	mach.Fork(mach.NewStateCtx(ss.HistoryDBReady), e, func() {
-		_, _, addr := shared.ConfigWebDBAddrs(cfg)
+		_, _, addr := cfg.DBAddrs()
 		err := sqliter.New(addr, h.A.DBHistory())
 		if err != nil {
 			AddErr(e, mach, err, nil)
@@ -251,15 +296,7 @@ func (h *Handlers) HistoryDBReadyState(e *am.Event) {
 	})
 }
 
-func (h *Handlers) WebRPCReadyEnter(e *am.Event) bool {
-	ready := ssrpc.ServerStates.RpcReady
-	return h.rpcUI.Mach.Is1(ready) && h.rpcDash.Mach.Is1(ready)
-}
-
-func (h *Handlers) WebConnectedExit(e *am.Event) bool {
-	ready := ssrpc.ServerStates.HandshakeDone
-	return h.rpcUI.Mach.Not1(ready) && h.rpcDash.Mach.Not1(ready)
-}
+var _ = ss.RemoteDashReady
 
 func (h *Handlers) RemoteDashReadyState(e *am.Event) {
 	mach := h.A.Mach()
@@ -279,17 +316,21 @@ func (h *Handlers) RemoteDashReadyState(e *am.Event) {
 
 	// send data
 	mach.Fork(ctx, e, func() {
-		b.NetMach.EvAdd1(e, ssB.Data, PassRpc(&A{
-			DataDash: &types.DataDashboard{
-				Splash: h.A.AgentImpl().Splash(),
-			},
-		}))
+		dash := &types.DataDashboard{
+			Splash: h.A.AgentImpl().Splash(),
+		}
+		h.impl.PushDashData(e, b, dash)
 	})
 }
 
-func (h *Handlers) RemoteUIReadyExit(e *am.Event) bool {
+func (h *Handlers) RemoteDashReadyExit(e *am.Event) bool {
+	// dont block Disposing
+	if e.Transition().TimeIndexAfter().Is1(ss.Disposing) {
+		return true
+	}
+
 	// check if any still connected
-	for _, b := range h.agentUIs {
+	for _, b := range h.dashboards {
 		if b.Mach.Is1(ssrpc.ClientStates.Ready) {
 			return false
 		}
@@ -297,6 +338,8 @@ func (h *Handlers) RemoteUIReadyExit(e *am.Event) bool {
 
 	return true
 }
+
+var _ = ss.RemoteUIReady
 
 func (h *Handlers) RemoteUIReadyState(e *am.Event) {
 	mach := h.A.Mach()
@@ -321,27 +364,43 @@ func (h *Handlers) RemoteUIReadyState(e *am.Event) {
 
 	// send data
 	mach.Fork(ctx, e, func() {
-		a.NetMach.EvAdd1(e, ssB.Data, PassRpc(&A{
-			DataAgent: &types.DataAgent{
-				Msgs:      msgs,
-				ClockDiff: clockDiff,
-				Stories:   agent.Stories(),
-				Actions:   agent.Actions(),
-			},
-		}))
+		h.impl.PushUIData(e, a, &types.DataAgent{
+			Msgs:      msgs,
+			ClockDiff: clockDiff,
+			Stories:   agent.Stories(),
+			Actions:   agent.Actions(),
+		})
 	})
 }
+
+func (h *Handlers) RemoteUIReadyExit(e *am.Event) bool {
+	// dont block Disposing
+	if e.Transition().TimeIndexAfter().Is1(ss.Disposing) {
+		return true
+	}
+
+	// check if any still connected
+	for _, b := range h.agentUIs {
+		if b.Mach.Is1(ssrpc.ClientStates.Ready) {
+			return false
+		}
+	}
+
+	return true
+}
+
+var _ = ss.Debugger
 
 // DebuggerState starts web am-dbg
 func (h *Handlers) DebuggerState(e *am.Event) {
 	mach := h.A.Mach()
 	cfg := h.A.ConfigBase().Debug
-	if cfg.DBGEmbedWeb == 0 {
+	if cfg.DBGEmbedWeb <= 0 {
 		return
 	}
 
 	ctx := mach.NewStateCtx(ss.Debugger)
-	_, _, sshAddr, err := shared.ConfigDbgAddrs(cfg)
+	_, _, sshAddr, err := cfg.DbgAddrs()
 	if err != nil {
 		AddErrPTY(e, mach, err)
 		return
@@ -359,7 +418,7 @@ func (h *Handlers) DebuggerState(e *am.Event) {
 				if !ok {
 					return
 				}
-				h.A.AgentImpl().DBG().Mach.EvAdd1(e, ssdbg.SshDisconn, nil)
+				h.A.AgentImpl().DBG().Mach.EvAdd1(e, ssDbg.SshDisconn, nil)
 			case <-ctx.Done():
 			}
 		}
@@ -372,10 +431,12 @@ func (h *Handlers) DebuggerState(e *am.Event) {
 	})
 }
 
+var _ = ss.REPL
+
 // REPLState starts web REPL
 func (h *Handlers) REPLState(e *am.Event) {
 	cfg := h.A.ConfigBase()
-	if cfg.Debug.REPLWeb == 0 {
+	if cfg.Debug.REPLWeb <= 0 {
 		return
 	}
 
@@ -383,10 +444,11 @@ func (h *Handlers) REPLState(e *am.Event) {
 	ctx := mach.NewStateCtx(ss.REPL)
 	webPort := strconv.Itoa(cfg.Debug.REPLWeb)
 
+	// TODO full config path
 	mach.Fork(ctx, e, func() {
 		title := "REPL / " + h.A.ConfigBase().Agent.Label
 		AddErrPTY(e, mach,
-			h.ExposeCmd(ctx, e, title, webPort, shared.BinaryPath(cfg), []string{"repl", "--config", cfg.File}, nil))
+			h.ExposeCmd(ctx, e, title, webPort, shared.BinaryPath(true), []string{"repl", "--config", cfg.File}, nil))
 	})
 }
 
@@ -403,6 +465,7 @@ func (h *Handlers) ExposeSSH(ctx context.Context, e *am.Event, title, webPort, s
 			"-o UserKnownHostsFile=/dev/null "+
 			"-o StrictHostKeyChecking=no", sshPort), " ")
 
+	// TODO full config path
 	return h.ExposeCmd(ctx, e, title, webPort, cmd, args, clientGoneCh)
 }
 
@@ -437,6 +500,7 @@ func (h *Handlers) ExposeCmd(
 	// 	return err
 	// }
 
+	h.A.LogDebug("web_pty", "cmd", cmd+" "+strings.Join(args, " "))
 	factory, err := localcommand.NewFactory(cmd, args, backendOptions)
 	if err != nil {
 		return err
@@ -509,8 +573,13 @@ func (h *Handlers) StartHTTP(e *am.Event) error {
 			"/web/assets/logo.svg",
 		},
 		ServiceWorkerTemplate: " ",
-		RawHeaders:            []string{"<script>\n" + string(clockmojiJS) + "\n</script>"},
+		RawHeaders:            []string{"<script>\n" + string(browserJS) + "\n</script>"},
 		Resources:             ResourceFS(h.A.Store().Web),
+	}
+
+	// live reload in dev mode
+	if !h.A.ConfigBase().ProdBuild {
+		goappHandler.Resources = nil
 	}
 
 	goapp.RouteWithRegexp("/.*", goapp.NewZeroComponentFactory(&splashScreen{}))
@@ -518,21 +587,33 @@ func (h *Handlers) StartHTTP(e *am.Event) error {
 	// websocket relay
 
 	cfg := h.A.ConfigBase()
-	opts := amrelayt.Args{
+	opts := amrelayt.CliArgs{
 		Name:   mach.Id() + "-wasm",
 		Debug:  cfg.Debug.DBGAddr != "" && cfg.Debug.Verbose,
 		Parent: mach,
 		Wasm: &amrelayt.ArgsWasm{
 			ListenAddr: cfg.Web.Addr,
 			// catch UI machines in-process (avoid TCP tunns)
-			ClientMatchers: []amrelayt.ClientMatcher{{
-				// TODO ID generator
-				Id:        regexp.MustCompile("^bro-dash-" + cfg.Agent.ID),
+			// without tunnel matching, only 1 UI instance can exist per 1 port
+			TunnelMatchers: []amrelayt.TunnelMatcher{{
+				Id:        regexp.MustCompile("^" + types.GenBrowserID(types.IDDashboardPage, cfg.Agent.ID, "")),
 				NewClient: h.newDashFunc(e),
 			}, {
-				// TODO ID generator
-				Id:        regexp.MustCompile("^bro-agentui-" + cfg.Agent.ID),
+				Id:        regexp.MustCompile("^" + types.GenBrowserID(types.IDAgentUIPage, cfg.Agent.ID, "")),
 				NewClient: h.newAgentUIFunc(e),
+			}},
+			DialMatchers: []amrelayt.DialMatcher{{
+				Id: regexp.MustCompile("^" + types.GenBrowserID(types.IDDashboardAgent, "", "")),
+				NewServer: func(ctx context.Context, id string, conn net.Conn) (*arpc.Server, error) {
+					// TODO ctx to Event
+					return h.rpcMux.NewServer(nil, id, conn)
+				},
+			}, {
+				Id: regexp.MustCompile("^" + types.GenBrowserID(types.IDAgentUIAgent, "", "")),
+				NewServer: func(ctx context.Context, id string, conn net.Conn) (*arpc.Server, error) {
+					// TODO ctx to Event
+					return h.rpcMux.NewServer(nil, id, conn)
+				},
 			}},
 		},
 		Output: mach.Log,
@@ -544,13 +625,15 @@ func (h *Handlers) StartHTTP(e *am.Event) error {
 	//    Resources: resourceResolver,
 	// }
 	if cfg.Debug.REPL {
-		opts.Wasm.ReplAddrDir = cfg.Agent.Dir
+		opts.Wasm.ReplAddrDir = filepath.Join(cfg.Agent.Dir, "repl")
 	}
 	relay, err := amrelay.New(mach.Context(), opts)
 	if err != nil {
 		return err
 	}
-	err = ampipe.Bind(relay.Mach, mach, ssr.RelayStates.HttpReady, ss.WebHTTPReady, "")
+
+	// bind
+	_, err = ampipe.Bind(relay.Mach, mach, ssr.RelayStates.HttpReady, ss.WebHTTPReady, "")
 	if err != nil {
 		return err
 	}
@@ -574,14 +657,16 @@ func (h *Handlers) handleBootstrap(w http.ResponseWriter, req *http.Request) {
 		MachStates: machStates,
 	}
 
-	// config
+	// config - remove keys
 	cfg := *h.A.ConfigBase()
-	for _, ai := range cfg.AI.OpenAI {
+	for i := range cfg.AI.OpenAI {
+		ai := &cfg.AI.OpenAI[i]
 		if ai.Key != "" {
 			ai.Key = "SET"
 		}
 	}
-	for _, ai := range cfg.AI.Gemini {
+	for i := range cfg.AI.Gemini {
+		ai := &cfg.AI.OpenAI[i]
 		if ai.Key != "" {
 			ai.Key = "SET"
 		}
@@ -596,9 +681,10 @@ func (h *Handlers) handleBootstrap(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+// TODO
 func (h *Handlers) pushMetrics(e *am.Event, browsers []*arpc.Client, store *shared.AgentStore) {
 	for _, b := range browsers {
-		b.NetMach.EvAdd1(e, ssB.Data, PassRpc(&A{
+		b.NetMach.EvAdd1(e, ssP.Data, am.Pass(&types.AData{
 			DataDash: &types.DataDashboard{
 				Metrics: new(types.DataMetrics{
 					// TODO
@@ -615,7 +701,8 @@ func (h *Handlers) newDashFunc(e *am.Event) amrelayt.NewClientFunc {
 		// init
 		suffix := strconv.Itoa(h.nextDashNum)
 		ctx, _ = onecontext.Merge(mach.Context(), ctx)
-		dash, err := arpc.NewClient(ctx, "localhost:0", "server-dash-"+mach.Id()+"-"+suffix, ssb.PageSchema,
+		// ID gen
+		dash, err := arpc.NewClient(ctx, "localhost:0", "server-dash-"+mach.Id()+"-"+suffix, ssp.PageSchema,
 			&arpc.ClientOpts{
 				Parent: mach,
 			})
@@ -625,7 +712,7 @@ func (h *Handlers) newDashFunc(e *am.Event) amrelayt.NewClientFunc {
 		h.nextDashNum++
 
 		// bind and save
-		err = ampipe.BindReady(dash.Mach, mach, ss.RemoteDashReady, ss.RemoteDashReady)
+		_, err = ampipe.BindReady(dash.Mach, mach, ss.RemoteDashReady, ss.RemoteDashReady)
 		if err != nil {
 			return nil, err
 		}
@@ -656,7 +743,7 @@ func (h *Handlers) newAgentUIFunc(e *am.Event) amrelayt.NewClientFunc {
 		// init
 		suffix := strconv.Itoa(h.nextAgentUINum)
 		ctx, _ = onecontext.Merge(mach.Context(), ctx)
-		remoteUI, err := arpc.NewClient(ctx, "localhost:0", "server-agentui-"+mach.Id()+"-"+suffix, ssb.PageSchema,
+		remoteUI, err := arpc.NewClient(ctx, "localhost:0", "server-agentui-"+mach.Id()+"-"+suffix, ssp.PageSchema,
 			&arpc.ClientOpts{
 				Parent: mach,
 			})
@@ -666,7 +753,7 @@ func (h *Handlers) newAgentUIFunc(e *am.Event) amrelayt.NewClientFunc {
 		h.nextAgentUINum++
 
 		// bind to local TODO deadlock?
-		err = ampipe.BindReady(remoteUI.Mach, mach, ss.RemoteUIReady, ss.RemoteUIReady)
+		_, err = ampipe.BindReady(remoteUI.Mach, mach, ss.RemoteUIReady, ss.RemoteUIReady)
 		if err != nil {
 			return nil, err
 		}
@@ -685,21 +772,43 @@ func (h *Handlers) newAgentUIFunc(e *am.Event) amrelayt.NewClientFunc {
 		remoteUI.Start(e)
 
 		// bind when connected
-		go func() {
+		mach.Go(ctx, func() {
 			<-remoteUI.Mach.When1(ssrpc.ClientStates.Ready, ctx)
 			if ctx.Err() != nil {
 				return // expired
 			}
 
 			// bind to remote
-			err = ampipe.BindMany(mach, remoteUI.NetMach, pipes, nil)
+			_, err = ampipe.BindMany(mach, remoteUI.NetMach, pipes, nil)
 			if err != nil {
 				AddErr(e, mach, err, nil)
 			}
-		}()
+		})
 
 		return remoteUI, nil
 	}
+}
+
+// ///// ///// /////
+
+// ///// SUBCLASS
+
+// ///// ///// /////
+
+func (h *Handlers) PushDashData(
+	e *am.Event, client *arpc.Client, dash *types.DataDashboard,
+) am.Result {
+	return client.NetMach.EvAdd1(e, ssP.Data, am.Pass(&types.AData{
+		DataDash: dash,
+	}))
+}
+
+func (h *Handlers) PushUIData(
+	e *am.Event, client *arpc.Client, data *types.DataAgent,
+) am.Result {
+	return client.NetMach.EvAdd1(e, ssP.Data, am.Pass(&types.AData{
+		DataAgent: data,
+	}))
 }
 
 // ///// ///// /////
@@ -726,6 +835,7 @@ func AddErr(
 		return am.Executed
 	}
 	err = fmt.Errorf("%w: %w", ErrWeb, err)
+
 	return mach.EvAddErrState(event, ss.ErrWeb, err, shared.OptArgs(args))
 }
 
@@ -737,6 +847,7 @@ func AddErrPTY(
 		return am.Executed
 	}
 	err = fmt.Errorf("%w: %w", ErrWebPTY, err)
+
 	return mach.EvAddErrState(event, ss.ErrWebPTY, err, shared.OptArgs(args))
 }
 

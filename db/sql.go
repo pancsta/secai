@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"time"
 
-	_ "github.com/ncruces/go-sqlite3/embed"
 	"github.com/ncruces/go-sqlite3/gormlite"
 	"github.com/pancsta/secai/shared"
 	"gorm.io/gorm"
@@ -47,6 +46,12 @@ type Character struct {
 	Result string `gorm:"not null"`
 }
 
+type KeyValue struct {
+	Key   string `gorm:"not null;index:keys"`
+	Value string `gorm:"not null"`
+	Group string `gorm:"index:groups"`
+}
+
 func Open(dbFile string) (conn *sql.DB, schema string, err error) {
 	file := gormlite.Open(dbFile)
 	dbGorm, err := gorm.Open(file, &gorm.Config{})
@@ -54,7 +59,7 @@ func Open(dbFile string) (conn *sql.DB, schema string, err error) {
 		return nil, "", err
 	}
 
-	err = dbGorm.AutoMigrate(&Prompt{}, &Character{}, &Resource{})
+	err = dbGorm.AutoMigrate(&Prompt{}, &Character{}, &Resource{}, &KeyValue{})
 	if err != nil {
 		return nil, "", err
 	}

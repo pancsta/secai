@@ -8,6 +8,7 @@ import (
 	"time"
 
 	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
+	am "github.com/pancsta/asyncmachine-go/pkg/machine"
 	. "github.com/pancsta/go-app/pkg/app"
 
 	"github.com/pancsta/secai/shared"
@@ -16,46 +17,48 @@ import (
 var httpToAnchorRe = regexp.MustCompile(`https?://\S+`)
 var addAnchorClassRe = regexp.MustCompile(`<a`)
 
+var AnchorUrls = true
+
 func (d *Dashboard) Render() UI {
 	if !d.Ready() {
-		return d.spinner()
+		return d.Spinner()
 	}
 
-	return Div().ID("app").Body(
-		d.header(),
-		d.configForm(),
-		d.splash(),
-		d.metrics(),
-		d.footer(),
+	return Div().Body(
+		d.Header(),
+		d.ConfigForm(),
+		d.Splash(),
+		d.Metrics(),
+		d.Footer(),
 	)
 }
 
-func (d *Dashboard) header() UI {
-	mach := d.mach
-	a := d.agentClient.NetMach
+func (d *Dashboard) Header() UI {
+	mach := d.Mach
+	a := d.AgentClient.NetMach
 
 	var err UI
 	if a.IsErr() {
 		err = Div().Class("badge mr-1 badge-error").Text("Exception")
 	}
-	// TODO Err badge
 
 	// connection badge
-	conn := Div().Class("badge-success").Text("Connection OK")
+	conn := Div().Class("badge-success").Text("Agent Connected")
 	if mach.Not1(ss.RPCConnected) {
-		conn = Div().Class("badge-error").Text("Connection Error")
+		// TODO reconn on click
+		conn = Div().Class("badge-error").Text("Agent Missing")
 		if mach.Is1(ss.RPCConnecting) {
-			conn = Div().Class("badge-primary").Text("Connecting...")
+			conn = Div().Class("badge-primary").Text("Agent Connecting...")
 		}
 	}
 	conn = conn.Class("badge mr-1")
 
 	// config badge
-	cfg := Div().Class("badge badge-success").Text("Config OK")
+	cfg := Div().Class("badge badge-success").Text("AI Connected")
 	if a.Not1(ssA.ConfigValid) {
-		cfg = Div().Class("badge badge-error").Text("Config Error")
-		if a.Not1(ssA.Exception) {
-			cfg = Div().Class("badge badge-primary").Text("Checking Config...")
+		cfg = Div().Class("badge badge-primary").Text("AI Connecting...")
+		if a.Is1(ssA.ErrAI) {
+			cfg = Div().Class("badge badge-error").Text("AI Config Error")
 		}
 	}
 	cfg = cfg.Class("badge")
@@ -65,16 +68,14 @@ func (d *Dashboard) header() UI {
 	return []UI{
 
 		// <HTML>
-
-		Div().Class("card card-border bg-base-100 mb-5").Body(
-			Div().Class("card-body").Body(
-				H2().Class("card-title text-warning").Text(fmt.Sprintf(
-					"%s Dashboard", d.boot.Config.Agent.Label)),
-				P().Body(
-					Raw(fixHTMLAnchors("<span>"+d.boot.Config.Agent.IntroDash+"</span>")),
+		Div().Body(
+			H2().Class("card-title text-warning mb-5").Text(d.Boot.Config.Agent.Label),
+			Div().Class("card card-border bg-base-100 mb-5").Body(
+				Div().Class("card-body").Body(
+					Raw(fixHTMLAnchors("<div>"+d.Boot.Config.Agent.IntroDash+"</div>")),
 				),
+				Div().Class("text-right pb-3 pr-3").Body(err, conn, cfg),
 			),
-			Div().Class("text-right pb-3 pr-3").Body(err, conn, cfg),
 		),
 
 		// </HTML>
@@ -82,40 +83,40 @@ func (d *Dashboard) header() UI {
 	}[0]
 }
 
-func (d *Dashboard) configForm() UI {
-	a := d.agentClient.NetMach
-	if a.Is1(ssA.ConfigValid) || !a.IsErr() || d.mach.Transition() != nil {
+func (d *Dashboard) ConfigForm() UI {
+	a := d.AgentClient.NetMach
+	if a.Is1(ssA.ConfigValid) || !a.IsErr() || d.Mach.Transition() != nil {
 		return nil
 	}
 
 	valid := ""
-	if d.formKey == "" {
+	if d.FormKey == "" {
 		valid = "validator"
 	}
 	fKey := []UI{
 		Input().Class("input " + valid).Type("password").Required(true).Placeholder("API Key").
-			Value(d.formKey).OnChange(d.ValueTo(&d.formKey)),
+			Value(d.FormKey).OnChange(d.ValueTo(&d.FormKey)),
 		Div().Class("validator-hint").Text("API key not valid"),
 	}
 
 	valid = ""
-	if d.formURL == "" {
+	if d.FormURL == "" {
 		valid = "validator"
 	}
 	fURL := []UI{
 		Input().Class("input " + valid).Type("url").Required(true).Placeholder("Base URL").
-			Value(d.formURL).OnChange(d.ValueTo(&d.formURL)),
+			Value(d.FormURL).OnChange(d.ValueTo(&d.FormURL)),
 		Div().Class("validator-hint").Text("URL not valid"),
 	}
 
 	fModel := []UI{
 		Input().Class("input").Required(true).Placeholder("Model name").
-			Value(d.formModel).OnChange(d.ValueTo(&d.formModel)),
+			Value(d.FormModel).OnChange(d.ValueTo(&d.FormModel)),
 	}
 
 	var formFields []UI
 	// TODO enum
-	switch d.formBackend {
+	switch d.FormBackend {
 	case "openai":
 		fallthrough
 	case "deepseek":
@@ -135,7 +136,7 @@ func (d *Dashboard) configForm() UI {
 		// <HTML>
 
 		Form().Class("content-center mb-5").
-			OnSubmit(d.submitConfig).Body(
+			OnSubmit(d.SubmitConfig).Body(
 			FieldSet().Class(
 				"fieldset bg-base-100 border-base-300 rounded-box w-xs border p-4 mx-auto").Body(
 				Legend().Class("fieldset-legend text-lg").Text("Config"),
@@ -147,7 +148,7 @@ func (d *Dashboard) configForm() UI {
 						Option().Text("DeepSeek").Value("deepseek"),
 						Option().Text("Gemini").Value("gemini"),
 						Option().Text("OpenAI compatible").Value("openai-compat"),
-					).OnChange(d.ValueTo(&d.formBackend)),
+					).OnChange(d.ValueTo(&d.FormBackend)),
 				),
 
 				Div().Body(formFields...),
@@ -161,79 +162,83 @@ func (d *Dashboard) configForm() UI {
 	}[0]
 }
 
-func (d *Dashboard) submitConfig(ctx Context, e Event) {
+func (d *Dashboard) SubmitConfig(ctx Context, e Event) {
 	e.PreventDefault()
-	agent := d.agentClient.NetMach
+	agent := d.AgentClient.NetMach
 
 	// TODO validate
-	if d.formKey == "" {
+	if d.FormKey == "" {
 		return
 	}
 
 	// TODO enum
-	var args *ABase
-	switch d.formBackend {
+	var args *shared.AConfigUpdate
+	switch d.FormBackend {
 
 	case "openai":
-		cfg := shared.ConfigDefaultOpenAI()
-		cfg.Key = d.formKey
-		args = &ABase{
+		cfg := shared.ConfigDefaultAIOpenAI()
+		cfg.Key = d.FormKey
+		args = &shared.AConfigUpdate{
 			ConfigAI: &shared.ConfigAI{
 				OpenAI: []shared.ConfigAIOpenAI{cfg},
 			},
 		}
 
 	case "deepseek":
-		args = &ABase{
+		args = &shared.AConfigUpdate{
 			ConfigAI: &shared.ConfigAI{
 				OpenAI: []shared.ConfigAIOpenAI{{
-					Key:   d.formKey,
-					URL:   "https://api.deepseek.com/v1",
-					Model: "deepseek-chat",
+					ConfigAICommon: shared.ConfigAICommon{
+						Key:   d.FormKey,
+						Model: "deepseek-chat",
+					},
+					URL: "https://api.deepseek.com/v1",
 				}},
 			},
 		}
 
 	case "gemini":
-		cfg := shared.ConfigDefaultGemini()
-		cfg.Key = d.formKey
-		args = &ABase{
+		cfg := shared.ConfigDefaultAIGemini()
+		cfg.Key = d.FormKey
+		args = &shared.AConfigUpdate{
 			ConfigAI: &shared.ConfigAI{
 				Gemini: []shared.ConfigAIGemini{cfg},
 			},
 		}
 
 	case "openai-compat":
-		args = &ABase{
+		args = &shared.AConfigUpdate{
 			ConfigAI: &shared.ConfigAI{
 				OpenAI: []shared.ConfigAIOpenAI{{
-					Key:   d.formKey,
-					URL:   d.formURL,
-					Model: d.formModel,
+					ConfigAICommon: shared.ConfigAICommon{
+						Key:   d.FormKey,
+						Model: d.FormModel,
+					},
+					URL: d.FormURL,
 				}},
 			},
 		}
 	}
 
 	// TODO state?
-	d.formSubmitting = true
+	d.FormSubmitting = true
 	go func() {
 		defer func() {
-			d.formSubmitting = false
+			d.FormSubmitting = false
 		}()
 
 		when := agent.When1(ssA.ConfigUpdate, ctx.Context)
-		agent.Add1(ssA.ConfigUpdate, PassRpcBase(args))
+		agent.Add1(ssA.ConfigUpdate, am.Pass(args))
 		err := amhelp.WaitForAll(ctx.Context, 3*time.Second, when)
 		if err != nil {
-			d.formErr = "timeout"
+			d.FormErr = "timeout"
 			return
 		}
 	}()
 }
 
-func (d *Dashboard) metrics() UI {
-	a := d.agentClient
+func (d *Dashboard) Metrics() UI {
+	a := d.AgentClient
 	if a == nil {
 		return nil
 	}
@@ -274,24 +279,24 @@ func (d *Dashboard) metrics() UI {
 	}[0]
 }
 
-func (d *Dashboard) splash() HTML {
-	if d.mach.Not1(ss.Data) || d.mach.Transition() != nil {
+func (d *Dashboard) Splash() UI {
+	if d.Mach.Not1(ss.Data) || d.Mach.Transition() != nil {
 		return nil
 	}
 
 	// \n to <pre>
 	var lines []UI
-	splash := httpToAnchor(d.boot.Config, d.data.Splash)
+	splash := httpToAnchor(d.Boot.Config, d.Data.Splash)
 	for _, l := range strings.Split(splash, "\n") {
 		lines = append(lines, Raw("<pre>"+l+"</pre>"))
 	}
 
 	// TODO give names to links
-
-	return Div().Class("mockup-code w-full mb-5").Body(lines...)
+	// TODO black via css
+	return Div().Class("mockup-code bg-black w-full mb-5").Body(lines...)
 }
 
-func (d *Dashboard) footer() UI {
+func (d *Dashboard) Footer() UI {
 
 	return []UI{
 
@@ -300,7 +305,7 @@ func (d *Dashboard) footer() UI {
 		Footer().Class(
 			"footer sm:footer-horizontal footer-center rounded-box bg-base-100 text-base-content p-4").Body(
 			Aside().Body(
-				P().Body(Raw("<span>" + fixHTMLAnchors(d.boot.Config.Agent.Footer) + "</span>")),
+				P().Body(Raw("<span>" + fixHTMLAnchors(d.Boot.Config.Agent.Footer) + "</span>")),
 			),
 		),
 
@@ -310,6 +315,10 @@ func (d *Dashboard) footer() UI {
 }
 
 func httpToAnchor(cfg *shared.Config, html string) string {
+	if !AnchorUrls {
+		return html
+	}
+
 	html = httpToAnchorRe.ReplaceAllString(html, `<a href="$0" class="text-info hover:underline" target="_blank">$0</a>`)
 	html = strings.ReplaceAll(html, cfg.Web.DashURL()+"</a>", "Dashboard</a>")
 	html = strings.ReplaceAll(html, cfg.Web.AgentURL()+"</a>", "Agent UI</a>")

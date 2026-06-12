@@ -20,9 +20,6 @@ type AgentLLMStatesDef struct {
 
 	// PROMPTS
 
-	// Check if the passed prompt references any of the offered choices.
-	CheckingMenuRefs string
-
 	RestoreCharacter string
 	GenCharacter     string
 	CharacterReady   string
@@ -51,40 +48,40 @@ type AgentLLMGroupsDef struct {
 }
 
 // AgentLLMSchema represents all relations and properties of AgentLLMStates.
-var AgentLLMSchema = SchemaMerge(
-	// inherit from AgentLLM
-	ss.AgentSchema,
+// inherit from AgentLLM
+var AgentLLMSchema = ss.AgentSchema.Merge(am.Schema{
+	ssL.RestoreCharacter: {
+		Auto:    true,
+		Require: S{ssL.BaseDBReady},
+		Remove:  sgL.Character,
+	},
+	ssL.GenCharacter: {
+		Require: S{ssL.BaseDBReady},
+		Remove:  sgL.Character,
+		Tags:    S{ss.TagPrompt, ss.TagTrigger},
+	},
+	ssL.CharacterReady: {Remove: sgL.Character},
 
-	am.Schema{
-		ssL.CheckingMenuRefs: {
-			Multi:   true,
-			Require: S{ssL.Start},
-		},
+	ssL.RestoreResources: {
+		Auto:    true,
+		Require: S{ssL.CharacterReady, ssL.BaseDBReady},
+		Remove:  sgL.Resources,
+	},
+	ssL.GenResources: {
+		Require: S{ssL.CharacterReady, ssL.BaseDBReady},
+		Remove:  sgL.Resources,
+		Tags:    S{ss.TagPrompt, ss.TagTrigger},
+	},
+	ssL.ResourcesReady: {Remove: sgL.Resources},
 
-		ssL.RestoreCharacter: {
-			Auto:    true,
-			Require: S{ssL.BaseDBReady},
-			Remove:  sgL.Character,
-		},
-		ssL.GenCharacter: {
-			Require: S{ssL.BaseDBReady},
-			Remove:  sgL.Character,
-			Tags:    S{ss.TagPrompt, ss.TagTrigger},
-		},
-		ssL.CharacterReady: {Remove: sgL.Character},
+	ssL.Orienting: {
+		Require: S{ssL.Start},
+		Multi:   true,
+		Tags:    S{ss.TagPrompt},
+	},
 
-		ssL.RestoreResources: {
-			Auto:    true,
-			Require: S{ssL.CharacterReady, ssL.BaseDBReady},
-			Remove:  sgL.Resources,
-		},
-		ssL.GenResources: {
-			Require: S{ssL.CharacterReady, ssL.BaseDBReady},
-			Remove:  sgL.Resources,
-			Tags:    S{ss.TagPrompt, ss.TagTrigger},
-		},
-		ssL.ResourcesReady: {Remove: sgL.Resources},
-	})
+	ssL.OrientingMove: {},
+})
 
 // EXPORTS AND GROUPS
 

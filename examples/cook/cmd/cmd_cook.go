@@ -91,13 +91,8 @@ func main() {
 	}
 	cfg.File = cli.Config
 
-	// clean up
-	matches, err := filepath.Glob(filepath.Join(cfg.Agent.Dir, "repl-*.addr"))
-	if err == nil {
-		for _, file := range matches {
-			_ = os.Remove(file)
-		}
-	}
+	// embed WASM
+	cfg.ProdBuild = true
 
 	// REPL
 	if cli.REPL != nil {
@@ -135,6 +130,14 @@ func main() {
 
 	// BOT
 
+	// clean up
+	matches, err := filepath.Glob(filepath.Join(cfg.Agent.Dir, "repl-*.addr"))
+	if err == nil {
+		for _, file := range matches {
+			_ = os.Remove(file)
+		}
+	}
+
 	// init
 	a, err := cook.NewCook(ctx, &cfg)
 	if err != nil {
@@ -146,7 +149,7 @@ func main() {
 
 	// start
 	a.Start()
-	if cli.Browser {
+	if cli.Browser && cfg.Web.Addr != "-1" {
 		shared.OpenURL(fmt.Sprintf("http://%s", cfg.Web.Addr))
 	}
 	<-a.Mach().WhenDisposed()
@@ -187,7 +190,7 @@ func cmdREPL(ctx context.Context, cfg cook.Config) error {
 }
 
 func cmdLog(ctx context.Context, cfg cook.Config) error {
-	f, err := os.Open(shared.ConfigLogPath(cfg.Agent))
+	f, err := os.Open(cfg.Agent.LogPath(false))
 	if err != nil {
 		return fmt.Errorf("failed to open file: %w", err)
 	}

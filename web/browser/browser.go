@@ -3,7 +3,6 @@ package browser
 import (
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"strconv"
@@ -20,31 +19,33 @@ import (
 	"resty.dev/v3"
 
 	"github.com/pancsta/secai/shared"
-	sabase "github.com/pancsta/secai/states"
+	ssbase "github.com/pancsta/secai/states"
 	"github.com/pancsta/secai/web/browser/states"
 	"github.com/pancsta/secai/web/types"
 )
 
 // agent base
 
-var ssA = sabase.AgentBaseStates
-
-var PassRpcBase = shared.PassRPC
-var ParseArgsBase = shared.ParseArgs
-
-type ABase = shared.A
-
-// browser
+var ssA = ssbase.AgentBaseStates
+var ssAUI = states.AgentUIStates
 
 var ss = states.PageStates
 
-var Pass = types.Pass
-var PassRpc = types.PassRpc
-var ParseArgs = types.ParseArgs
-
-type AWeb = types.A
-
 var randID = amhelp.RandId(4)
+
+var AppClass = "p-4"
+
+// ///// ///// /////
+
+// ///// CMD
+
+// ///// ///// /////
+
+func Cmd() {
+	goapp.Route("/", goapp.NewZeroComponentFactory(&Dashboard{}))
+	goapp.Route("/agent", goapp.NewZeroComponentFactory(&AgentUI{}))
+	goapp.RunWhenOnBrowser()
+}
 
 // ///// ///// /////
 
@@ -59,26 +60,29 @@ type BasePage struct {
 	// config
 
 	// ID of this page
-	id         string
-	pageSchema am.Schema
-	pageStates am.States
+	Id types.ID
+	// Page schema, defaults to secai/web/browser/states.
+	PageSchema am.Schema
+	PageStates am.States
 
 	// instances
 
-	app goapp.Context
+	App goapp.Context
 	// BasePage state machine
-	mach *am.Machine
+	Mach *am.Machine
+	// Network machine of AgentClient (nil before ReadyState).
+	Agent *arpc.NetworkMachine
+	// Agent RPC client, uses the schema from the top-level agent.
+	AgentClient *arpc.Client
+
 	// BasePage RPC server
-	srv   *arpc.Server
-	agent *arpc.NetworkMachine
-	// Agent RPC client
-	agentClient *arpc.Client
+	srv *arpc.Server
 	// Agent handler machine
 	agentHand *am.Machine
 
 	// data
 
-	boot *types.DataBoostrap
+	Boot *types.DataBoostrap
 }
 
 var _ goapp.Initializer = &BasePage{}
@@ -86,15 +90,16 @@ var _ goapp.Mounter = &BasePage{}
 
 func (p *BasePage) OnInit() {
 	// default machine
-	p.pageSchema = states.PageSchema
-	p.pageStates = states.PageStates
+	p.PageSchema = states.PageSchema
+	p.PageStates = states.PageStates
 }
 
 // OnMount gets called when the component is mounted
 // This is after Render was called for the first time
-func (p *BasePage) OnMount(ctx goapp.Context) {
-	p.app = ctx
+func (p *BasePage) OnMount(app goapp.Context) {
+	p.App = app
 
+	// TODO config
 	// page styles, dark theme TODO proper DOM API
 	// a.Html().Class("bg-base-300").DataSet("theme", "dark")
 	htmlEl := goapp.Window().Get("document").Get("documentElement")
@@ -102,7 +107,7 @@ func (p *BasePage) OnMount(ctx goapp.Context) {
 	// TODO colors?
 	htmlEl.Call("setAttribute", "class", "bg-base-300")
 	goapp.Window().Get("document").Get("body").
-		Call("setAttribute", "class", "p-10 bg-base-300")
+		Call("setAttribute", "class", "bg-base-300 "+AppClass)
 
 	// initial data
 	c := resty.New()
@@ -114,12 +119,15 @@ func (p *BasePage) OnMount(ctx goapp.Context) {
 		p.Error(err)
 		return
 	}
+
+	// initial config
 	boot := res.Result().(*types.DataBoostrap)
 	if boot.Config == nil || boot.MachStates == nil || boot.MachSchema == nil {
 		p.Error(fmt.Errorf("incomplete bootstrap data: %+v", boot))
 		return
 	}
-	p.boot = boot
+	p.Boot = boot
+	p.Dump(ss.Config, p.Boot.Config)
 
 	p.initDebug()
 	if err := p.initBrowserMach(); err != nil {
@@ -142,7 +150,7 @@ func (p *BasePage) Error(err error) {
 }
 
 func (p *BasePage) Ready() bool {
-	return p.mach != nil && p.mach.Is1(ss.Start)
+	return p.Mach != nil && p.Mach.Is1(ss.Start)
 }
 
 //
@@ -150,6 +158,8 @@ func (p *BasePage) Ready() bool {
 // HANDLERS
 
 //
+
+var _ = am.StateAny
 
 func (p *BasePage) AnyState(e *am.Event) {
 	// no render on health
@@ -162,14 +172,15 @@ func (p *BasePage) AnyState(e *am.Event) {
 	p.Draw()
 }
 
+var _ = ss.Config
+
 func (p *BasePage) ConfigEnter(e *am.Event) bool {
-	return ParseArgs(e.Args).Config != nil
+	return am.ParseArgs[types.AConfig](e.Args).Config != nil
 }
 
 func (p *BasePage) ConfigState(e *am.Event) {
-	args := ParseArgs(e.Args)
-
-	p.boot.Config = args.Config
+	// config update
+	p.Boot.Config = am.ParseArgs[types.AConfig](e.Args).Config
 }
 
 //
@@ -179,49 +190,45 @@ func (p *BasePage) ConfigState(e *am.Event) {
 //
 
 func (p *BasePage) Draw() {
-	p.app.Update()
+	p.App.Update()
 }
 
-func (p *BasePage) Dump(name string, val any) {
-	if p.boot == nil || !p.boot.Config.Debug.Verbose {
+// TODO switch to tags verbose
+func (p *BasePage) Dump(val ...any) {
+	if p.Boot != nil && !p.Boot.Config.Debug.Verbose {
 		return
 	}
-	if val == nil {
-		log.Printf("%s", name)
-	} else {
-		log.Printf("%s\n%s", name, dump.Format(val))
-	}
+	dump.Println(val...)
 }
 
 func (p *BasePage) initBrowserMach() error {
-	ctx := p.app.Context
-	id := p.boot.Config.Agent.ID
-	cfg := p.boot.Config.Web
+	ctx := p.App.Context
+	id := p.Boot.Config.Agent.ID
+	cfg := p.Boot.Config.Web
 	replAddr := ""
 	// TODO IoC
-	switch p.id {
-	case "dash":
+	switch p.Id {
+	case types.IDDashboardPage:
 		replAddr = cfg.REPLAddrDash()
-	case "agentui":
+	case types.IDAgentUIPage:
 		replAddr = cfg.REPLAddrAgentUI()
 	}
 
-	mach, err := am.NewCommon(ctx, "bro-"+p.id+"-"+id+"-"+randID, p.pageSchema, p.pageStates.Names(), nil, nil, nil)
+	machID := types.GenBrowserID(p.Id, id, randID)
+	mach, err := am.NewCommon(ctx, machID, p.PageSchema, p.PageStates.Names(), nil, nil, nil)
 	if err != nil {
 		return err
 	}
-	mach.SemLogger().SetArgsMapper(am.LogArgsMapperMerge(types.LogArgs, shared.LogArgs))
+	mach.SemLogger().SetArgsMapper(amhelp.LogArgsMapper)
 	amhelp.MachDebugEnv(mach)
-	p.mach = mach
+	p.Mach = mach
 	// re-set the config
-	mach.Add1(ss.Config, Pass(&AWeb{
-		Config: p.boot.Config,
+	mach.Add1(ss.Config, am.Pass(&types.AConfig{
+		Config: p.Boot.Config,
 	}))
 	repl, err := arpc.MachReplWs(mach, cfg.Addr, &arpc.ReplOpts{
-		// TODO should be automatic in WASM
 		WebSocketTunnel: arpc.WsListenPath("repl-"+mach.Id(), replAddr),
-		Args:            types.ARpc{},
-		ParseRpc:        types.ParseRpc,
+		Args:            types.ArgsRPC,
 	})
 	if err == nil {
 		repl.Start(nil)
@@ -229,9 +236,7 @@ func (p *BasePage) initBrowserMach() error {
 
 	// RPC Server
 
-	srv, err := arpc.NewServer(ctx, cfg.Addr, "bro-"+p.id+"-"+id+"-"+randID, mach, &arpc.ServerOpts{
-		// eg localhost:8080/listen/bar/localhost:7070 opens 7070 for "bar"
-		// TODO should be automatic in WASM
+	srv, err := arpc.NewServer(ctx, cfg.Addr, machID, mach, &arpc.ServerOpts{
 		WebSocketTunnel: arpc.WsListenPath(mach.Id(), "localhost:0"),
 		Parent:          mach,
 	})
@@ -244,48 +249,46 @@ func (p *BasePage) initBrowserMach() error {
 }
 
 func (p *BasePage) initServerMach() error {
-	ctx := p.app.Context
-	id := p.boot.Config.Agent.ID
-	cfg := p.boot.Config.Web
-	wsAddr := ""
+	ctx := p.App.Context
+	id := p.Boot.Config.Agent.ID
+	cfg := p.Boot.Config.Web
+	var agentID types.ID
 	// TODO IoC
-	switch p.id {
-	case "dash":
-		wsAddr = cfg.AgentWSAddrDash()
-	case "agentui":
-		wsAddr = cfg.AgentWSAddrRemoteUI()
+	switch p.Id {
+	case types.IDDashboardPage:
+		agentID = types.IDDashboardAgent
+	case types.IDAgentUIPage:
+		agentID = types.IDAgentUIAgent
 	}
 
 	// RPC Handlers Machine
 
-	agentHandMach, err := am.NewCommon(ctx, "bro-agent-"+p.id+"-"+id+"-"+randID, p.boot.MachSchema, p.boot.MachStates,
-		nil, p.mach, &am.Opts{
-			Tags: []string{arpc.TagRpcHandler},
-		})
+	machID := types.GenBrowserID(agentID, id, randID)
+	agentHandMach, err := am.NewCommon(ctx, machID, p.Boot.MachSchema, p.Boot.MachStates, nil, p.Mach, &am.Opts{
+		Tags: []string{arpc.TagRpcHandler},
+	})
 	if err != nil {
 		return err
 	}
 	p.agentHand = agentHandMach
 	amhelp.MachDebugEnv(agentHandMach)
-	agentHandMach.SemLogger().SetArgsMapper(types.LogArgs)
+	agentHandMach.SemLogger().SetArgsMapper(amhelp.LogArgsMapper)
 
-	// RPC Client (Net Machine)
+	// RPC Client (Net Machine) via relay
 
-	agentRPC, err := arpc.NewClient(ctx, wsAddr, agentHandMach.Id(), p.boot.MachSchema, &arpc.ClientOpts{
-		Parent: agentHandMach,
-		// automatic in WASM
-		WebSocket: "/",
+	agentRPC, err := arpc.NewClient(ctx, cfg.Addr, agentHandMach.Id(), p.Boot.MachSchema, &arpc.ClientOpts{
+		Parent:    agentHandMach,
+		WebSocket: arpc.WsDialPath(id, cfg.AddrAgent()),
 	})
 	if err != nil {
 		return err
 	}
-	p.agentClient = agentRPC
-	// ah.rpc = agentRPC
+	p.AgentClient = agentRPC
 
 	// pipe rpc to Dashboard
 	pipeFrom := am.S{ssrpc.ClientStates.Ready, ssrpc.ClientStates.Connecting}
 	pipeTo := am.S{ss.RPCConnected, ss.RPCConnecting}
-	err = ampipe.BindMany(agentRPC.Mach, p.mach, pipeFrom, pipeTo)
+	_, err = ampipe.BindMany(agentRPC.Mach, p.Mach, pipeFrom, pipeTo)
 	if err != nil {
 		return err
 	}
@@ -297,7 +300,7 @@ func (p *BasePage) initServerMach() error {
 }
 
 func (p *BasePage) initDebug() {
-	cfg := p.boot.Config
+	cfg := p.Boot.Config
 	// log
 
 	os.Setenv(am.EnvAmLog, cfg.Agent.Log.MachLevel.Level())
@@ -339,16 +342,16 @@ func (p *BasePage) initDebug() {
 
 func (p *BasePage) start() error {
 	p.srv.Start(nil)
-	p.agentClient.Start(nil)
+	p.AgentClient.Start(nil)
 	// wait for RPC TODO timeout?
-	<-p.agentClient.Mach.When1(ssrpc.ClientStates.Ready, nil)
+	<-p.AgentClient.Mach.When1(ssrpc.ClientStates.Ready, nil)
 
 	// start the Dashboard
-	p.mach.Add1(ss.Start, nil)
+	p.Mach.Add1(ss.Start, nil)
 	return nil
 }
 
-func (p *BasePage) spinner() goapp.UI {
+func (p *BasePage) Spinner() goapp.UI {
 	return goapp.Progress().Class("progress w-56")
 }
 
@@ -361,55 +364,61 @@ func (p *BasePage) spinner() goapp.UI {
 type Dashboard struct {
 	BasePage
 
-	// data
+	// data & config
 
-	data *types.DataDashboard
+	SkipHandlers bool
+	Data         *types.DataDashboard
 
 	// Dashboard state
-	formBackend    string
-	formKey        string
-	formURL        string
-	formModel      string
-	formSubmitting bool
-	formErr        string
+	FormBackend    string
+	FormKey        string
+	FormURL        string
+	FormModel      string
+	FormSubmitting bool
+	FormErr        string
 }
 
 // OnInit constructor
 func (d *Dashboard) OnInit() {
 	d.BasePage.OnInit()
-	d.id = "dash"
+	d.Id = types.IDDashboardPage
 
 	// defaults
-	d.formBackend = "openai"
-	d.data = &types.DataDashboard{}
+	d.FormBackend = "openai"
+	d.Data = &types.DataDashboard{}
 }
 
 func (d *Dashboard) OnMount(ctx goapp.Context) {
 	d.BasePage.OnMount(ctx)
 
-	// dashboard UI page
-	err := d.mach.BindHandlers(d)
-	if err != nil {
-		d.Error(err)
-		return
+	// dashboard UI page TODO align Agent UI page
+	if !d.SkipHandlers {
+		_, err := d.Mach.HandlersBind(d)
+		if err != nil {
+			d.Error(err)
+			return
+		}
+	} else {
+		d.Dump("skipping handlers mount")
 	}
 
 	// start (block)
 	if err := d.start(); err != nil {
 		d.Error(err)
 	}
-	netAgent := d.agentClient.NetMach
-	d.agent = netAgent
+	d.Dump("netAgent mounted")
+	netAgent := d.AgentClient.NetMach
+	d.Agent = netAgent
 
 	// bind and sync the handler mach to net mach
 	d.agentHand.Set(netAgent.ActiveStates(nil), nil)
-	if err := ampipe.BindAny(netAgent, d.agentHand); err != nil {
+	if _, err := ampipe.BindAny(netAgent, d.agentHand); err != nil {
 		d.Error(err)
 		return
 	}
 
 	// whole agent time sync
-	_, err = newNetAgent(netAgent, d, nil, d)
+	_, err := NewNetAgent(netAgent, d, nil, d)
 	if err != nil {
 		d.Error(err)
 		return
@@ -423,17 +432,20 @@ func (d *Dashboard) OnMount(ctx goapp.Context) {
 //
 
 func (d *Dashboard) DataEnter(e *am.Event) bool {
-	return ParseArgs(e.Args).DataDash != nil
+	args := am.ParseArgs[types.AData](e.Args)
+	// dump.Println(e.Args)
+	// dump.Println(args)
+	return args.DataDash != nil
 }
 
 func (d *Dashboard) DataState(e *am.Event) {
-	dash := ParseArgs(e.Args).DataDash
+	dash := am.ParseArgs[types.AData](e.Args).DataDash
 
 	if dash.Metrics != nil {
-		d.data.Metrics = dash.Metrics
+		d.Data.Metrics = dash.Metrics
 	}
 	if dash.Splash != "" {
-		d.data.Splash = dash.Splash
+		d.Data.Splash = dash.Splash
 	}
 }
 
@@ -462,9 +474,9 @@ type AgentUI struct {
 // OnInit constructor
 func (a *AgentUI) OnInit() {
 	a.BasePage.OnInit()
-	a.id = "agentui"
-	a.pageSchema = states.AgentUISchema
-	a.pageStates = states.AgentUIStates
+	a.Id = types.IDAgentUIPage
+	a.PageSchema = states.AgentUISchema
+	a.PageStates = states.AgentUIStates
 	a.data = &types.DataAgent{}
 }
 
@@ -472,10 +484,10 @@ func (a *AgentUI) OnMount(ctx goapp.Context) {
 	a.BasePage.OnMount(ctx)
 	// TODO proper DOM API
 	goapp.Window().Get("document").Get("body").
-		Call("setAttribute", "class", "p-10 bg-base-300 h-screen w-screen")
+		Call("setAttribute", "class", "bg-base-300 h-screen w-screen "+AppClass)
 
 	// agent UI page
-	err := a.mach.BindHandlers(a)
+	_, err := a.Mach.HandlersBind(a)
 	if err != nil {
 		a.Error(err)
 		return
@@ -485,18 +497,18 @@ func (a *AgentUI) OnMount(ctx goapp.Context) {
 	if err := a.start(); err != nil {
 		a.Error(err)
 	}
-	netAgent := a.agentClient.NetMach
-	a.agent = netAgent
+	netAgent := a.AgentClient.NetMach
+	a.Agent = netAgent
 
 	// bind and sync the handler mach to net mach
 	a.agentHand.Set(netAgent.ActiveStates(nil), nil)
-	if err := ampipe.BindAny(netAgent, a.agentHand); err != nil {
+	if _, err := ampipe.BindAny(netAgent, a.agentHand); err != nil {
 		a.Error(err)
 		return
 	}
 
 	// whole agent time sync
-	_, err = newNetAgent(netAgent, a, a, nil)
+	_, err = NewNetAgent(netAgent, a, a, nil)
 	if err != nil {
 		a.Error(err)
 		return
@@ -510,7 +522,7 @@ func (a *AgentUI) updateClock() {
 
 	if !a.clockInit {
 		a.clockInit = true
-		a.app.Dispatch(func(_ goapp.Context) {
+		a.App.Dispatch(func(_ goapp.Context) {
 			time.Sleep(time.Second)
 			goapp.Window().Call("clockmojiInit")
 			a.updateClockSet()
@@ -555,13 +567,15 @@ func (a *AgentUI) updateClockSet() {
 
 //
 
+var _ = ssAUI.Data
+
 func (a *AgentUI) DataEnter(e *am.Event) bool {
-	return ParseArgs(e.Args).DataAgent != nil
+	return am.ParseArgs[types.AData](e.Args).DataAgent != nil
 }
 
 func (a *AgentUI) DataState(e *am.Event) {
 	// TODO handle all the UIRender* here via Add rel
-	data := ParseArgs(e.Args).DataAgent
+	data := am.ParseArgs[types.AData](e.Args).DataAgent
 
 	if a.data == nil {
 		a.data = &types.DataAgent{}
@@ -580,16 +594,18 @@ func (a *AgentUI) DataState(e *am.Event) {
 	if data.ClockDiff != nil {
 		a.data.ClockDiff = data.ClockDiff
 	}
-	a.Dump("DataState", data)
+	a.Dump(ss.Data, data)
 }
 
+var _ = ssAUI.UIMsg
+
 func (a *AgentUI) UIMsgEnter(e *am.Event) bool {
-	return ParseArgsBase(e.Args).Msg != nil
+	return am.ParseArgs[shared.AUIMsg](e.Args).Msg != nil
 }
 
 func (a *AgentUI) UIMsgState(e *am.Event) {
-	a.data.Msgs = append(a.data.Msgs,
-		ParseArgsBase(e.Args).Msg)
+	msg := am.ParseArgs[shared.AUIMsg](e.Args).Msg
+	a.data.Msgs = append(a.data.Msgs, msg)
 	scrolled := a.msgsScrolled()
 	a.Dump("UIMsgState/scroll", scrolled)
 	if scrolled {
@@ -597,18 +613,22 @@ func (a *AgentUI) UIMsgState(e *am.Event) {
 	}
 }
 
+var _ = ssAUI.UIRenderClock
+
 func (a *AgentUI) UIRenderClockEnter(e *am.Event) bool {
-	return ParseArgsBase(e.Args).ClockDiff != nil
+	return am.ParseArgs[shared.AUIRenderClock](e.Args).ClockDiff != nil
 }
 
 func (a *AgentUI) UIRenderClockState(e *am.Event) {
-	a.data.ClockDiff = ParseArgsBase(e.Args).ClockDiff
+	a.data.ClockDiff = am.ParseArgs[shared.AUIRenderClock](e.Args).ClockDiff
 	// a.Dump("UIRenderClockState", a.data.ClockDiff)
 	a.updateClock()
 }
 
+var _ = ssAUI.UIRenderStories
+
 func (a *AgentUI) UIRenderStoriesState(e *am.Event) {
-	args := ParseArgsBase(e.Args)
+	args := am.ParseArgs[shared.AUIRenderStories](e.Args)
 	// a.Dump("UIRenderStoriesState/Stories", args.Stories)
 	// a.Dump("UIRenderStoriesState/Actions", args.Actions)
 	if args.Stories != nil {
@@ -618,6 +638,8 @@ func (a *AgentUI) UIRenderStoriesState(e *am.Event) {
 		a.data.Actions = args.Actions
 	}
 }
+
+var _ = ssAUI.UICleanOutput
 
 func (a *AgentUI) UICleanOutputState(e *am.Event) {
 	a.data.Msgs = nil
@@ -631,27 +653,27 @@ func (a *AgentUI) UICleanOutputState(e *am.Event) {
 
 type PageAPI interface {
 	Draw()
-	Dump(string, any)
+	Dump(...any)
 }
 
-// aRPC client handlers
-type netAgent struct {
+// NetAgent is aRPC client handlers
+type NetAgent struct {
 	page      PageAPI
 	pageAgent *AgentUI
 	pageDash  *Dashboard
 }
 
-func newNetAgent(netMach *arpc.NetworkMachine, page PageAPI, pageAgent *AgentUI, pageDash *Dashboard) (*netAgent, error) {
+func NewNetAgent(netMach *arpc.NetworkMachine, page PageAPI, pageAgent *AgentUI, pageDash *Dashboard) (*NetAgent, error) {
 	if page == nil {
 		return nil, errors.New("page is nil")
 	}
 
-	h := &netAgent{
+	h := &NetAgent{
 		page:      page,
 		pageAgent: pageAgent,
 		pageDash:  pageDash,
 	}
-	err := netMach.BindHandlers(h)
+	_, err := netMach.HandlersBind(h)
 	if err != nil {
 		return nil, err
 	}
@@ -659,18 +681,20 @@ func newNetAgent(netMach *arpc.NetworkMachine, page PageAPI, pageAgent *AgentUI,
 	return h, nil
 }
 
-func (h *netAgent) AnyState(e *am.Event) {
+var _ = am.StateAny
+
+func (h *NetAgent) AnyState(e *am.Event) {
 	// arpc syncs have aggregated called states
 	diff := e.Transition().TimeIndexTimeDiff()
 	num := len(diff.ActiveStates(nil))
-	// ignore chealth-only txs
+	// ignore health-only txs
 	if (num == 2 && diff.Is(am.S{ss.Healthcheck, ss.Heartbeat})) ||
 		(num == 1 && diff.Any1(ss.Healthcheck, ss.Heartbeat)) {
 
 		return
 	}
 
-	h.page.Dump("AnyState", diff.ActiveStates(nil))
+	// h.page.Dump(am.StateAny, diff.ActiveStates(nil))
 	// TODO optimize with Diff + allowlist
 	h.page.Draw()
 }

@@ -3,18 +3,20 @@ package tui
 import (
 	"errors"
 	"log/slog"
+	"path/filepath"
 	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/ssh"
+	"github.com/gdamore/tcell/v2"
+	"github.com/gdamore/tcell/v2/terminfo"
+	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
 	arpc "github.com/pancsta/asyncmachine-go/pkg/rpc"
 	ssam "github.com/pancsta/asyncmachine-go/pkg/states"
 	"github.com/pancsta/cview"
-	"github.com/pancsta/tcell-v2"
-	"github.com/pancsta/tcell-v2/terminfo"
 
 	"github.com/pancsta/secai/shared"
 	ssbase "github.com/pancsta/secai/states"
@@ -23,12 +25,7 @@ import (
 
 // aliases
 
-type A = shared.A
 type S = am.S
-
-var ParseArgs = shared.ParseArgs
-var Pass = shared.Pass
-var PassRPC = shared.PassRPC
 
 var ss = ssbase.AgentBaseStates
 var ssT = states.TUIStates
@@ -36,8 +33,10 @@ var ssT = states.TUIStates
 type TUI struct {
 	*ssam.DisposedHandlers
 
+	// MachTUI is a mach dedicated to this UI instance (fork)
 	MachTUI    *am.Machine
 	ClientAddr string
+	Id         string
 
 	chat    *Chat
 	clock   *Clock
@@ -66,6 +65,7 @@ func NewTui(agent *am.Machine, logger *slog.Logger, config *shared.Config, clien
 	c := &TUI{
 		DisposedHandlers: &ssam.DisposedHandlers{},
 		ClientAddr:       clientAddr,
+		Id:               amhelp.RandId(10),
 
 		agent:  agent,
 		logger: logger,
@@ -101,9 +101,7 @@ func (t *TUI) Init(
 	mach := t.agent
 	if t.cfg.Debug.REPL {
 		opts := arpc.ReplOpts{
-			AddrDir:  t.cfg.Agent.Dir,
-			Args:     shared.ARPC{},
-			ParseRpc: shared.ParseRpc,
+			AddrDir: filepath.Join(t.cfg.Agent.Dir, "repl"),
 		}
 		if err := arpc.MachRepl(mach, "", &opts); err != nil {
 			return err
@@ -284,38 +282,3 @@ func (t *tty) notifyResize() {
 		t.resizecb()
 	}
 }
-
-// ///// ///// /////
-
-// ///// FOCUS
-
-// ///// ///// /////
-
-// TODO cview.FocusManager
-// func cycleFocus(app *cview.Application, elements []cview.Primitive, reverse bool) {
-// 	for i, el := range elements {
-// 		if !el.HasFocus() {
-// 			continue
-// 		}
-//
-// 		if reverse {
-// 			i = i - 1
-// 			if i < 0 {
-// 				i = len(elements) - 1
-// 			}
-// 		} else {
-// 			i = i + 1
-// 			i = i % len(elements)
-// 		}
-//
-// 		app.SetFocus(elements[i])
-// 		return
-// 	}
-// }
-
-// func wrap(f func()) func(ev *tcell.EventKey) *tcell.EventKey {
-// 	return func(ev *tcell.EventKey) *tcell.EventKey {
-// 		f()
-// 		return nil
-// 	}
-// }

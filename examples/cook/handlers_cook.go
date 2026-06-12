@@ -15,21 +15,23 @@ import (
 	"github.com/charmbracelet/ssh"
 	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
+	agentllm "github.com/pancsta/secai/agent_llm"
 	"github.com/sblinch/kdl-go"
 
-	"github.com/pancsta/secai"
 	"github.com/pancsta/secai/examples/cook/db"
 	sa "github.com/pancsta/secai/examples/cook/schema"
 	"github.com/pancsta/secai/examples/cook/states"
 	"github.com/pancsta/secai/shared"
 	"github.com/pancsta/secai/tui"
-	"github.com/pancsta/secai/web"
 )
+
+var _ = ss.Exception
+var Pass = am.Pass
 
 func (a *Agent) ExceptionState(e *am.Event) {
 	// call base handler
 	a.ExceptionHandler.ExceptionState(e)
-	args := am.ParseArgs(e.Args)
+	args := am.ParseArgs[am.AException](e.Args)
 
 	// show the error
 	if a.ConfigBase().Debug.Verbose {
@@ -46,6 +48,8 @@ func (a *Agent) ExceptionState(e *am.Event) {
 	// TODO remove empty errors (eg Scraping) and add ErrLoop for breaking errs
 }
 
+var _ = ss.Start
+
 func (a *Agent) StartState(e *am.Event) {
 	// parent handler
 	a.AgentLLM.StartState(e)
@@ -59,11 +63,14 @@ func (a *Agent) StartState(e *am.Event) {
 	mach.EvAdd1(e, ss.UIMode, nil)
 	mach.EvAdd1(e, ss.Mock, nil)
 
-	a.handlersWeb = &web.Handlers{A: a}
-	mach.AddErr(mach.BindHandlers(a.handlersWeb), nil)
+	a.handlersWeb = NewWeb(a)
+	_, err := mach.HandlersBind(a.handlersWeb, am.BindOpts{
+		Id: "web.Handlers",
+	})
+	mach.EvAddErr(e, err, nil)
 
 	// start Heartbeat
-	go func() {
+	mach.Fork(ctx, e, func() {
 		tick := time.NewTicker(a.Config.Cook.HeartbeatFreq)
 		defer tick.Stop()
 		for {
@@ -74,16 +81,28 @@ func (a *Agent) StartState(e *am.Event) {
 				mach.Add1(ss.Heartbeat, nil)
 			}
 		}
-	}()
+	})
 }
 
 func (a *Agent) StartEnd(e *am.Event) {
 	mach := a.Mach()
 
+	// web
 	mach.EvAddErr(e,
-		mach.DetachHandlers(a.handlersWeb), nil)
+		mach.HandlersDetach(a.handlersWeb.ID), nil)
 	a.handlersWeb = nil
 }
+
+func (a *Agent) DisposingState(e *am.Event) {
+	a.DisposedState(e)
+
+	// mem
+	if a.mem != nil {
+		amhelp.Dispose(a.mem)
+	}
+}
+
+var _ = ss.Mock
 
 func (a *Agent) MockEnter(e *am.Event) bool {
 	return a.Config.Debug.Mock && mock.Active
@@ -95,31 +114,33 @@ func (a *Agent) MockState(e *am.Event) {
 
 	// first msg when cooking steps are out, right after the narrator's recipe
 	if in := mock.StoryCookingStartedInput; in != "" {
-		go func() {
+		mach.Fork(ctx, e, func() {
 			<-mach.When1(ss.InputPending, ctx)
 			if !amhelp.Wait(ctx, time.Second) {
 				return
 			}
-			mach.EvAdd1(e, ss.Prompt, Pass3(&A3{
+			mach.EvAdd1(e, ss.Prompt, Pass(&shared.APrompt{
 				Prompt: in,
 			}))
-		}()
+		})
 	}
 
 	whenInput3 := mach.WhenTicks(ss.InputPending, 3, ctx)
 	// first msg when cooking steps are out, right after the narrator's recipe
 	if in := mock.StoryCookingStartedInput3; in != "" {
-		go func() {
+		mach.Fork(ctx, e, func() {
 			<-whenInput3
 			if !amhelp.Wait(ctx, time.Second) {
 				return
 			}
-			mach.EvAdd1(e, ss.Prompt, Pass3(&A3{
+			mach.EvAdd1(e, ss.Prompt, Pass(&shared.APrompt{
 				Prompt: in,
 			}))
-		}()
+		})
 	}
 }
+
+var _ = ss.Loop
 
 func (a *Agent) LoopEnter(e *am.Event) bool {
 	return !a.loop.Ended()
@@ -137,7 +158,7 @@ func (a *Agent) LoopState(e *am.Event) {
 	}
 
 	// unblock
-	go func() {
+	mach.Fork(ctx, e, func() {
 		for a.loop.Ok(nil) {
 
 			// step ctx (for this select only)
@@ -157,7 +178,7 @@ func (a *Agent) LoopState(e *am.Event) {
 			// timeout - trigger an interruption
 			case <-time.After(timeout):
 				cancel()
-				mach.EvAdd1(e, ss.Interrupted, Pass3(&A3{
+				mach.EvAdd1(e, ss.Interrupted, Pass(&shared.AInterrupted{
 					IntByTimeout: true,
 				}))
 				a.loop.Break()
@@ -166,8 +187,10 @@ func (a *Agent) LoopState(e *am.Event) {
 
 		// end
 		mach.EvRemove1(e, ss.Loop, nil)
-	}()
+	})
 }
+
+var _ = am.StateAny
 
 func (a *Agent) AnyState(e *am.Event) {
 	mach := a.Mach()
@@ -201,6 +224,8 @@ func (a *Agent) AnyState(e *am.Event) {
 	}
 }
 
+var _ = ss.Heartbeat
+
 func (a *Agent) HeartbeatState(e *am.Event) {
 	mach := a.Mach()
 	mach.Remove1(ss.Heartbeat, nil)
@@ -213,6 +238,8 @@ func (a *Agent) HeartbeatState(e *am.Event) {
 
 	// TODO check orienting
 }
+
+var _ = ss.CheckStories
 
 func (a *Agent) CheckStoriesState(e *am.Event) {
 	// TODO debounce using schedule
@@ -284,58 +311,69 @@ func (a *Agent) CheckStoriesState(e *am.Event) {
 
 	// apply the changes if any
 	if len(stateList) > 0 {
-		mach.EvAdd1(e, ss.StoryChanged, Pass3(&A3{
+		mach.EvAdd1(e, ss.StoryChanged, Pass(&shared.AStoryChanged{
 			StatesList:   stateList,
 			ActivateList: activateList,
 		}))
 	}
 
 	// re-render all buttons
-	a.renderStories(e)
+	a.hRenderStories(e)
 }
+
+var _ = ss.StoryChanged
 
 func (a *Agent) StoryChangedState(e *am.Event) {
 	mach := a.Mach()
-	args := ParseArgs(e.Args)
+	args := am.ParseArgs[shared.AStoryChanged](e.Args)
 	states := args.StatesList
 	activates := args.ActivateList
+	ctx := mach.NewStateCtx(ss.StoryChanged)
 
-	for i, name := range states {
-		activate := activates[i]
-		s := a.stories[name]
+	mach.Fork(ctx, e, func() {
+		for i, name := range states {
+			activate := activates[i]
+			s := a.stories[name]
 
-		if s == nil {
-			a.Log("story not found", "state", name)
-			continue
-		}
-
-		// deactivate
-		if mach.Is1(s.State) && !activate {
-			res := mach.EvRemove1(e, s.State, nil)
-
-			// TODO handle Queued?
-			if res != am.Canceled {
-				s.Agent.TimeDeactivated = mach.Time(nil)
-				s.Memory.TimeDeactivated = a.mem.Time(nil)
-				s.DeactivatedAt = time.Now()
-				s.LastActiveTicks = s.Agent.TimeDeactivated.Sum(nil) -
-					s.Agent.TimeActivated.Sum(nil)
+			if s == nil {
+				a.Log("story not found", "state", name)
+				continue
 			}
 
-			// activate
-		} else if mach.Not1(s.State) && activate {
-			res := mach.EvAdd1(e, s.State, nil)
+			// deactivate
+			if mach.Is1(s.State) && !activate {
+				res := mach.EvRemove1(e, s.State, nil)
 
-			// TODO handle Queued?
-			if res != am.Canceled {
-				s.Agent.TimeActivated = mach.Time(nil)
-				s.Memory.TimeActivated = a.mem.Time(nil)
-			} else {
-				a.Log("failed to activate", "state", name)
+				// TODO handle Queued?
+				if res != am.Canceled {
+					s.Agent.TimeDeactivated = mach.Time(nil)
+					s.Memory.TimeDeactivated = a.mem.Time(nil)
+					s.DeactivatedAt = time.Now()
+					s.LastActiveTicks = s.Agent.TimeDeactivated.Sum(nil) -
+						s.Agent.TimeActivated.Sum(nil)
+				}
+
+				// activate
+			} else if mach.Not1(s.State) && activate {
+				res := mach.EvAdd1(e, s.State, nil)
+
+				// TODO handle Queued?
+				if res != am.Canceled {
+					s.Agent.TimeActivated = mach.Time(nil)
+					s.Memory.TimeActivated = a.mem.Time(nil)
+				} else {
+					a.Log("failed to activate", "state", name)
+				}
 			}
 		}
-	}
+		// re-render all buttons TODO method
+		mach.Eval("StoryChangedState", func() {
+			a.hRenderStories(e)
+		}, ctx)
+	})
 }
+
+var _ = ss.Interrupted
 
 func (a *Agent) InterruptedState(e *am.Event) {
 	// call super
@@ -348,6 +386,8 @@ func (a *Agent) InterruptedState(e *am.Event) {
 	}
 }
 
+var _ = ss.Ready
+
 func (a *Agent) ReadyEnter(e *am.Event) bool {
 	// wait for all the tools to be ready
 	// return a.tSearxng.Mach().Is1(ss.Ready)
@@ -355,6 +395,7 @@ func (a *Agent) ReadyEnter(e *am.Event) bool {
 }
 
 // ReadyState is a test mocking handler.
+
 func (a *Agent) ReadyState(e *am.Event) {
 	if mock.GenStepsRes == "" || mock.Recipe == "" || !a.Config.Debug.Mock || !mock.Active {
 		return
@@ -373,9 +414,11 @@ func (a *Agent) ReadyState(e *am.Event) {
 
 // TODO enter
 
+var _ = ss.SSHConn
+
 func (a *Agent) SSHConnState(e *am.Event) {
 	mach := a.Mach()
-	args := ParseArgs(e.Args)
+	args := am.ParseArgs[shared.ASSHConn](e.Args)
 	sess := args.SSHSess
 	// user := sess.User() TODO desktop / mobile for various UIs
 	done := args.Done
@@ -417,7 +460,7 @@ func (a *Agent) SSHConnState(e *am.Event) {
 	uiMain.Redraw()
 
 	// start the UI
-	go func() {
+	mach.Fork(ctx, e, func() {
 		defer close(done)
 		if ctx.Err() != nil {
 			return // expired
@@ -428,25 +471,27 @@ func (a *Agent) SSHConnState(e *am.Event) {
 		err = uiMain.Start(sess.Close)
 		// TODO log err if not EOF?
 
-		mach.EvAdd1(e, ss.SSHDisconn, Pass(&A{
-			TUI: uiMain,
+		mach.EvAdd1(e, ss.SSHDisconn, Pass(&shared.ASSHDisconn{
+			Id: uiMain.Id,
 		}))
-	}()
+	})
 }
 
+var _ = ss.SSHDisconn
+
 func (a *Agent) SSHDisconnState(e *am.Event) {
-	addr := ParseArgs(e.Args).Addr
-	ui := ParseArgs(e.Args).TUI
+	args := am.ParseArgs[shared.ASSHDisconn](e.Args)
+	addr := args.Addr
 
 	before := len(a.tuis)
 	a.tuis = slices.DeleteFunc(a.tuis, func(t *tui.TUI) bool {
 		// dispose all on web disconn TODO add conn IDs via users, match IDs
-		if ui == nil {
+		if args.Id == "" {
 			amhelp.DisposeEv(t.MachTUI, e)
 			return true
 		}
 
-		if t == ui {
+		if t.Id == args.Id {
 			return true
 		}
 		if t.ClientAddr == addr {
@@ -462,6 +507,8 @@ func (a *Agent) SSHDisconnState(e *am.Event) {
 	}
 }
 
+var _ = ss.UIMode
+
 func (a *Agent) UIModeEnter(e *am.Event) bool {
 	return a.Config.TUI.PortSSH != -1
 }
@@ -472,12 +519,9 @@ func (a *Agent) UIModeState(e *am.Event) {
 
 	// new session handler passing to UINewSess state
 	var handlerFn ssh.Handler = func(sess ssh.Session) {
-		srcAddr := sess.RemoteAddr().String()
 		done := make(chan struct{})
-		mach.EvAdd1(e, ss.SSHConn, Pass3(&A3{
+		mach.EvAdd1(e, ss.SSHConn, Pass(&shared.ASSHConn{
 			SSHSess: sess,
-			ID:      sess.User(),
-			Addr:    srcAddr,
 			Done:    done,
 		}))
 
@@ -492,10 +536,10 @@ func (a *Agent) UIModeState(e *am.Event) {
 	}
 
 	// start SSH
-	go func() {
+	mach.Fork(ctx, e, func() {
 		// save srv ref
 		optSrv := func(s *ssh.Server) error {
-			mach.EvAdd1(e, ss.SSHReady, Pass3(&A3{
+			mach.EvAdd1(e, ss.SSHReady, Pass(&shared.ASSHReady{
 				SSHServer: s,
 			}))
 			return nil
@@ -507,7 +551,7 @@ func (a *Agent) UIModeState(e *am.Event) {
 		if err != nil {
 			mach.EvAddErrState(e, ss.ErrUI, err, nil)
 		}
-	}()
+	})
 }
 
 func (a *Agent) UIModeEnd(e *am.Event) {
@@ -525,15 +569,26 @@ func (a *Agent) UIModeEnd(e *am.Event) {
 
 // TODO enter
 
+var _ = ss.SSHReady
+
 func (a *Agent) SSHReadyState(e *am.Event) {
-	s := ParseArgs(e.Args).SSHServer
+	s := am.ParseArgs[shared.ASSHReady](e.Args).SSHServer
 	a.srvUI = s
 }
 
-func (a *Agent) UIMsgState(e *am.Event) {
-	msg := ParseArgs(e.Args).Msg
-	a.msgs = append(a.msgs, msg)
+var _ = ss.UIMsg
+
+func (a *Agent) UIMsgEnter(e *am.Event) bool {
+	return am.ParseArgs[shared.AUIMsg](e.Args).Msg != nil
 }
+
+func (a *Agent) UIMsgState(e *am.Event) {
+	msg := am.ParseArgs[shared.AUIMsg](e.Args).Msg
+	a.msgs = append(a.msgs, msg)
+	a.Log(ss.UIMsg, "text", msg.Text)
+}
+
+var _ = ss.Prompt
 
 func (a *Agent) PromptEnter(e *am.Event) bool {
 	// call super
@@ -541,7 +596,7 @@ func (a *Agent) PromptEnter(e *am.Event) bool {
 		return false
 	}
 
-	p := ParseArgs(e.Args).Prompt
+	p := am.ParseArgs[shared.APrompt](e.Args).Prompt
 	// long enough or a reference
 	return len(p) >= a.Config.Cook.MinPromptLen || shared.NumRef(p) != -1
 }
@@ -567,19 +622,16 @@ func (a *Agent) PromptState(e *am.Event) {
 	a.AgentLLM.PromptState(e)
 
 	// start orienting if the input wasnt expected
-	wasPending := !slices.Contains(e.Transition().StatesBefore(), ss.InputPending)
-	if mach.Not1(ss.InputPending) && wasPending {
-		if mach.EvAdd1(e, ss.Orienting, e.Args) == am.Canceled {
-			return
-		}
-
+	wasntPending := e.Transition().TimeIndexBefore().Not1(ss.InputPending)
+	if mach.Not1(ss.InputPending) && wasntPending {
 		// handle result
-		go func() {
-			<-mach.When1(ss.Orienting, ctx)
+		mach.Fork(ctx, e, func() {
+			amhelp.EvAdd1Sync(ctx, e, mach, ss.Orienting, e.Args)
 			<-mach.WhenNot1(ss.Orienting, ctx)
 			if ctx.Err() != nil {
 				return // expired
 			}
+
 			move := a.MoveOrienting.Load()
 			if move == nil {
 				return
@@ -587,14 +639,16 @@ func (a *Agent) PromptState(e *am.Event) {
 			a.MoveOrienting.Store(nil)
 
 			// exec the move
-			mach.EvAdd1(e, ss.OrientingMove, Pass2(&A2{
+			mach.EvAdd1(e, ss.OrientingMove, Pass(&agentllm.AOrientingMove{
 				Move: move,
 			}))
-		}()
+		})
 	}
 }
 
 // InputPendingState is a test mocking handler.
+var _ = ss.InputPending
+
 func (a *Agent) InputPendingState(e *am.Event) {
 	mach := a.Mach()
 	if !a.Config.Debug.Mock || !mock.Active {
@@ -606,26 +660,21 @@ func (a *Agent) InputPendingState(e *am.Event) {
 	switch mach.Tick(ss.InputPending) {
 	case 1 + errs:
 		if p := mock.FlowPromptIngredients; p != "" {
-			mach.EvAdd1(e, ss.Prompt, Pass3(&A3{Prompt: p}))
+			mach.EvAdd1(e, ss.Prompt, Pass(&shared.APrompt{Prompt: p}))
 		}
 	case 3 + errs:
 		if p := mock.FlowPromptRecipe; p != "" {
-			mach.EvAdd1(e, ss.Prompt, Pass3(&A3{Prompt: p}))
+			mach.EvAdd1(e, ss.Prompt, Pass(&shared.APrompt{Prompt: p}))
 		}
 	case 5 + errs:
 		if p := mock.FlowPromptCooking; p != "" {
-			mach.EvAdd1(e, ss.Prompt, Pass3(&A3{Prompt: p}))
+			mach.EvAdd1(e, ss.Prompt, Pass(&shared.APrompt{Prompt: p}))
 		}
 	}
 }
 
-func (a *Agent) DisposedState(e *am.Event) {
-	// the end
-	a.Logger().Info("disposed, bye")
-	os.Exit(0)
-}
+var _ = ss.UIReady
 
-// TODO bind
 func (a *Agent) UIReadyEnter(e *am.Event) bool {
 	for _, ui := range a.tuis {
 		if ui.MachTUI.Not1(ss.Ready) {
@@ -642,6 +691,8 @@ func (a *Agent) UIReadyEnter(e *am.Event) bool {
 // 			return
 // 		}
 
+var _ = ss.DBStarting
+
 func (a *Agent) DBStartingState(e *am.Event) {
 	mach := a.Mach()
 	ctx := mach.NewStateCtx(ss.DBStarting)
@@ -653,7 +704,7 @@ func (a *Agent) DBStartingState(e *am.Event) {
 			return // expired
 		}
 		if err != nil {
-			secai.AddErrDB(e, mach, err)
+			shared.AddErrDB(e, mach, err)
 			return
 		}
 		a.dbConn = conn
@@ -665,8 +716,10 @@ func (a *Agent) DBStartingState(e *am.Event) {
 	})
 }
 
+var _ = ss.StepCompleted
+
 func (a *Agent) StepCompletedState(e *am.Event) {
-	step := ParseArgs(e.Args).ID
+	step := am.ParseArgs[AStepCompleted](e.Args).ID
 	if rand.Intn(a.Config.Cook.StepCommentFreq) != 0 && a.mem.Has1(step) {
 		return
 	}
@@ -691,7 +744,7 @@ func (a *Agent) StepCompletedState(e *am.Event) {
 			continue
 		}
 		// TODO enum
-		idxMax = max(idxMax, amhelp.TagValueInt(state.Tags, "idx:"))
+		idxMax = max(idxMax, amhelp.TagValueInt(state.Tags, "idx"))
 	}
 
 	// match the index of the step to comments
@@ -717,19 +770,27 @@ func (a *Agent) StepCompletedState(e *am.Event) {
 	// TODO add to the CookingStarted prompt history
 }
 
+var _ = ss.StepCommentsReady
+
 func (a *Agent) StepCommentsReadyEnd(e *am.Event) {
 	a.stepComments.Store(nil)
 }
 
+var _ = ss.JokesReady
+
 func (a *Agent) JokesReadyEnd(e *am.Event) {
 	a.jokes.Store(&sa.ResultGenJokes{})
 }
+
+var _ = ss.IngredientsReady
 
 func (a *Agent) IngredientsReadyEnd(e *am.Event) {
 	a.ingredients.Store(&[]sa.Ingredient{})
 	err := a.initMem()
 	a.Mach().EvAddErrState(e, ss.ErrMem, err, nil)
 }
+
+var _ = ss.ConfigUpdate
 
 func (a *Agent) ConfigUpdateState(e *am.Event) {
 	mach := a.Mach()
@@ -754,16 +815,21 @@ func (a *Agent) ConfigUpdateState(e *am.Event) {
 			mach.AddErr(err, nil)
 			return
 		}
+
+		// format and save
+		data = []byte(shared.KdlFormat(data, ConfigDefault()))
 		mach.AddErr(os.WriteFile(cfg.File, data, 0644), nil)
 	})
 }
 
+var _ = ss.StoryAction
+
 func (a *Agent) StoryActionEnter(e *am.Event) bool {
-	return ParseArgs(e.Args).ID != ""
+	return am.ParseArgs[shared.AStoryAction](e.Args).ID != ""
 }
 
 func (a *Agent) StoryActionState(e *am.Event) {
-	id := ParseArgs(e.Args).ID
+	id := am.ParseArgs[shared.AStoryAction](e.Args).ID
 	var action *shared.Action
 	for _, key := range a.storiesOrder {
 		s := a.stories[key]
@@ -787,8 +853,11 @@ func (a *Agent) StoryActionState(e *am.Event) {
 	action.Action()
 }
 
+var _ = ss.UIRenderClock
+
 func (a *Agent) UIRenderClockState(e *am.Event) {
-	a.Store().ClockDiff = ParseArgs(e.Args).ClockDiff
+	diff := am.ParseArgs[shared.AUIRenderClock](e.Args).ClockDiff
+	a.Store().ClockDiff = diff
 }
 
 // ///// ///// /////
@@ -796,6 +865,8 @@ func (a *Agent) UIRenderClockState(e *am.Event) {
 // ///// STORIES
 
 // ///// ///// /////
+
+var _ = ss.StoryWakingUp
 
 func (a *Agent) StoryWakingUpState(e *am.Event) {
 	mach := a.Mach()
@@ -806,7 +877,7 @@ func (a *Agent) StoryWakingUpState(e *am.Event) {
 	a.loop = amhelp.NewStateLoop(mach, ss.Loop, nil)
 
 	// unblock and check if DB is fine
-	go func() {
+	mach.Fork(ctx, e, func() {
 		<-mach.When1(ss.DBReady, ctx)
 
 		a.Output("...", shared.FromAssistant)
@@ -823,7 +894,7 @@ func (a *Agent) StoryWakingUpState(e *am.Event) {
 
 		// one of Gen activated, inform the user
 		a.Output("...", shared.FromAssistant)
-	}()
+	})
 }
 
 func (a *Agent) StoryWakingUpEnd(e *am.Event) {
@@ -833,6 +904,8 @@ func (a *Agent) StoryWakingUpEnd(e *am.Event) {
 		_ = a.OutputPhrase("WokenUp")
 	}
 }
+
+var _ = ss.StoryIngredientsPicking
 
 func (a *Agent) StoryIngredientsPickingState(e *am.Event) {
 	mach := a.Mach()
@@ -854,7 +927,7 @@ func (a *Agent) StoryIngredientsPickingState(e *am.Event) {
 	})
 
 	// unblock
-	go func() {
+	mach.Fork(ctx, e, func() {
 		defer a.Mach().PanicToErr(nil)
 
 		for a.loopIngredients.Ok(nil) {
@@ -926,20 +999,14 @@ func (a *Agent) StoryIngredientsPickingState(e *am.Event) {
 			// feed back the current list, update the UI, and go again
 			params.Ingredients = res.Ingredients
 		}
-	}()
-}
-
-func (a *Agent) storyIngredientsPickingCleanup(e *am.Event) bool {
-	mach := a.Mach()
-
-	mach.EvRemove1(e, ss.IngredientsReady, nil)
-
-	return a.storyRecipePickingCleanup(e)
+	})
 }
 
 func (a *Agent) StoryIngredientsPickingEnd(e *am.Event) {
 	a.pIngredientsPicking.HistClean()
 }
+
+var _ = ss.StoryRecipePicking
 
 func (a *Agent) StoryRecipePickingEnter(e *am.Event) bool {
 	ing := a.ingredients.Load()
@@ -967,7 +1034,7 @@ func (a *Agent) StoryRecipePickingState(e *am.Event) {
 	})
 
 	// unblock
-	go func() {
+	mach.Fork(ctx, e, func() {
 		i := 1
 		for a.loopRecipe.Ok(nil) {
 
@@ -1005,7 +1072,7 @@ func (a *Agent) StoryRecipePickingState(e *am.Event) {
 
 			// dereference the prompt TODO extract
 			retOffer := make(chan *shared.OfferRef)
-			mach.EvAdd1(e, ss.CheckingMenuRefs, Pass3(&A3{
+			mach.EvAdd1(e, ss.CheckingMenuRefs, Pass(&shared.ACheckingMenuRefs{
 				Prompt:      a.UserInput,
 				RetOfferRef: retOffer,
 				CheckLLM:    true,
@@ -1035,22 +1102,14 @@ func (a *Agent) StoryRecipePickingState(e *am.Event) {
 			mach.EvAdd1(e, ss.RecipeReady, nil)
 			break
 		}
-	}()
-}
-
-func (a *Agent) storyRecipePickingCleanup(e *am.Event) bool {
-	mach := a.Mach()
-
-	// remove recipe
-	a.recipe.Store(nil)
-	mach.EvRemove1(e, ss.RecipeReady, nil)
-
-	return a.storyCookingStartedCleanup(e)
+	})
 }
 
 func (a *Agent) StoryRecipePickingEnd(e *am.Event) {
 	a.pRecipePicking.HistClean()
 }
+
+var _ = ss.StoryCookingStarted
 
 func (a *Agent) StoryCookingStartedEnter(e *am.Event) bool {
 	return a.recipe.Load() != nil
@@ -1077,10 +1136,10 @@ func (a *Agent) StoryCookingStartedState(e *am.Event) {
 	})
 
 	// unblock
-	go func() {
+	mach.Fork(ctx, e, func() {
 
-		// wait for related prompts
-		err := amhelp.WaitForAll(ctx, time.Minute,
+		// wait for related prompts TODO config
+		err := amhelp.WaitForAll(ctx, 5*time.Minute,
 			mach.When1(ss.StepsReady, ctx),
 			mach.When1(ss.StepCommentsReady, ctx),
 		)
@@ -1091,7 +1150,7 @@ func (a *Agent) StoryCookingStartedState(e *am.Event) {
 			mach.EvAddErr(e, err, nil)
 			return
 		}
-		params.ExtractedSteps = a.mem.StateNamesMatch(sa.MatchSteps)
+		params.ExtractedSteps = a.mem.StateNames().FilterMatch(sa.MatchSteps)
 
 		for a.loopCooking.Ok(nil) {
 			res := &sa.ResultCookingStarted{}
@@ -1123,28 +1182,21 @@ func (a *Agent) StoryCookingStartedState(e *am.Event) {
 				a.MoveOrienting.Store(nil)
 				// TODO local prompt
 				// a.Output(move.Answer, shared.FromAssistant)
-				mach.Add1(ss.OrientingMove, Pass2(&A2{
+				mach.Add1(ss.OrientingMove, Pass(&agentllm.AOrientingMove{
 					Move: move,
 				}))
 			} else if res.Answer != "" {
 				a.Output(res.Answer, shared.FromAssistant)
 			}
 		}
-	}()
-}
-
-func (a *Agent) storyCookingStartedCleanup(e *am.Event) bool {
-	mach := a.Mach()
-
-	// remove step states
-	mach.EvRemove(e, S{ss.StepsReady, ss.StepCompleted}, nil)
-
-	return true
+	})
 }
 
 func (a *Agent) StoryCookingStartedEnd(e *am.Event) {
 	a.pCookingStarted.HistClean()
 }
+
+var _ = ss.StoryJoke
 
 func (a *Agent) StoryJokeEnter(e *am.Event) bool {
 	return a.hasJokes()
@@ -1154,13 +1206,13 @@ func (a *Agent) StoryJokeState(e *am.Event) {
 	mach := a.Mach()
 	ctx := mach.NewStateCtx(ss.StoryJoke)
 	// deactivate via ChangeStories, not directly TODO use mach.Schedule
-	go func() {
+	mach.Fork(ctx, e, func() {
 		if ctx.Err() != nil {
 			return // expired
 		}
 		time.Sleep(3 * time.Second)
 		a.StoryDeactivate(e, ss.StoryJoke)
-	}()
+	})
 
 	// untick no-joke-msg
 	a.jokeRefusedMsg = false
@@ -1182,9 +1234,13 @@ func (a *Agent) StoryJokeState(e *am.Event) {
 	}
 }
 
+var _ = ss.StoryMealReady
+
 func (a *Agent) StoryMealReadyState(e *am.Event) {
 	_ = a.OutputPhrase(ss.StoryMealReady)
 }
+
+var _ = ss.StoryMemoryWipe
 
 func (a *Agent) StoryMemoryWipeState(e *am.Event) {
 	mach := a.Mach()
@@ -1212,6 +1268,8 @@ func (a *Agent) StoryMemoryWipeState(e *am.Event) {
 		mach.EvAdd1(e, ss.UICleanOutput, nil)
 	})
 }
+
+var _ = ss.StoryStartAgain
 
 func (a *Agent) StoryStartAgainState(e *am.Event) {
 	defer a.StoryDeactivate(e, ss.StoryStartAgain)

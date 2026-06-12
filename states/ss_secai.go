@@ -65,6 +65,8 @@ type AgentBaseStatesDef struct {
 	Interrupted string
 	// Resume is the signal from the user to resume after an Interrupted.
 	Resume string
+	// Check if the passed prompt references any of the offered choices.
+	CheckingMenuRefs string
 
 	// STORIES
 
@@ -132,9 +134,7 @@ type AgentBaseGroupsDef struct {
 }
 
 // AgentSchema represents all relations and properties of AgentBaseStates.
-var AgentSchema = SchemaMerge(
-	// inherit from BasicStruct
-	ssam.BasicSchema,
+var AgentSchema = ssam.BasicSchema.Merge(
 	// inherit from DisposedStruct
 	ssam.DisposedSchema,
 	// inherit from WorkerStates
@@ -189,7 +189,6 @@ var AgentSchema = SchemaMerge(
 		},
 		ssA.ConfigValid: {Remove: S{ssA.ConfigValidating}},
 
-		ssA.Loop:         {Require: S{ssA.Ready}},
 		ssA.InputPending: {Remove: S{ssA.Prompt}},
 		ssA.InputBlocked: {Remove: S{ssA.Prompt}},
 		ssA.Requesting:   {},
@@ -238,6 +237,7 @@ var AgentSchema = SchemaMerge(
 
 		// EVENTS
 
+		ssA.Loop: {Require: S{ssA.Ready}},
 		ssA.Prompt: {
 			Multi:   true,
 			Require: S{ssA.Start},
@@ -250,7 +250,7 @@ var AgentSchema = SchemaMerge(
 		ssA.Resume: {
 			Remove: S{ssA.Interrupted},
 		},
-		ssA.UIMsg: {
+		ssA.CheckingMenuRefs: {
 			Multi:   true,
 			Require: S{ssA.Start},
 		},
@@ -264,6 +264,10 @@ var AgentSchema = SchemaMerge(
 		ssA.StoryChanged: {
 			Multi: true,
 			After: S{ssA.CheckStories},
+		},
+		ssA.StoryAction: {
+			Multi:   true,
+			Require: S{ssA.UIMode},
 		},
 
 		// UI
@@ -288,9 +292,9 @@ var AgentSchema = SchemaMerge(
 		ssA.UIUpdateClock: {
 			Require: S{ssA.UIMode},
 		},
-		ssA.StoryAction: {
+		ssA.UIMsg: {
 			Multi:   true,
-			Require: S{ssA.UIMode},
+			Require: S{ssA.Start},
 		},
 		ssA.SSHConn: {
 			Multi:   true,
@@ -339,6 +343,8 @@ const TagManual = "manual"
 
 // TagTrigger is for stories that can be triggered by the LLM orienting story.
 const TagTrigger = "trigger"
+const PrefixStoryDisable = "StoryDisable"
+const PrefixStory = "Story"
 
 var (
 	ssA = am.NewStates(AgentBaseStatesDef{})
@@ -415,9 +421,7 @@ type ToolGroupsDef struct {
 }
 
 // ToolSchema represents all relations and properties of ToolStates.
-var ToolSchema = SchemaMerge(
-	// inherit from BasicStruct
-	ssam.BasicSchema,
+var ToolSchema = ssam.BasicSchema.Merge(
 	// inherit from DisposedStruct
 	ssam.DisposedSchema,
 	// inherit from WorkerStates

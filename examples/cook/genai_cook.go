@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
@@ -19,11 +20,16 @@ import (
 	"github.com/pancsta/secai/shared"
 )
 
+// TODO config
+var retires = 5
+
 // ///// ///// /////
 
 // ///// HANDLERS
 
 // ///// ///// /////
+
+var _ = ss.CharacterReady
 
 func (a *Agent) CharacterReadyState(e *am.Event) {
 	// call super
@@ -32,19 +38,19 @@ func (a *Agent) CharacterReadyState(e *am.Event) {
 	a.DocCharacter.AddToPrompts(a.pGenJokes, a.pIngredientsPicking, a.pRecipePicking, a.pGenStepComments)
 }
 
+var _ = ss.GenJokes
+
 func (a *Agent) GenJokesEnter(e *am.Event) bool {
 	return len((*a.jokes.Load()).Jokes) == 0
 }
+
+var _ = ss.RestoreJokes
 
 func (a *Agent) RestoreJokesState(e *am.Event) {
 	mach := a.Mach()
 	ctx := mach.NewStateCtx(ss.RestoreJokes)
 
-	go func() {
-		if ctx.Err() != nil {
-			return // expired
-		}
-
+	mach.Fork(ctx, e, func() {
 		// restore
 		dbRes, err := a.Queries().GetJokes(ctx)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -65,8 +71,10 @@ func (a *Agent) RestoreJokesState(e *am.Event) {
 			// next
 			mach.EvAdd1(e, ss.JokesReady, nil)
 		}
-	}()
+	})
 }
+
+var _ = ss.GenJokes
 
 func (a *Agent) GenJokesState(e *am.Event) {
 	// collect
@@ -79,40 +87,43 @@ func (a *Agent) GenJokesState(e *am.Event) {
 	}
 
 	// unblock
-	go func() {
-		if ctx.Err() != nil {
-			return // expired
-		}
+	mach.Fork(ctx, e, func() {
+		for range retires {
+			// run the prompt (checks ctx)
+			res, err := llm.Exec(e, params)
+			if ctx.Err() != nil {
+				return // expired
+			}
+			if err != nil {
+				mach.EvAddErrState(e, ss.ErrAI, err, nil)
+				continue
+			}
 
-		// run the prompt (checks ctx)
-		res, err := llm.Exec(e, params)
-		if ctx.Err() != nil {
-			return // expired
-		}
-		if err != nil {
-			mach.EvAddErrState(e, ss.ErrAI, err, nil)
+			// persist
+			for _, joke := range res.Jokes {
+				j, _ := json.Marshal(joke)
+				_, err := a.Queries().AddJoke(ctx, string(j))
+				if err != nil {
+					mach.EvAddErrState(e, ss.ErrDB, err, nil)
+					break
+				}
+			}
+			a.jokes.Store(res)
+
+			// next
+			mach.EvAdd1(e, ss.JokesReady, nil)
 			return
 		}
 
-		// persist
-		for _, joke := range res.Jokes {
-			j, _ := json.Marshal(joke)
-			_, err := a.Queries().AddJoke(ctx, string(j))
-			if err != nil {
-				mach.EvAddErrState(e, ss.ErrDB, err, nil)
-				break
-			}
-		}
-		a.jokes.Store(res)
-
-		// next
-		mach.EvAdd1(e, ss.JokesReady, nil)
-	}()
+		a.LogErr("GenJokes_too_many_errs", nil)
+	})
 }
 
 func (a *Agent) GenJokesEnd(e *am.Event) {
 	a.pGenJokes.HistClean()
 }
+
+var _ = ss.GenStepComments
 
 func (a *Agent) GenStepCommentsState(e *am.Event) {
 
@@ -122,7 +133,7 @@ func (a *Agent) GenStepCommentsState(e *am.Event) {
 	llm := a.pGenStepComments
 
 	// collect final steps
-	steps := a.mem.StateNamesMatch(sa.MatchSteps)
+	steps := a.mem.StateNames().FilterMatch(sa.MatchSteps)
 	mem := a.mem.Schema()
 	steps = slices.DeleteFunc(steps, func(s string) bool {
 		state := mem[s]
@@ -136,16 +147,10 @@ func (a *Agent) GenStepCommentsState(e *am.Event) {
 	}
 
 	// unblock
-	go func() {
-		if ctx.Err() != nil {
-			return // expired
-		}
-
+	mach.Fork(ctx, e, func() {
 		res := &sa.ResultGenStepComments{}
 		var err error
-
-		// TODO config
-		for i := range 5 {
+		for i := range retires {
 			if i > 0 {
 				a.Log("GenStepCommentsState", "try", i)
 			}
@@ -184,18 +189,24 @@ func (a *Agent) GenStepCommentsState(e *am.Event) {
 			}
 		}
 
-		mach.EvAddErr(e, err, nil)
-		a.ValFile(nil, "step-comments", res, "yaml")
+		if err != nil {
+			a.LogErr("GenStepComments_too_many_errs", nil)
+			mach.EvAddErr(e, err, nil)
+			return
+		}
 
 		// store and next
+		a.ValFile(nil, "step-comments", res, "yaml")
 		a.stepComments.Store(res)
 		mach.EvAdd1(e, ss.StepCommentsReady, nil)
-	}()
+	})
 }
 
 func (a *Agent) GenStepCommentsEnd(e *am.Event) {
 	a.pGenStepComments.HistClean()
 }
+
+var _ = ss.GenSteps
 
 func (a *Agent) GenStepsEnter(e *am.Event) bool {
 	recipe := a.recipe.Load()
@@ -213,9 +224,8 @@ func (a *Agent) GenStepsState(e *am.Event) {
 
 	// unblock
 	mach.Fork(ctx, e, func() {
-		var err error
-		// try 5 times TODO config
-		for i := range 5 {
+		var stateErr error
+		for i := range retires {
 			res := &sa.ResultGenSteps{}
 			if i > 0 {
 				a.Log("GenSteps", "try", i)
@@ -232,11 +242,13 @@ func (a *Agent) GenStepsState(e *am.Event) {
 				// live schema
 			} else {
 				// run the prompt (checks ctx)
+				var err error
 				res, err = llm.Exec(e, params)
 				if ctx.Err() != nil {
 					return // expired
 				}
 				if err != nil {
+					stateErr = err
 					mach.EvAddErrState(e, ss.ErrAI, err, nil)
 					continue
 				}
@@ -251,6 +263,7 @@ func (a *Agent) GenStepsState(e *am.Event) {
 
 			// handle both errs
 			if err != nil {
+				stateErr = err
 				a.LogErr("GenSteps_bad_schema", err,
 					"schema", memSchema,
 					"states", newNames,
@@ -267,8 +280,8 @@ func (a *Agent) GenStepsState(e *am.Event) {
 		}
 
 		// check err
-		if err != nil {
-			mach.EvAddErrState(e, ss.ErrMem, err, nil)
+		if stateErr != nil {
+			mach.EvAddErrState(e, ss.ErrMem, stateErr, nil)
 			// TODO ErrStepsState
 			a.LogErr("GenSteps_too_many_errs", nil)
 			// TODO phrase resource +config +another recipe choice
@@ -282,13 +295,15 @@ func (a *Agent) GenStepsEnd(e *am.Event) {
 	a.pGenSteps.HistClean()
 }
 
+var _ = ss.StepsReady
+
 func (a *Agent) StepsReadyState(e *am.Event) {
 	memSchema := a.mem.Schema()
 	memResolve := a.mem.Resolver()
 
 	// add step buttons, keeping the progress bar (1st button)
 	buts := a.stories[ss.StoryCookingStarted].Actions[0:1]
-	for _, name := range a.mem.StateNamesMatch(sa.MatchSteps) {
+	for _, name := range a.mem.StateNames().FilterMatch(sa.MatchSteps) {
 		s := memSchema[name]
 		but := shared.Action{
 			ID: amhelp.RandId(8),
@@ -324,7 +339,7 @@ func (a *Agent) StepsReadyState(e *am.Event) {
 			if res == am.Canceled {
 				return
 			}
-			a.Mach().EvAdd(e, S{ss.CheckStories, ss.StepCompleted}, Pass3(&A3{
+			a.Mach().EvAdd(e, S{ss.CheckStories, ss.StepCompleted}, am.Pass(&AStepCompleted{
 				ID: name,
 			}))
 		}
@@ -359,7 +374,7 @@ func (a *Agent) StepsReadyState(e *am.Event) {
 
 	// update the story with new buttons
 	a.stories[ss.StoryCookingStarted].Actions = buts
-	a.renderStories(e)
+	a.hRenderStories(e)
 }
 
 func (a *Agent) StepsReadyEnd(e *am.Event) {
@@ -369,7 +384,7 @@ func (a *Agent) StepsReadyEnd(e *am.Event) {
 	a.stories[ss.StoryCookingStarted].Actions = a.stories[ss.StoryCookingStarted].Actions[0:1]
 
 	// copy ingredients
-	ingredientsStates := a.mem.StateNamesMatch(sa.MatchIngredients)
+	ingredientsStates := a.mem.StateNames().FilterMatch(sa.MatchIngredients)
 	oldSchema := a.mem.Schema()
 	// start with an empty schema
 	err := a.initMem()
@@ -382,7 +397,7 @@ func (a *Agent) StepsReadyEnd(e *am.Event) {
 	mach.EvAddErrState(e, ss.ErrMem, err, nil)
 
 	// remove stories UI
-	a.renderStories(e)
+	a.hRenderStories(e)
 }
 
 // ///// ///// /////
@@ -405,15 +420,51 @@ func (a *Agent) processStepSchema(ctx context.Context, res *sa.ResultGenSteps) (
 		cBefore += amhelp.CountRelations(&state)
 	}
 	// prefix state names
-	schema := amhelp.PrefixStates(schemaRAW, "Step", true, nil, nil)
-	for _, state := range schema {
+	schema := schemaRAW.Prefix("Step", true, nil, nil)
+
+	// fix relations
+	idxLast := 0
+	for name, state := range schema {
+		if name == ss.StoryMealReady {
+			continue
+		}
 		cAfter += amhelp.CountRelations(&state)
 
-		// prefer require over remove TODO fix the other state the opposite way?
-		for _, name := range state.Require {
-			slices.DeleteFunc(state.Remove, func(s string) bool {
-				return s == name
+		// prefer require over remove
+		schema[name] = state.SetRels(am.State{
+			Require: state.Require.Sub(schema[name].Remove),
+		})
+
+		// find last step idx
+		num := amhelp.TagValueInt(state.Tags, "idx")
+		if num > idxLast {
+			idxLast = num
+		}
+	}
+
+	// all same-indexes remove each other
+	for i := range idxLast + 1 {
+		states := schema.FilterByTag("idx:" + strconv.Itoa(i)).Names()
+		for _, s := range states {
+			schema[s] = schema[s].SetRels(am.State{
+				Remove: states,
 			})
+
+			// next index can only require a #final from lower indexes
+			if i == 0 {
+				continue
+			}
+			for ii, s2 := range schema[s].Require {
+				target := schema[s2]
+				targetIdx := amhelp.TagValue(target.Tags, "idx")
+				targetSiblings := schema.FilterByTag("idx:" + targetIdx)
+				if !target.HasTag("final") && len(targetSiblings) > 0 {
+					finalNames := targetSiblings.FilterByTag("final").Names()
+					if len(finalNames) > 0 {
+						schema[s].Require[ii] = finalNames[0]
+					}
+				}
+			}
 		}
 	}
 
@@ -423,17 +474,67 @@ func (a *Agent) processStepSchema(ctx context.Context, res *sa.ResultGenSteps) (
 	}
 
 	// merge steps schema into memory
-	memSchema := am.SchemaMerge(a.mem.Schema(), schema)
+	memSchema := a.mem.Schema().Merge(schema)
 	stepNames := sortSteps(schema)
-	newNames := slices.Concat(a.mem.StateNames(), stepNames)
+	newNames := a.mem.StateNames().Add(stepNames)
 
 	a.ValFile(nil, "mem", memSchema, "yaml")
 
-	err := validateStepSchema(memSchema, stepNames, newNames)
+	err := a.validateStepSchema(memSchema, stepNames, newNames)
 	if err != nil {
 		a.ValFile(nil, "steps-failed", schemaRAW, "yaml")
 		return nil, nil, err
 	}
 
 	return memSchema, newNames, nil
+}
+
+func (a *Agent) cookingSteps() (am.S, error) {
+	if a.mem == nil {
+		return nil, fmt.Errorf("no memory mach")
+	}
+	return sortSteps(a.mem.Schema()), nil
+}
+
+func (a *Agent) validateStepSchema(schema am.Schema, stepStates, allStates am.S) error {
+	// TODO check min steps amount
+
+	// check if going 1,2,3..n will end on MealReady
+	mach := am.New(context.Background(), schema, &am.Opts{
+		Id:     a.Mach().Id() + "-steptest-" + stepStates.Hash(),
+		Parent: a.Mach(),
+	})
+	mach.SetGroupsString(map[string]S{
+		"Steps":       stepStates,
+		"Ingredients": allStates.FilterMatch(sa.MatchIngredients),
+	}, []string{"Steps"})
+	if a.Config.Debug.DBGAddr != "" {
+		addr, _, _, _ := a.Config.Debug.DbgAddrs()
+		if addr != "" {
+			amhelp.MachDebug(mach, addr, a.Config.Agent.Log.MachLevel, false, amhelp.SemConfigEnv(true))
+		}
+	}
+	var err error
+	for _, step := range stepStates {
+		if step == states.MemMealReady {
+			continue
+		}
+		if mach.Add1(step, nil) == am.Canceled {
+			err = fmt.Errorf("%s canceled", step)
+			break
+		}
+	}
+
+	// flush dbg
+	if a.Config.Debug.DBGAddr != "" {
+		time.Sleep(time.Second)
+	}
+
+	if !mach.Is1(states.MemMealReady) {
+		return fmt.Errorf("step schema is invalid: %w", err)
+	}
+
+	mach.Dispose()
+
+	return nil
 }
