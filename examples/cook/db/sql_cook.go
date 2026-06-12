@@ -3,7 +3,6 @@ package db
 import (
 	"database/sql"
 
-	_ "github.com/ncruces/go-sqlite3/embed"
 	"github.com/ncruces/go-sqlite3/gormlite"
 	"github.com/pancsta/secai/shared"
 	"gorm.io/gorm"

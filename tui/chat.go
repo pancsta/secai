@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gdamore/tcell/v2"
 	"github.com/navidys/tvxwidgets"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
 	"github.com/pancsta/cview"
-	"github.com/pancsta/tcell-v2"
 
 	"github.com/pancsta/secai/shared"
 )
@@ -27,7 +27,6 @@ type Chat struct {
 	clockView *tvxwidgets.Plot
 	dispose   func() error
 	t         *TUI
-	machChat  *am.Machine
 }
 
 func NewChat(tui *TUI, msgs []*shared.Msg) *Chat {
@@ -45,6 +44,7 @@ func NewChat(tui *TUI, msgs []*shared.Msg) *Chat {
 // ///// HANDLERS
 
 // ///// ///// /////
+var _ = ss.UICleanOutput
 
 func (c *Chat) UICleanOutputState(e *am.Event) {
 	c.msgs = nil
@@ -53,11 +53,17 @@ func (c *Chat) UICleanOutputState(e *am.Event) {
 	})
 }
 
+var _ = ss.UIButtonSend
+
 func (c *Chat) UIButtonSendState(e *am.Event) {
-	c.t.agent.EvAdd1(e, ss.Prompt, Pass(&A{Prompt: c.prompt.GetText()}))
+	c.t.agent.EvAdd1(e, ss.Prompt, am.Pass(&shared.APrompt{
+		Prompt: c.prompt.GetText(),
+	}))
 	c.prompt.SetText("")
 	c.t.Redraw()
 }
+
+var _ = ss.UIButtonInter
 
 func (c *Chat) UIButtonInterState(e *am.Event) {
 	c.t.agent.EvRemove1(e, ss.UIButtonInter, nil)
@@ -69,6 +75,8 @@ func (c *Chat) UIButtonInterState(e *am.Event) {
 	}
 	c.t.Redraw()
 }
+
+var _ = ss.InputBlocked
 
 func (c *Chat) InputBlockedEnd(e *am.Event) {
 	// TODO
@@ -84,11 +92,13 @@ func (c *Chat) InputBlockedState(e *am.Event) {
 	c.t.Redraw()
 }
 
+var _ = ss.Requesting
+
 // RequestingState with progress indicator
 func (c *Chat) RequestingState(e *am.Event) {
 	ctx := c.t.agent.NewStateCtx(ss.Requesting)
 
-	c.machChat.Fork(ctx, e, func() {
+	c.t.MachTUI.Fork(ctx, e, func() {
 		c.requestingProgress(ctx)
 	})
 }
@@ -99,8 +109,10 @@ func (c *Chat) RequestingEnd(e *am.Event) {
 	})
 }
 
+var _ = ss.UIMsg
+
 func (c *Chat) UIMsgEnter(e *am.Event) bool {
-	m := ParseArgs(e.Args).Msg
+	m := am.ParseArgs[shared.AUIMsg](e.Args).Msg
 	l := len(c.msgs)
 
 	// skip duplicates
@@ -108,7 +120,8 @@ func (c *Chat) UIMsgEnter(e *am.Event) bool {
 }
 
 func (c *Chat) UIMsgState(e *am.Event) {
-	c.msgs = append(c.msgs, ParseArgs(e.Args).Msg)
+	msg := am.ParseArgs[shared.AUIMsg](e.Args).Msg
+	c.msgs = append(c.msgs, msg)
 	text := c.renderMsgs()
 
 	go c.t.app.QueueUpdateDraw(func() {
@@ -116,6 +129,8 @@ func (c *Chat) UIMsgState(e *am.Event) {
 		c.msgsView.ScrollToEnd()
 	})
 }
+
+var _ = ss.Interrupted
 
 func (c *Chat) InterruptedState(e *am.Event) {
 	c.butInter.SetLabel("Resume")
@@ -127,11 +142,14 @@ func (c *Chat) InterruptedEnd(e *am.Event) {
 	c.t.Redraw()
 }
 
+var _ = ss.Prompt
+
 func (c *Chat) PromptState(e *am.Event) {
+	args := am.ParseArgs[shared.APrompt](e.Args)
+
 	// set the ignored prompt back into the UI
 	if c.t.agent.Is1(ss.Interrupted) {
-		c.prompt.SetText(ParseArgs(e.Args).Prompt)
-		return
+		c.prompt.SetText(args.Prompt)
 	}
 }
 
@@ -142,7 +160,8 @@ func (c *Chat) PromptState(e *am.Event) {
 // ///// ///// /////
 
 func (c *Chat) Init() error {
-	if err := c.t.agent.BindHandlers(c); err != nil {
+	opts := am.BindOpts{Id: "tui.Chat"}
+	if _, err := c.t.agent.HandlersBind(c, opts); err != nil {
 		return err
 	}
 
@@ -170,7 +189,7 @@ func (c *Chat) Init() error {
 
 		// submit TODO UI state
 		case tcell.KeyEnter:
-			res := c.t.agent.Add1(ss.Prompt, Pass(&A{
+			res := c.t.agent.Add1(ss.Prompt, am.Pass(&shared.APrompt{
 				Prompt: c.prompt.GetText(),
 			}))
 			if res == am.Canceled {

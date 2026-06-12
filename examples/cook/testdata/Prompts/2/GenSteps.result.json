@@ -1,0 +1,90 @@
+{
+	"Schema": {
+		"CarrotEggCombined": {
+			"remove": [
+				"CarrotEggCombining"
+			],
+			"tags": [
+				"idx:6",
+				"final",
+				"time:2m"
+			]
+		},
+		"CarrotEggCombining": {
+			"require": [
+				"RiceCooked",
+				"EggScrambled"
+			],
+			"remove": [
+				"CarrotEggCombined"
+			],
+			"tags": [
+				"idx:6"
+			]
+		},
+		"CarrotsDiced": {
+			"tags": [
+				"idx:1"
+			]
+		},
+		"CarrotsSauteed": {
+			"remove": [
+				"CarrotsSauteeing"
+			],
+			"tags": [
+				"idx:4",
+				"final",
+				"time:4m"
+			]
+		},
+		"CarrotsSauteeing": {
+			"remove": [
+				"CarrotsSauteed"
+			],
+			"tags": [
+				"idx:4"
+			]
+		},
+		"EggScrambled": {
+			"remove": [
+				"EggScrambling"
+			],
+			"tags": [
+				"idx:5",
+				"final",
+				"time:2m"
+			]
+		},
+		"EggScrambling": {
+			"require": [
+				"CarrotsSauteed"
+			],
+			"remove": [
+				"EggScrambled"
+			],
+			"tags": [
+				"idx:5"
+			]
+		},
+		"EggsBeaten": {
+			"tags": [
+				"idx:2"
+			]
+		},
+		"MealReady": {
+			"auto": true,
+			"require": [
+				"CarrotEggCombined"
+			],
+			"tags": [
+				"final"
+			]
+		},
+		"RiceCooked": {
+			"tags": [
+				"idx:3",
+				"time:15m"
+			]
+		}
+	}
+}

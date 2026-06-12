@@ -2,14 +2,24 @@ package types
 
 import (
 	"encoding/gob"
-	"encoding/json"
 
-	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
+	"github.com/orsinium-labs/enum"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
 	"github.com/pancsta/secai/shared"
+	"github.com/pancsta/secai/web/browser/states"
 )
 
-const RouteFoo = "/foo"
+// ID enum
+type ID enum.Member[string]
+
+var (
+	IDDashboardPage  = ID{"dash"}
+	IDDashboardAgent = ID{IDDashboardPage.Value + "-agent"}
+	IDAgentUIPage    = ID{"agentui"}
+	IDAgentUIAgent   = ID{IDAgentUIPage.Value + "-agent"}
+
+	MachIDEnum = enum.New(IDAgentUIPage, IDDashboardPage, IDDashboardAgent, IDAgentUIAgent)
+)
 
 type DataDashboard struct {
 	Metrics *DataMetrics
@@ -37,83 +47,81 @@ type DataBoostrap struct {
 	MachStates am.S
 }
 
+// GenBrowserID returns an ID for a browser-side state machine.
+func GenBrowserID(typeID ID, agentID string, suffix string) string {
+	id := "bro-" + typeID.Value
+	if agentID != "" {
+		id += "-" + agentID
+	}
+	if suffix != "" {
+		id += "-" + suffix
+	}
+
+	return id
+}
+
+// GenServerID returns an ID for a server-side state machine.
+func GenServerID(typeID ID, agentID string, suffix string) string {
+	id := "srv-" + typeID.Value
+	if agentID != "" {
+		id += "-" + agentID
+	}
+	if suffix != "" {
+		id += "-" + suffix
+	}
+
+	return id
+}
+
 // ///// ///// /////
 
 // ///// ARGS (BROWSER)
 
 // ///// ///// /////
 
-func init() {
-	gob.Register(ARpc{})
-	gob.Register(shared.A{})
-}
-
 const APrefix = "browser"
 
-// A is a struct for node arguments. It's a typesafe alternative to [am.A].
-type A struct {
+type Args struct {
+	am.ArgsBase
+}
+
+func (Args) ArgsPrefix() string {
+	return APrefix
+}
+
+// -----
+
+type AConfig struct {
+	Args
+
 	Config *shared.Config
-	// TODO log non empty fields with counters
+}
+
+func (AConfig) ArgsState() string {
+	return states.PageStates.Config
+}
+
+// -----
+
+type AData struct {
+	Args
+
 	DataDash *DataDashboard
 	// TODO log non empty fields with counters
 	DataAgent   *DataAgent
 	MachTimeSum uint64
-
-	// non-RPC fields
-
-	// ...
 }
 
-// ARpc is a subset of [A] that can be passed over RPC.
-type ARpc struct {
-	Config *shared.Config
-	// TODO log non empty fields with counters
-	DataDash *DataDashboard
-	// TODO log non empty fields with counters
-	DataAgent   *DataAgent
-	MachTimeSum uint64
+func (AData) ArgsState() string {
+	return states.PageStates.Data
 }
 
-// ParseArgs extracts A from [am.Event.Args][APrefix].
-func ParseArgs(args am.A) *A {
-	if r, ok := args[APrefix].(*ARpc); ok {
-		return amhelp.ArgsToArgs(r, &A{})
-	} else if r, ok := args[APrefix].(ARpc); ok {
-		return amhelp.ArgsToArgs(&r, &A{})
+// ----- RPC boilerplate
+
+func init() {
+	for _, arg := range ArgsRPC {
+		gob.Register(arg)
 	}
-	if a, _ := args[APrefix].(*A); a != nil {
-		return a
-	}
-	return &A{}
 }
 
-// Pass prepares [am.A] from A to pass to further mutations.
-func Pass(args *A) am.A {
-	return am.A{APrefix: args}
-}
-
-// PassRpc prepares [am.A] from A to pass over RPC.
-func PassRpc(args *A) am.A {
-	return am.A{APrefix: amhelp.ArgsToArgs(args, &ARpc{})}
-}
-
-// LogArgs is an args logger for A.
-func LogArgs(args am.A) map[string]string {
-	a := ParseArgs(args)
-	if a == nil {
-		return nil
-	}
-
-	return amhelp.ArgsToLogMap(a, 0)
-}
-
-// ParseRpc parses am.A to *ARpc wrapped in am.A. Useful for REPLs.
-func ParseRpc(args am.A) am.A {
-	ret := am.A{APrefix: &ARpc{}}
-	jsonArgs, err := json.Marshal(args)
-	if err == nil {
-		json.Unmarshal(jsonArgs, ret[APrefix])
-	}
-
-	return ret
-}
+var ArgsRPC = []am.ArgsApi{AConfig{}, AData{}}

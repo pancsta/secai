@@ -34,9 +34,7 @@ type PageGroupsDef struct {
 }
 
 // PageSchema represents all relations and properties of PageStates.
-var PageSchema = SchemaMerge(
-	// inherit from BasicSchema
-	ssam.BasicSchema,
+var PageSchema = ssam.BasicSchema.Merge(
 	// inherit from rpc/NetSourceSchema
 	ssrpc.StateSourceSchema,
 	am.Schema{
@@ -97,35 +95,33 @@ type AgentUIGroupsDef struct {
 }
 
 // AgentUISchema represents all relations and properties of AgentUIStates.
-var AgentUISchema = SchemaMerge(
-	// inherit from PageSchema
-	PageSchema,
-	am.Schema{
+// inherit from PageSchema
+var AgentUISchema = PageSchema.Merge(am.Schema{
 
-		// agent UI
+	// agent UI
 
-		ssA.UIRenderStories: {
-			Multi:   true,
-			Require: S{ssA.RPCConnected},
-		},
-		ssA.UIMsg: {
-			Multi:   true,
-			Require: S{ssA.RPCConnected},
-		},
-		ssA.UIRenderClock: {
-			Multi:   true,
-			Require: S{ssA.RPCConnected},
-		},
-		ssA.UICleanOutput: {
-			Multi:   true,
-			Require: S{ssA.RPCConnected},
-		},
+	ssA.UIRenderStories: {
+		Multi:   true,
+		Require: S{ssA.RPCConnected},
+	},
+	ssA.UIMsg: {
+		Multi:   true,
+		Require: S{ssA.RPCConnected},
+	},
+	ssA.UIRenderClock: {
+		Multi:   true,
+		Require: S{ssA.RPCConnected},
+	},
+	ssA.UICleanOutput: {
+		Multi:   true,
+		Require: S{ssA.RPCConnected},
+	},
 
-		// piped
+	// piped
 
-		ssA.RPCConnected:  {},
-		ssA.RPCConnecting: {},
-	})
+	ssA.RPCConnected:  {},
+	ssA.RPCConnecting: {},
+})
 
 // EXPORTS AND GROUPS
 

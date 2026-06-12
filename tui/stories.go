@@ -49,9 +49,11 @@ func NewStories(tui *TUI, actions []shared.ActionInfo, stories []shared.StoryInf
 
 // ///// ///// /////
 
+var _ = ss.UIRenderStories
+
 func (s *Stories) UIRenderStoriesState(e *am.Event) {
 	mach := s.t.agent
-	args := ParseArgs(e.Args)
+	args := am.ParseArgs[shared.AUIRenderStories](e.Args)
 	if args.Actions != nil {
 		s.actions = args.Actions
 	}
@@ -73,6 +75,8 @@ func (s *Stories) UIRenderStoriesState(e *am.Event) {
 	s.t.Redraw()
 }
 
+var _ = ss.UICleanOutput
+
 func (s *Stories) UICleanOutputState(e *am.Event) {
 	s.stories = nil
 	s.actions = nil
@@ -86,7 +90,8 @@ func (s *Stories) UICleanOutputState(e *am.Event) {
 // ///// ///// /////
 
 func (s *Stories) Init() error {
-	if err := s.t.agent.BindHandlers(s); err != nil {
+	opts := am.BindOpts{Id: "tui.Stories"}
+	if _, err := s.t.agent.HandlersBind(s, opts); err != nil {
 		return err
 	}
 
@@ -196,7 +201,7 @@ func (s *Stories) addButton(action shared.ActionInfo, enabled bool) {
 			s.clicked.Store(new(action.ID))
 			but.SetBackgroundColor(themeButtonBgClicked)
 			s.t.Redraw()
-			s.t.agent.Add1(ss.StoryAction, Pass(&A{
+			s.t.agent.Add1(ss.StoryAction, am.Pass(&shared.AStoryAction{
 				ID: action.ID,
 			}))
 

@@ -52,7 +52,7 @@ func New(agent shared.AgentBaseAPI) (*Tool, error) {
 	}
 
 	// bind handlers
-	err = t.Mach().BindHandlers(t)
+	_, err = t.Mach().HandlersBind(t, am.BindOpts{Id: "Tool"})
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +60,7 @@ func New(agent shared.AgentBaseAPI) (*Tool, error) {
 	return t, nil
 }
 
-func (t *Tool) Document() *secai.Document {
+func (t *Tool) Document() *shared.Document {
 	doc := t.Doc.Clone()
 	doc.Clear()
 	if t.result == nil || len(t.result.Results) == 0 {
@@ -195,7 +195,7 @@ func (t *Tool) DockerCheckingState(e *am.Event) {
 	mach := t.Mach()
 	ctx := mach.NewStateCtx(ss.DockerChecking)
 
-	go func() {
+	mach.Fork(ctx, e, func() {
 		if ctx.Err() != nil {
 			return // expired
 		}
@@ -211,14 +211,14 @@ func (t *Tool) DockerCheckingState(e *am.Event) {
 		} else {
 			mach.EvAdd1(e, ss.DockerAvailable, nil)
 		}
-	}()
+	})
 }
 
 func (t *Tool) DockerStartingState(e *am.Event) {
 	mach := t.Mach()
 	ctx := mach.NewStateCtx(ss.DockerStarting)
 
-	go func() {
+	mach.Fork(ctx, e, func() {
 		if ctx.Err() != nil {
 			return // expired
 		}
@@ -253,5 +253,5 @@ func (t *Tool) DockerStartingState(e *am.Event) {
 
 		// next
 		mach.EvAdd1(e, ss.Ready, nil)
-	}()
+	})
 }

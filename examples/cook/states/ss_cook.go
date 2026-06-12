@@ -52,9 +52,6 @@ type CookStatesDef struct {
 	StoryMealReady          string
 	StoryMemoryWipe         string
 	StoryStartAgain         string
-	// TODO
-	// StorySmallTalk          string
-	// StoryWeatherTalk        string
 
 	// prompts
 
@@ -93,90 +90,86 @@ type CookGroupsDef struct {
 }
 
 // CookSchema represents all relations and properties of CookStates.
-var CookSchema = SchemaMerge(
-	// inherit from AgentLLM
-	ssllm.AgentLLMSchema,
-	am.Schema{
+// inherit from AgentLLM
+var CookSchema = ssllm.AgentLLMSchema.Merge(am.Schema{
+	// errors
 
-		// errors
+	ssC.ErrIngredients: {},
+	ssC.ErrCooking:     {},
 
-		ssC.ErrIngredients: {},
-		ssC.ErrCooking:     {},
+	// flow
 
-		// flow
+	ssC.IngredientsReady: {},
+	ssC.RecipeReady:      {Require: S{ssC.IngredientsReady}},
+	ssC.StepCompleted:    {Multi: true},
 
-		ssC.IngredientsReady: {},
-		ssC.RecipeReady:      {Require: S{ssC.IngredientsReady}},
-		ssC.StepCompleted:    {Multi: true},
+	// stories
 
-		// stories
+	ssC.StoryJoke:               {},
+	ssC.StoryWakingUp:           {Tags: S{ssbase.TagManual}},
+	ssC.StoryIngredientsPicking: {Tags: S{ssbase.TagPrompt}},
+	ssC.StoryRecipePicking:      {Tags: S{ssbase.TagPrompt}},
+	ssC.StoryCookingStarted:     {Tags: S{ssbase.TagPrompt}},
+	ssC.StoryMealReady: {
+		Tags:   S{ssbase.TagPrompt, ssbase.TagManual},
+		Remove: S{ssC.InputPending},
+	},
+	ssC.StoryMemoryWipe: {Tags: S{ssbase.TagPrompt}},
+	ssC.StoryStartAgain: {Tags: S{ssbase.TagPrompt}},
 
-		ssC.StoryJoke:               {},
-		ssC.StoryWakingUp:           {Tags: S{ssbase.TagManual}},
-		ssC.StoryIngredientsPicking: {Tags: S{ssbase.TagPrompt}},
-		ssC.StoryRecipePicking:      {Tags: S{ssbase.TagPrompt}},
-		ssC.StoryCookingStarted:     {Tags: S{ssbase.TagPrompt}},
-		ssC.StoryMealReady: {
-			Tags:   S{ssbase.TagPrompt, ssbase.TagManual},
-			Remove: S{ssC.InputPending},
-		},
-		ssC.StoryMemoryWipe: {Tags: S{ssbase.TagPrompt}},
-		ssC.StoryStartAgain: {Tags: S{ssbase.TagPrompt}},
+	// gen AI
 
-		// gen AI
+	ssC.RestoreJokes: {
+		Auto:    true,
+		Require: S{ssC.DBReady, ssC.CharacterReady},
+		Remove:  sgC.Jokes,
+	},
+	ssC.GenJokes: {
+		Require: S{ssC.CharacterReady, ssC.DBReady},
+		Remove:  sgC.Jokes,
+		Tags:    S{ssbase.TagPrompt},
+	},
+	ssC.JokesReady: {Remove: sgC.Jokes},
 
-		ssC.RestoreJokes: {
-			Auto:    true,
-			Require: S{ssC.DBReady, ssC.CharacterReady},
-			Remove:  sgC.Jokes,
-		},
-		ssC.GenJokes: {
-			Require: S{ssC.CharacterReady, ssC.DBReady},
-			Remove:  sgC.Jokes,
-			Tags:    S{ssbase.TagPrompt},
-		},
-		ssC.JokesReady: {Remove: sgC.Jokes},
+	ssC.GenSteps: {
+		Auto:    true,
+		Require: S{ssC.StoryCookingStarted},
+		Remove:  S{ssC.StepsReady},
+		Tags:    S{ssbase.TagPrompt},
+	},
+	ssC.StepsReady: {
+		Require: S{ssC.RecipeReady},
+		Remove:  S{ssC.GenSteps},
+	},
 
-		ssC.GenSteps: {
-			Auto:    true,
-			Require: S{ssC.StoryCookingStarted},
-			Remove:  S{ssC.StepsReady},
-			Tags:    S{ssbase.TagPrompt},
-		},
-		ssC.StepsReady: {
-			Require: S{ssC.RecipeReady},
-			Remove:  S{ssC.GenSteps},
-		},
+	ssC.GenStepComments: {
+		Auto:    true,
+		Require: S{ssC.StoryCookingStarted, ssC.StepsReady},
+		Remove:  S{ssC.StepCommentsReady},
+		Tags:    S{ssbase.TagPrompt},
+	},
+	ssC.StepCommentsReady: {Remove: S{ssC.GenStepComments}},
 
-		ssC.GenStepComments: {
-			Auto:    true,
-			Require: S{ssC.StoryCookingStarted, ssC.StepsReady},
-			Remove:  S{ssC.StepCommentsReady},
-			Tags:    S{ssbase.TagPrompt},
-		},
-		ssC.StepCommentsReady: {Remove: S{ssC.GenStepComments}},
+	ssC.Orienting: {
+		Multi: true,
+		Tags:  S{ssbase.TagPrompt},
+	},
+	ssC.OrientingMove: {},
 
-		ssC.Orienting: {
-			Multi: true,
-			Tags:  S{ssbase.TagPrompt},
-		},
-		ssC.OrientingMove: {},
+	// OVERRIDES
 
-		// OVERRIDES
-
-		ssC.Start: StateAdd(saLLM[ssLLM.Start], State{
-			Add: S{ssC.CheckStories, ssC.DBStarting},
-		}),
-		ssC.Ready: StateAdd(saLLM[ssLLM.Ready], State{
-			Auto:    true,
-			Require: S{ssC.CharacterReady, ssC.ResourcesReady},
-		}),
-		ssC.Interrupted: StateAdd(saLLM[ssLLM.Interrupted], State{
-			// stop these from happening when interrupted
-			Remove: sgC.Interruptable,
-		}),
-		ssC.Prompt: StateAdd(saLLM[ssLLM.Prompt], State{}),
-	})
+	ssC.Start: saLLM[ssLLM.Start].Extend(State{
+		Add: S{ssC.CheckStories, ssC.DBStarting},
+	}),
+	ssC.Ready: saLLM[ssLLM.Ready].Extend(State{
+		Auto:    true,
+		Require: S{ssC.CharacterReady, ssC.ResourcesReady},
+	}),
+	ssC.Interrupted: saLLM[ssLLM.Interrupted].Extend(State{
+		// stop these from happening when interrupted
+		Remove: sgC.Interruptable,
+	}),
+})
 
 // EXPORTS AND GROUPS
 
@@ -199,7 +192,7 @@ var (
 		Stories:       stories,
 		BootGen:       S{ssC.GenCharacter, ssC.GenJokes, ssC.GenResources},
 		BootGenReady:  S{ssC.CharacterReady, ssC.JokesReady, ssC.ResourcesReady},
-		Interruptable: SAdd(S{ssC.CheckingMenuRefs}, stories),
+		Interruptable: stories.Add1(ssC.CheckingMenuRefs),
 
 		Jokes: S{ssC.JokesReady, ssC.RestoreJokes, ssC.GenJokes},
 	}, ssllm.AgentLLMGroups)

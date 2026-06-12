@@ -262,7 +262,7 @@ Screenshots and [YouTube](https://youtu.be/0VJzO1S-gV0) are also available.
 ## Features
 
 - multi-prompt agency
-  - a single agent/bot is built of several AI prompts
+  - a single agent / bot is built of several AI prompts
   - each state can have a prompt bound to it, with dedicated history and documents
 - atomic consensus with relations and negotiation
   - eg states excluding each other can't be active simultaneously
@@ -272,10 +272,12 @@ Screenshots and [YouTube](https://youtu.be/0VJzO1S-gV0) are also available.
 - declarative flow definitions for non-linear flows
 - cancellation support (interrupts)
 - choice menu (list of offers)
+- state history with queries
 - prompt history
   - embedded SQLite
   - JSONL log
   - "latest prompt" files
+- reusable SQLite with auto migrations
 - proactive stories with actors
   - stories have actions and progress
 - LLM-sourced story switching (orienting)
@@ -364,11 +366,11 @@ TUI:
 
 REPL:
 - http://localhost:13179
-- ./cook repl
+- ./aigent-cook repl
 
 Log:
 - http://localhost:12858
-- ./cook log --tail
+- ./aigent-cook log --tail
 - tail -f tmp-cook/cook.jsonl -n 100 | fblog -d -x msg -x time -x level
 
 Debugger:
@@ -557,11 +559,11 @@ We can use one of the examples as a starting template. It allows for further sem
 prompt an "agent", while **secai** treats prompts as simple DB queries with IoC (Inversion of Control). Tool usage
 happens manually through typesafe params / results. This approach increases determinism, safety, and overfall control.
 This multi-prompt workflow forms an actual **bot** / **agent**. This does not mean agents can't be composed into larger
-groups, which happens simply on the state level (via piping / aRPC), as the underlying workflow engine (asyncmachine)
+groups, which happens through stateful dialog, state piping, and aRPC. The underlying workflow engine [asyncmachine-go](https://asyncmachine.dev)
 doesn't depend on AI at all.
 
 The flow graph, unlike in regular workflows, is not path-based - each node (state) can be activated anytime (same as calling a function),
-and the edges between nodes are meant to resolve the **state consensus**. It's a directed multi-graph of states with a 
+and the edges between nodes are meant to resolve the **state consensus**. It's a directed multigraph of states with a 
 negotiation phase.
 
 ## Scripting

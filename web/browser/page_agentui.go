@@ -7,6 +7,7 @@ import (
 	"time"
 
 	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
+	am "github.com/pancsta/asyncmachine-go/pkg/machine"
 	. "github.com/pancsta/go-app/pkg/app"
 
 	"github.com/pancsta/secai/shared"
@@ -14,10 +15,12 @@ import (
 
 const idMsgs = "msgs"
 
+var Pass = am.Pass
+
 func (a *AgentUI) Render() UI {
 	a.Dump("Render", nil)
 	if !a.Ready() {
-		return a.spinner()
+		return a.Spinner()
 	}
 
 	a.updateClock()
@@ -28,7 +31,7 @@ func (a *AgentUI) Render() UI {
 		a.msgsScrollPending = false
 	}
 
-	cfg := a.boot.Config
+	cfg := a.Boot.Config
 	return []UI{
 
 		// <HTML>
@@ -51,8 +54,9 @@ func (a *AgentUI) Render() UI {
 					Div().Class("card-body p-4 h-full").Body(
 						H2().Class("card-title text-sm text-base-content/50 uppercase tracking-wider self-center").Text(
 							cfg.Agent.Label),
-						P().Class("text-xs text-base-content/70 overflow-y-auto").
-							Text(cfg.Agent.Intro),
+						P().Class("text-xs text-base-content/70 overflow-y-auto").Body(
+							Raw("<span>"+strings.ReplaceAll(cfg.Agent.Intro, "\n", "<br>")+"</span>"),
+						),
 					),
 				),
 
@@ -77,7 +81,7 @@ func (a *AgentUI) renderStories() UI {
 				time.Since(story.DeactivatedAt).Minutes(), story.LastActiveTicks))
 		}
 		class := "opacity-60"
-		if a.agent.Is1(story.State) {
+		if a.Agent.Is1(story.State) {
 			class = "bg-success/10 p-2 rounded-lg border border-success/30"
 			badge = Div().Class("badge badge-success badge-sm animate-pulse").Text("Active")
 		}
@@ -157,7 +161,7 @@ func (a *AgentUI) renderButton(action shared.ActionInfo, enabled bool) UI {
 
 	if action.Action && enabled {
 		button.OnClick(func(ctx Context, e Event) {
-			a.agent.Add1(ssA.StoryAction, PassRpcBase(&ABase{
+			a.Agent.Add1(ssA.StoryAction, Pass(&shared.AStoryAction{
 				ID: action.ID,
 			}))
 			a.buttonClicked = action.ID
@@ -196,7 +200,7 @@ func (a *AgentUI) renderProgress(action shared.ActionInfo, enabled bool) UI {
 }
 
 func (a *AgentUI) renderPromptForm() UI {
-	agent := a.agentClient.NetMach
+	agent := a.AgentClient.NetMach
 
 	// init
 	textarea := Textarea()
@@ -262,10 +266,8 @@ func (a *AgentUI) renderMsgs() UI {
 			// <HTML>
 
 			Div().Class("chat").Body(
-				divFrom.Class("chat-header opacity-50 text-xs mb-1 capitalize").Text(
-					m.From.Value,
-				),
-				divText.Class("chat-bubble italic text-sm").Body(Raw(
+				divFrom.Class("chat-header text-xs mb-1 capitalize"),
+				divText.Class("chat-bubble italic text-sm overflow-x-scroll").Body(Raw(
 					"<div>"+txt+"</div>",
 				)),
 			),
@@ -275,16 +277,30 @@ func (a *AgentUI) renderMsgs() UI {
 		}[0]
 
 		// conditions
+		// TODO day on old dates
+		date := m.CreatedAt.Format(time.Kitchen)
 		switch m.From {
 		case shared.FromUser:
 			el.Class("chat-end")
 			divText.Class("chat-bubble-secondary")
+			divFrom.Body(
+				Time().Class("text-xs opacity-50").Text(date),
+				Text(m.From.Value),
+			)
 		case shared.FromNarrator:
 			el.Class("chat-start")
 			divText.Class("chat-bubble-neutral")
+			divFrom.Body(
+				Text(m.From.Value),
+				Time().Class("text-xs opacity-50").Text(date),
+			)
 		case shared.FromAssistant:
 			el.Class("chat-start")
 			divText.Class("chat-bubble-primary")
+			divFrom.Body(
+				Text(m.From.Value),
+				Time().Class("text-xs opacity-50").Text(date),
+			)
 		}
 
 		rows[i] = el
@@ -327,7 +343,7 @@ func (a *AgentUI) renderClock() UI {
 // UI UTILS
 
 func (a *AgentUI) scrollMsgs() {
-	a.app.Dispatch(func(ctx Context) {
+	a.App.Dispatch(func(ctx Context) {
 		Window().Call("scrollMsgs")
 	})
 }
@@ -342,7 +358,7 @@ func (a *AgentUI) msgsScrolled() bool {
 func (a *AgentUI) clickInterrupt(ctx Context, e Event) {
 	e.PreventDefault()
 	e.StopImmediatePropagation()
-	agent := a.agentClient.NetMach
+	agent := a.AgentClient.NetMach
 
 	a.formSubmitting = true
 	go func() {
@@ -373,14 +389,14 @@ func (a *AgentUI) promptCtrlEnter(ctx Context, e Event) { // 1. Check if the pre
 func (a *AgentUI) promptSubmit(ctx Context, e Event) {
 	a.Dump("promptSubmit", a.formPrompt)
 	e.PreventDefault()
-	agent := a.agentClient.NetMach
+	agent := a.AgentClient.NetMach
 
 	// validate
 	if a.formPrompt == "" {
 		return
 	}
 
-	args := &ABase{
+	args := &shared.APrompt{
 		Prompt: a.formPrompt,
 	}
 
@@ -391,7 +407,7 @@ func (a *AgentUI) promptSubmit(ctx Context, e Event) {
 		}()
 
 		when := agent.WhenTicks(ssA.Prompt, 1, ctx.Context)
-		agent.Add1(ssA.Prompt, PassRpcBase(args))
+		agent.Add1(ssA.Prompt, Pass(args))
 		err := amhelp.WaitForAll(ctx.Context, 3*time.Second, when)
 		if err != nil {
 			a.Dump("promptSubmit/timeout", nil)

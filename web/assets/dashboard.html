@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark" class="bg-base-300">
+<html lang="en" data-theme="business" class="bg-base-300">
 <head>
   <meta charset="UTF-8">
   <meta charset="UTF-8"/>
@@ -9,102 +9,160 @@
   <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
   <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css"/>
 </head>
-<body class="p-10 bg-base-300">
-<div id="app">
+<body class="bg-base-300">
 
-  <div class="card card-border bg-base-100 mb-5">
-    <div class="card-body">
-      <h2 class="card-title text-warning">AI-gent Cook Dashboard</h2>
-      <p>This bot will help you pick a recipe from available ingredients, break it into actionable steps, and follow you
-        during the cooking process. You're using a technology preview of <a class="text-info hover:underline"
-            href="https://ai-gents.work">secai</a>.</p>
-    </div>
+<div class="drawer drawer-open">
+  <input id="my-drawer-4" type="checkbox" class="drawer-toggle peer" checked/>
 
-    <div class="text-right pb-3 pr-3">
-      <div class="badge badge-success">Connection OK</div>
-      <div class="badge badge-error">Config Error</div>
-    </div>
-  </div>
-
-  <div class="content-center">
-    <fieldset class="fieldset bg-base-100 border-base-300 rounded-box w-xs border p-4 mb-5 mx-auto">
-      <legend class="fieldset-legend text-lg">Config</legend>
-      <label class="select">
-        <span class="label">AI backend</span>
-        <select class="select">
-          <option>OpenAI</option>
-          <option>DeepSeek</option>
-          <option>Gemini</option>
-          <option>OpenAI compatible</option>
-        </select>
+  <div class="drawer-content">
+    <nav class="navbar w-full bg-base-300">
+      <label for="my-drawer-4" aria-label="toggle sidebar" class="btn btn-square btn-ghost">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" stroke-linejoin="round" stroke-linecap="round"
+            stroke-width="2" fill="none" stroke="currentColor" class="my-1.5 inline-block size-4">
+          <path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"></path>
+          <path d="M9 4v16"></path>
+          <path d="M14 10l2 2l-2 2"></path>
+        </svg>
       </label>
+      <div class="px-4">Dashboard</div>
+    </nav>
 
-      <input class="input validator" type="password" required placeholder="API key"/>
-      <div class="validator-hint">API key not valid</div>
+    <div class="p-4">
 
-      <input class="input validator" type="url" required placeholder="Base URL"/>
-      <div class="validator-hint">URL not valid</div>
-      <input class="input validator" type="password" required placeholder="API Key"/>
-      <div class="validator-hint">API key not valid</div>
-      <input class="input" required placeholder="Model name"/>
+      <div class="card card-border bg-base-100 mb-5">
+        <div class="card-body">
+          <h2 class="card-title text-warning">AI-gent Cook</h2>
+          <p>This bot will help you pick a recipe from available ingredients, break it into actionable steps, and
+            follow you
+            during the cooking process. You're using a technology preview of <a class="text-info hover:underline"
+                href="https://ai-gents.work">secai</a>.</p>
+        </div>
 
-      <button class="btn btn-neutral mt-4">Save</button>
-    </fieldset>
+        <div class="text-right pb-3 pr-3">
+          <div class="badge badge-success">Connection OK</div>
+          <div class="badge badge-error">Config Error</div>
+        </div>
+      </div>
+
+      <h2 class="text-xl mb-5">Stats</h2>
+      <ul class="list bg-base-100 rounded-box mb-5">
+
+        <li class="list-row">
+          <div class="w-20 pt-3">AI req</div>
+          <div class="tooltip" data-tip="5">
+            <progress class="progress mt-4" value="5" max="10"></progress>
+          </div>
+          <div class="size-3 pt-3">1</div>
+        </li>
+
+        <li class="list-row">
+          <div class="w-20 pt-3">Tool req</div>
+          <div class="tooltip" data-tip="0">
+            <progress class="progress mt-4" value="0" max="10"></progress>
+          </div>
+          <div class="size-3 pt-3">1</div>
+        </li>
+      </ul>
+
+      <div class="content-center hidden">
+        <fieldset class="fieldset bg-base-100 border-base-300 rounded-box w-xs border p-4 mb-5 mx-auto">
+          <legend class="fieldset-legend text-lg">Config</legend>
+          <label class="select">
+            <span class="label">AI backend</span>
+            <select class="select">
+              <option>OpenAI</option>
+              <option>DeepSeek</option>
+              <option>Gemini</option>
+              <option>OpenAI compatible</option>
+            </select>
+          </label>
+
+          <input class="input validator" type="password" required placeholder="API key"/>
+          <div class="validator-hint">API key not valid</div>
+
+          <input class="input validator" type="url" required placeholder="Base URL"/>
+          <div class="validator-hint">URL not valid</div>
+          <input class="input validator" type="password" required placeholder="API Key"/>
+          <div class="validator-hint">API key not valid</div>
+          <input class="input" required placeholder="Model name"/>
+
+          <button class="btn btn-neutral mt-4">Save</button>
+        </fieldset>
+      </div>
+
+      <div class="mockup-code w-full bg-black mb-5">
+        <pre>AI-gent Cook v0.4.1-0.20260213101021-da4ea2c7db71+dirty</pre>
+        <pre></pre>
+        <pre>Config:</pre>
+        <pre>- config/cook.kdl</pre>
+        <pre></pre>
+        <pre>Web TUI:</pre>
+        <pre>- <a target=_blank class="text-info hover:underline"
+            href="http://localhost:12854">http://localhost:12854</a></pre>
+        <pre></pre>
+        <pre>TUI:</pre>
+        <pre>- ssh localhost -p 7955 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no</pre>
+        <pre></pre>
+        <pre>Log:</pre>
+        <pre>- tail -f tmp/cook/cook.jsonl -n 100 | fblog -d -x msg -x time -x level</pre>
+        <pre></pre>
+        <pre>Web REPL:</pre>
+        <pre>- <a target=_blank class="text-info hover:underline"
+            href="http://localhost:12855">http://localhost:12855</a></pre>
+        <pre></pre>
+        <pre>REPL:</pre>
+        <pre>- ./arpc --dir tmp/cook</pre>
+        <pre></pre>
+        <pre>https://ai-gents.work</pre>
+        <pre>WASM relay debug, loading .env</pre>
+        <pre>WASM relay listening on localhost:12854</pre>
+      </div>
+
+      <footer class="footer sm:footer-horizontal footer-center rounded-box bg-base-100 text-base-content p-4">
+        <aside>
+          <p>2025-2026 <a class="text-info hover:underline" href="https://ai-gents.work">AI-gents.work</a></p>
+        </aside>
+      </footer>
+
+    </div>
   </div>
 
-  <div class="mockup-code w-full mb-5">
-    <pre>AI-gent Cook v0.4.1-0.20260213101021-da4ea2c7db71+dirty</pre>
-    <pre></pre>
-    <pre>Config:</pre>
-    <pre>- config/cook.kdl</pre>
-    <pre></pre>
-    <pre>Web TUI:</pre>
-    <pre>- <a target=_blank class="text-info hover:underline"
-        href="http://localhost:12854">http://localhost:12854</a></pre>
-    <pre></pre>
-    <pre>TUI:</pre>
-    <pre>- ssh localhost -p 7955 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no</pre>
-    <pre></pre>
-    <pre>Log:</pre>
-    <pre>- tail -f tmp/cook/cook.jsonl -n 100 | fblog -d -x msg -x time -x level</pre>
-    <pre></pre>
-    <pre>Web REPL:</pre>
-    <pre>- <a target=_blank class="text-info hover:underline"
-        href="http://localhost:12855">http://localhost:12855</a></pre>
-    <pre></pre>
-    <pre>REPL:</pre>
-    <pre>- ./arpc --dir tmp/cook</pre>
-    <pre></pre>
-    <pre>https://ai-gents.work</pre>
-    <pre>WASM relay debug, loading .env</pre>
-    <pre>WASM relay listening on localhost:12854</pre>
+  <div class="drawer-side z-10 peer-checked:[&_.sidebar-panel]:w-14 peer-checked:[&_.sidebar-text]:hidden">
+    <label for="my-drawer-4" aria-label="close sidebar" class="drawer-overlay"></label>
+
+    <div
+        class="sidebar-panel flex min-h-full flex-col items-start bg-base-200 w-64 transition-[width] duration-300 overflow-hidden">
+      <ul class="menu w-full grow flex-nowrap">
+
+        <li>
+          <button class="flex items-center" title="Homepage">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" stroke-linejoin="round" stroke-linecap="round"
+                stroke-width="2" fill="none" stroke="currentColor" class="my-1.5 shrink-0 size-5">
+              <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"></path>
+              <path
+                  d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+            </svg>
+            <span class="sidebar-text whitespace-nowrap ml-2">Homepage</span>
+          </button>
+        </li>
+
+        <li>
+          <button class="flex items-center" title="Settings">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" stroke-linejoin="round" stroke-linecap="round"
+                stroke-width="2" fill="none" stroke="currentColor" class="my-1.5 shrink-0 size-5">
+              <path d="M20 7h-9"></path>
+              <path d="M14 17H5"></path>
+              <circle cx="17" cy="17" r="3"></circle>
+              <circle cx="7" cy="7" r="3"></circle>
+            </svg>
+            <span class="sidebar-text whitespace-nowrap ml-2">Settings</span>
+          </button>
+        </li>
+
+      </ul>
+    </div>
   </div>
-
-  <h2 class="text-xl mb-5">Active Requests</h2>
-  <ul class="list bg-base-100 rounded-box mb-5">
-
-    <li class="list-row">
-      <div class="size-10 pt-3">AI</div>
-      <div class="tooltip" data-tip="5">
-        <progress class="progress mt-4" value="5" max="10"></progress>
-      </div>
-      <div class="size-3 pt-3">1</div>
-    </li>
-
-    <li class="list-row">
-      <div class="size-10 pt-3">Tools</div>
-      <div class="tooltip" data-tip="0">
-        <progress class="progress mt-4" value="0" max="10"></progress>
-      </div>
-      <div class="size-3 pt-3">1</div>
-    </li>
-  </ul>
-
-  <footer class="footer sm:footer-horizontal footer-center rounded-box bg-base-100 text-base-content p-4">
-    <aside>
-      <p>2025-2026 <a class="text-info hover:underline" href="https://ai-gents.work">AI-gents.work</a></p>
-    </aside>
-  </footer>
 </div>
+
 </body>
 </html>

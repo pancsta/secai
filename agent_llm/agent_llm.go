@@ -4,10 +4,12 @@ package agent_llm
 import (
 	"context"
 	"database/sql"
+	"encoding/gob"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
+	"slices"
 	"strings"
 	"sync/atomic"
 
@@ -23,6 +25,12 @@ import (
 	"github.com/pancsta/secai/agent_llm/states"
 	"github.com/pancsta/secai/shared"
 )
+
+// TODO move
+var ErrRetried = errors.New("retires reached")
+
+// TODO config
+var retires = 5
 
 type S = am.S
 
@@ -51,6 +59,9 @@ var _ shared.AgentQueries[sqlc.Queries] = &AgentLLM{}
 type AgentLLM struct {
 	*secai.AgentBase
 
+	// config
+	orientingThreshold float32
+
 	// data
 
 	Character     atomic.Pointer[sa.ResultGenCharacter]
@@ -65,8 +76,24 @@ type AgentLLM struct {
 	POrienting        *sa.PromptOrienting
 	PConfigTest       *sa.PromptConfigTest
 
-	dbQueries    *sqlc.Queries
-	DocCharacter *secai.Document
+	dbQueries         *sqlc.Queries
+	DocCharacter      *shared.Document
+	CharacterReadyMsg string
+}
+
+type AgentLLMDeps struct {
+	LogArgs am.LogArgsMapperFn
+	Groups  any
+	States  am.States
+	// RPC args for REPL
+	ArgsREPL           []am.ArgsApi
+	PromptGenCharacter *sa.PromptGenCharacter
+	PromptGenResources *sa.PromptGenResources
+	PromptOrienting    *sa.PromptOrienting
+	// Certainty above which the orienting move should be accepted.
+	OrientingMoveThreshold float32
+	// Initial msg, optional, " " to disable.
+	CharacterReadyMsg string
 }
 
 func New(ctx context.Context, states am.S, schema am.Schema) *AgentLLM {
@@ -77,20 +104,33 @@ func New(ctx context.Context, states am.S, schema am.Schema) *AgentLLM {
 }
 
 func (a *AgentLLM) Init(
-	agentImpl shared.AgentAPI, cfg *shared.Config, logArgs am.LogArgsMapperFn, groups any, states am.States, args any,
+	agentImpl shared.AgentAPI, cfg *shared.Config, deps AgentLLMDeps,
 ) error {
 
 	// call super
-	err := a.AgentBase.Init(agentImpl, cfg, logArgs, groups, states, args)
+	err := a.AgentBase.Init(agentImpl, cfg, deps.LogArgs, deps.Groups, deps.States, slices.Concat(deps.ArgsREPL, ArgsRPC))
 	if err != nil {
 		return err
 	}
 
+	// prompts
 	a.PCheckingMenuRefs = sa.NewPromptCheckingMenuRefs(a)
 	a.PConfigTest = sa.NewPromptConfigTest(a)
-	a.PGenCharacter = sa.NewPromptGenCharacter(a)
-	a.PGenResources = sa.NewPromptGenResources(a)
-	a.POrienting = sa.NewPromptOrienting(a)
+
+	// custom prompts
+	a.PGenCharacter = deps.PromptGenCharacter
+	a.PGenResources = deps.PromptGenResources
+	a.POrienting = deps.PromptOrienting
+
+	// config
+	a.orientingThreshold = deps.OrientingMoveThreshold
+	if a.orientingThreshold == 0 {
+		a.orientingThreshold = 0.8
+	}
+	a.CharacterReadyMsg = deps.CharacterReadyMsg
+	if a.CharacterReadyMsg == "" {
+		a.CharacterReadyMsg = "Your host will be %s from %d. Profession: %s."
+	}
 
 	return nil
 }
@@ -135,6 +175,11 @@ func (a *AgentLLM) MemoryWipe(ctx context.Context, e *am.Event) {
 	mach.EvAddErrState(e, ss.ErrDB, err, nil)
 }
 
+func IsStory(state string) bool {
+	return strings.HasPrefix(state, ssbase.PrefixStory) && state != ss.StoryChanged &&
+		!strings.HasPrefix(state, ssbase.PrefixStoryDisable) && state != ss.StoryAction
+}
+
 // private
 
 func (a *AgentLLM) child() ChildAPI {
@@ -147,10 +192,17 @@ func (a *AgentLLM) child() ChildAPI {
 
 // ///// ///// /////
 
+var _ = ss.ConfigValidating
+
 func (a *AgentLLM) ConfigValidatingState(e *am.Event) {
-	_, err := a.PConfigTest.Exec(e, struct{}{})
-	a.Mach().EvAddErr(e, err, nil)
+	ctx := a.Mach().NewStateCtx(ss.ConfigValidating)
+	a.Mach().Fork(ctx, e, func() {
+		_, err := a.PConfigTest.Exec(e, struct{}{})
+		a.Mach().EvAddErr(e, err, nil)
+	})
 }
+
+var _ = ss.ConfigUpdate
 
 func (a *AgentLLM) ConfigUpdateState(e *am.Event) {
 	// call super
@@ -159,8 +211,12 @@ func (a *AgentLLM) ConfigUpdateState(e *am.Event) {
 	a.Mach().EvRemove(e, am.S{ss.GenCharacter}, nil)
 }
 
+var _ = ss.CheckingMenuRefs
+
 func (a *AgentLLM) CheckingMenuRefsState(e *am.Event) {
-	args := shared.ParseArgs(e.Args)
+	mach := a.Mach()
+	ctx := mach.NewStateCtx(ss.CheckingMenuRefs)
+	args := am.ParseArgs[shared.ACheckingMenuRefs](e.Args)
 
 	prompt := args.Prompt
 	choices := a.OfferList
@@ -171,57 +227,65 @@ func (a *AgentLLM) CheckingMenuRefsState(e *am.Event) {
 	llm := a.PCheckingMenuRefs
 
 	// unblock
-	go func() {
-		// deferred chan return
-		var ret *shared.OfferRef
-		defer func() {
-			retCh <- ret
-		}()
+	mach.Fork(ctx, e, func() {
+		for range retires {
+			// deferred chan return
+			var ret *shared.OfferRef
+			defer func() {
+				retCh <- ret
+			}()
 
-		foundFn := func(i int) *shared.OfferRef {
-			if i >= len(choices) {
-				return nil
+			foundFn := func(i int) *shared.OfferRef {
+				if i >= len(choices) {
+					return nil
+				}
+				text := choices[i]
+				return &shared.OfferRef{
+					Index: i,
+					Text:  shared.RemoveStyling(text),
+				}
 			}
-			text := choices[i]
-			return &shared.OfferRef{
-				Index: i,
-				Text:  shared.RemoveStyling(text),
+
+			// infer locally (from 1-based to 0-based)
+			i := shared.NumRef(prompt)
+			if i >= 0 && i <= len(choices) {
+				ret = foundFn(i - 1)
+				return // retCh
+			}
+
+			if !args.CheckLLM {
+				return
+			}
+
+			// infer via LLM
+			params := sa.ParamsCheckingMenuRefs{
+				Choices: shared.Map(choices, func(o string) string {
+					return shared.RemoveStyling(o)
+				}),
+				Prompt: args.Prompt,
+			}
+			res, err := llm.Exec(e, params)
+			if err != nil {
+				a.Mach().AddErr(err, nil)
+				continue
+			}
+			if res.RefIndex >= 0 && res.RefIndex < len(choices) {
+				ret = foundFn(res.RefIndex)
+				return // retCh
 			}
 		}
 
-		// infer locally (from 1-based to 0-based)
-		i := shared.NumRef(prompt)
-		if i >= 0 && i <= len(choices) {
-			ret = foundFn(i - 1)
-			return
-		}
-
-		if !args.CheckLLM {
-			return
-		}
-
-		// infer via LLM
-		params := sa.ParamsCheckingMenuRefs{
-			Choices: shared.Map(choices, func(o string) string {
-				return shared.RemoveStyling(o)
-			}),
-			Prompt: args.Prompt,
-		}
-		res, err := llm.Exec(e, params)
-		if err != nil {
-			a.Mach().AddErr(err, nil)
-			return
-		}
-		if res.RefIndex >= 0 && res.RefIndex < len(choices) {
-			ret = foundFn(res.RefIndex)
-			return
-		}
-	}()
+		a.LogErr(ss.CheckingMenuRefs, ErrRetried, "num", retires)
+	})
 }
+
+var _ = ss.ResourcesReady
 
 func (a *AgentLLM) ResourcesReadyEnd(e *am.Event) {
 	a.Resources.Store(nil)
 }
+
+var _ = ss.GenResources
 
 func (a *AgentLLM) GenResourcesEnter(e *am.Event) bool {
 	return a.Resources.Load() == nil
@@ -234,43 +298,51 @@ func (a *AgentLLM) GenResourcesState(e *am.Event) {
 	llm := a.PGenResources
 
 	params := a.AgentImpl().(ChildAPI).LLMResources()
+	if len(params.Phrases) == 0 {
+		// next
+		mach.EvAdd1(e, ss.ResourcesReady, nil)
+		return
+	}
 
 	// unblock
-	go func() {
-		if ctx.Err() != nil {
-			return // expired
-		}
+	mach.Fork(ctx, e, func() {
+		for range retires {
+			// run the prompt (checks ctx)
+			res, err := llm.Exec(e, params)
+			if ctx.Err() != nil {
+				return // expired
+			}
+			if err != nil {
+				mach.EvAddErrState(e, ss.ErrAI, err, nil)
+				continue
+			}
 
-		// run the prompt (checks ctx)
-		res, err := llm.Exec(e, params)
-		if ctx.Err() != nil {
-			return // expired
-		}
-		if err != nil {
-			mach.EvAddErrState(e, ss.ErrAI, err, nil)
+			// persist
+			for key, phrases := range res.Phrases {
+				for _, p := range phrases {
+					// TODO base queries
+					_, err := a.Queries().AddResource(ctx, sqlc.AddResourceParams{
+						Key:   key,
+						Value: p,
+					})
+					if err != nil {
+						mach.EvAddErrState(e, ss.ErrDB, err, nil)
+						break
+					}
+				}
+			}
+			a.Resources.Store(res)
+
+			// next
+			mach.EvAdd1(e, ss.ResourcesReady, nil)
 			return
 		}
 
-		// persist
-		for key, phrases := range res.Phrases {
-			for _, p := range phrases {
-				// TODO base queries
-				_, err := a.Queries().AddResource(ctx, sqlc.AddResourceParams{
-					Key:   key,
-					Value: p,
-				})
-				if err != nil {
-					mach.EvAddErrState(e, ss.ErrDB, err, nil)
-					break
-				}
-			}
-		}
-		a.Resources.Store(res)
-
-		// next
-		mach.EvAdd1(e, ss.ResourcesReady, nil)
-	}()
+		a.LogErr(ss.GenResources, ErrRetried, "num", retires)
+	})
 }
+
+var _ = ss.Orienting
 
 func (a *AgentLLM) OrientingState(e *am.Event) {
 	mach := a.Mach()
@@ -279,7 +351,7 @@ func (a *AgentLLM) OrientingState(e *am.Event) {
 	tick := mach.Tick(ss.Orienting)
 	llm := a.POrienting
 	cookSchema := a.Mach().Schema()
-	prompt := ParseArgs(e.Args).Prompt
+	prompt := am.ParseArgs[shared.APrompt](e.Args).Prompt
 
 	// possible moves: all cooking steps, most stories and some states
 
@@ -288,15 +360,15 @@ func (a *AgentLLM) OrientingState(e *am.Event) {
 	for _, name := range mach.StateNames() {
 		state := cookSchema[name]
 
-		// TODO extract
-		isStory := strings.HasPrefix(name, "Story") && name != ss.StoryChanged && name != ss.StoryAction
+		isStory := IsStory(name)
 		isTrigger := amhelp.TagValue(state.Tags, ssbase.TagTrigger) != ""
 		isManual := amhelp.TagValue(state.Tags, ssbase.TagManual) != ""
 		// TODO reflect godoc?
 		desc := ""
 		if isStory {
 			// TODO unsafe
-			desc = a.AgentImpl().Story(name).Desc
+			story := a.AgentImpl().Story(name)
+			desc = story.Desc
 		}
 
 		if isTrigger || (isStory && !isManual) {
@@ -309,17 +381,14 @@ func (a *AgentLLM) OrientingState(e *am.Event) {
 
 	// build params
 	params := sa.ParamsOrienting{
-		Prompt:     prompt,
-		MovesAgent: a.AgentImpl().OrientingMoves(),
+		Prompt:        prompt,
+		MovesWorkflow: a.AgentImpl().OrientingMoves(),
 		// TODO desc
 		MovesStories: movesStories,
 	}
 
 	// unblock
-	go func() {
-		if ctx.Err() != nil {
-			return // expired
-		}
+	mach.Fork(ctx, e, func() {
 		// check tail
 		defer func() {
 			if tick != mach.Tick(ss.Orienting) {
@@ -338,7 +407,7 @@ func (a *AgentLLM) OrientingState(e *am.Event) {
 			return
 		}
 
-		if resp.Certainty < 0.8 {
+		if resp.Certainty < a.orientingThreshold {
 			return
 		}
 		if tick != mach.Tick(ss.Orienting) {
@@ -347,62 +416,56 @@ func (a *AgentLLM) OrientingState(e *am.Event) {
 
 		// store
 		a.MoveOrienting.Store(resp)
-	}()
+	})
 }
 
+var _ = ss.OrientingMove
+
 func (a *AgentLLM) OrientingMoveEnter(e *am.Event) bool {
-	args := ParseArgs(e.Args)
+	args := am.ParseArgs[AOrientingMove](e.Args)
 	return args.Move != nil
 }
 
 func (a *AgentLLM) OrientingMoveState(e *am.Event) {
 	mach := a.Mach()
 	mem := a.AgentImpl().MachMem()
-	defer mach.Remove1(ss.OrientingMove, nil)
-	args := ParseArgs(e.Args)
-	move := args.Move
-	resCh := args.ResultCh
+	ctx := mach.NewStateCtx(ss.OrientingMove)
+	move := am.ParseArgs[AOrientingMove](e.Args).Move
 
-	// dispatch the mutation
-	m := move.Move
-	var res am.Result
-	if mem.Has1(m) {
-		res = mem.Add1(m, nil)
-		if res == am.Canceled {
-			a.Log("2", "move", m)
+	mach.Fork(ctx, e, func() {
+		defer mach.EvRemove1(e, ss.OrientingMove, nil)
+
+		// dispatch the mutation
+		m := move.Move
+		var res am.Result
+		if mem != nil && mem.Has1(m) {
+			if res = mem.EvAdd1(e, m, nil); res == am.Canceled {
+				a.Log("mem canceled", "move", m)
+			}
+
+		} else if s := a.AgentImpl().Story(m); s != nil {
+			if res = a.StoryActivate(e, m); res == am.Canceled {
+				a.Log("story canceled", "move", m)
+			}
+
+		} else if mach.Has1(m) {
+			if res = mach.EvAdd1(e, m, nil); res == am.Canceled {
+				a.Log("move canceled", "move", m)
+			}
 		}
 
-	} else if s := a.AgentImpl().Story(m); s != nil {
-		res = a.StoryActivate(e, m)
-		if res == am.Canceled {
-			a.Log("story canceled", "move", m)
-		}
-
-	} else if mach.Has1(m) {
-		res = mach.Add1(m, nil)
-		if res == am.Canceled {
-			a.Log("move canceled", "move", m)
-		}
-	}
-
-	// optionally return the result
-	if args.ResultCh == nil || cap(args.ResultCh) < 1 {
-		return
-	}
-
-	// channel back (buf)
-	select {
-	case resCh <- res:
-	default:
-		mach.Log("OrientingMove chan closed")
-	}
+		// TODO timeout
+		<-mach.WhenQueue(res)
+	})
 }
+
+var _ = ss.RestoreCharacter
 
 func (a *AgentLLM) RestoreCharacterState(e *am.Event) {
 	mach := a.Mach()
 	ctx := mach.NewStateCtx(ss.RestoreCharacter)
 
-	go func() {
+	mach.Fork(ctx, e, func() {
 		dbChar, err := a.Queries().GetCharacter(ctx)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			mach.EvAddErrState(e, ss.ErrDB, err, nil)
@@ -425,8 +488,10 @@ func (a *AgentLLM) RestoreCharacterState(e *am.Event) {
 		// store and next
 		a.Character.Store(&res)
 		mach.EvAdd1(e, ss.CharacterReady, nil)
-	}()
+	})
 }
+
+var _ = ss.GenCharacter
 
 func (a *AgentLLM) GenCharacterState(e *am.Event) {
 	// collect
@@ -435,43 +500,46 @@ func (a *AgentLLM) GenCharacterState(e *am.Event) {
 	llm := a.PGenCharacter
 
 	// unblock
-	go func() {
-		if ctx.Err() != nil {
-			return // expired
-		}
+	mach.Fork(ctx, e, func() {
+		for range retires {
+			// run the prompt (checks ctx)
+			// TODO gen profession via LLM (age accurate)
+			params := sa.ParamsGenCharacter{
+				CharacterProfession: gofakeit.JobTitle(),
+				CharacterYear:       rand.Intn(120) + 1900,
+			}
+			res, err := llm.Exec(e, params)
+			if ctx.Err() != nil {
+				return // expired
+			}
+			if err != nil {
+				mach.EvAddErrState(e, ss.ErrAI, err, nil)
+				continue
+			}
 
-		// run the prompt (checks ctx)
-		// TODO gen profession via LLM (age accurate)
-		params := sa.ParamsGenCharacter{
-			CharacterProfession: gofakeit.JobTitle(),
-			CharacterYear:       rand.Intn(120) + 1900,
-		}
-		res, err := llm.Exec(e, params)
-		if ctx.Err() != nil {
-			return // expired
-		}
-		if err != nil {
-			mach.EvAddErrState(e, ss.ErrAI, err, nil)
+			// persist
+			jResult, _ := json.Marshal(res)
+			_, err = a.Queries().AddCharacter(ctx, string(jResult))
+			if err != nil {
+				mach.EvAddErrState(e, ss.ErrDB, err, nil)
+				// DB err is OK
+			}
+			a.Character.Store(res)
+
+			// next
+			mach.EvAdd1(e, ss.CharacterReady, nil)
 			return
 		}
 
-		// persist
-		jResult, _ := json.Marshal(res)
-		_, err = a.Queries().AddCharacter(ctx, string(jResult))
-		if err != nil {
-			mach.EvAddErrState(e, ss.ErrDB, err, nil)
-			// DB err is OK
-		}
-		a.Character.Store(res)
-
-		// next
-		mach.EvAdd1(e, ss.CharacterReady, nil)
-	}()
+		a.LogErr(ss.GenCharacter, ErrRetried, "num", retires)
+	})
 }
 
 func (a *AgentLLM) GenCharacterEnd(e *am.Event) {
 	a.PGenCharacter.HistClean()
 }
+
+var _ = ss.CharacterReady
 
 func (a *AgentLLM) CharacterReadyEnter(e *am.Event) bool {
 	return a.Character.Load() != nil
@@ -482,11 +550,15 @@ func (a *AgentLLM) CharacterReadyState(e *am.Event) {
 	j, _ := yaml.Marshal(char)
 
 	// attach to prompts which depend on the character
-	a.DocCharacter = secai.NewDocument("Character", string(j))
+	a.DocCharacter = shared.NewDocument("Character", string(j))
 	a.DocCharacter.AddToPrompts(a.PGenResources, a.POrienting)
 
-	msg := fmt.Sprintf("Your host will be %s from %d. Profession: %s.", char.Name, char.Year, char.Profession)
-	a.Output(msg, shared.FromNarrator)
+	// greeting msg
+	msg := a.CharacterReadyMsg
+	if strings.TrimSpace(msg) != "" {
+		msg = fmt.Sprintf(msg, char.Name, char.Year, char.Profession)
+		a.Output(msg, shared.FromNarrator)
+	}
 	_ = a.OutputPhrase("CharacterReady")
 }
 
@@ -494,16 +566,14 @@ func (a *AgentLLM) CharacterReadyEnd(e *am.Event) {
 	a.Character.Store(nil)
 }
 
+var _ = ss.RestoreResources
+
 func (a *AgentLLM) RestoreResourcesState(e *am.Event) {
 	mach := a.Mach()
 	ctx := mach.NewStateCtx(ss.RestoreResources)
 
-	go func() {
-		if ctx.Err() != nil {
-			return // expired
-		}
-
-		// restore
+	mach.Fork(ctx, e, func() {
+		// restore TODO fix restoring
 		dbRes, err := a.Queries().GetResources(ctx)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			mach.EvAddErrState(e, ss.ErrDB, err, nil)
@@ -524,8 +594,10 @@ func (a *AgentLLM) RestoreResourcesState(e *am.Event) {
 			// next
 			mach.EvAdd1(e, ss.ResourcesReady, nil)
 		}
-	}()
+	})
 }
+
+var _ = ss.GenResources
 
 func (a *AgentLLM) GenResourcesEnd(e *am.Event) {
 	a.PGenResources.HistClean()
@@ -539,111 +611,34 @@ func (a *AgentLLM) GenResourcesEnd(e *am.Event) {
 
 // ///// ///// /////
 
-// aliases
-
-type A2 = shared.A
-type A2RPC = shared.ARPC
-
-var Pass2 = shared.Pass
-var Pass2RPC = shared.PassRPC
-
 // APrefix is the args prefix, set from config.
 var APrefix = "secaillm"
 
-// A is a struct for node arguments. It's a typesafe alternative to [am.A].
-type A struct {
-	// base args of the framework
-	*shared.A
-
-	// agent's args
-	Move *sa.ResultOrienting `log:"move"`
-
-	// agent's non-RPC args
-
-	// TODO
+type Args struct {
+	am.ArgsBase
 }
 
-func NewArgs() A {
-	return A{A: &shared.A{}}
+func (Args) ArgsPrefix() string {
+	return APrefix
 }
 
-func NewArgsRPC() ARPC {
-	return ARPC{A: &shared.A{}}
-}
+// -----
 
-// ARPC is a subset of [A] that can be passed over RPC (eg no channels, conns, etc)
-type ARPC struct {
-	// base args of the framework
-	*shared.A
-
-	// agent's args
+type AOrientingMove struct {
+	Args
 	Move *sa.ResultOrienting `log:"move"`
 }
 
-// ParseArgs extracts A from [am.Event.Args][APrefix] (decoder).
-func ParseArgs(args am.A) *A {
-	// RPC-only args (pointer)
-	if r, ok := args[APrefix].(*ARPC); ok {
-		a := amhelp.ArgsToArgs(r, &A{})
-		// decode base args
-		a.A = shared.ParseArgs(args)
+func (AOrientingMove) ArgsState() string {
+	return ss.OrientingMove
+}
 
-		return a
-	}
+// ----- RPC boilerplate
 
-	// RPC-only args (value, eg from a network transport)
-	if r, ok := args[APrefix].(ARPC); ok {
-		a := amhelp.ArgsToArgs(&r, &A{})
-		// decode base args
-		a.A = shared.ParseArgs(args)
-
-		return a
-	}
-
-	// regular args (pointer)
-	if a, _ := args[APrefix].(*A); a != nil {
-		// decode base args
-		a.A = shared.ParseArgs(args)
-
-		return a
-	}
-
-	// defaults
-	return &A{
-		A: shared.ParseArgs(args),
+func init() {
+	for _, arg := range ArgsRPC {
+		gob.Register(arg)
 	}
 }
 
-// Pass prepares [am.A] from A to be passed to further mutations (encoder).
-func Pass(args *A) am.A {
-	// dont nest in plain maps
-	clone := *args
-	clone.A = nil
-	// ref the clone
-	out := am.A{APrefix: &clone}
-
-	// merge with base args
-	return am.AMerge(out, shared.Pass(args.A))
-}
-
-// PassRPC is a network-safe version of Pass. Use it when mutating aRPC workers.
-func PassRPC(args *A) am.A {
-	// dont nest in plain maps
-	clone := *amhelp.ArgsToArgs(args, &ARPC{})
-	clone.A = nil
-	out := am.A{APrefix: clone}
-
-	// merge with base args
-	return am.AMerge(out, shared.PassRPC(args.A))
-}
-
-// LogArgs is an args logger for A and [secai.A].
-func LogArgs(args am.A) map[string]string {
-	a1 := shared.ParseArgs(args)
-	a2 := ParseArgs(args)
-	if a1 == nil && a2 == nil {
-		return nil
-	}
-
-	return am.AMerge(amhelp.ArgsToLogMap(a1, 0), amhelp.ArgsToLogMap(a2, 0))
-}
+var ArgsRPC = []am.ArgsApi{AOrientingMove{}}

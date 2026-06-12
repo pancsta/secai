@@ -35,47 +35,80 @@ tasks:
           https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4
       - wget -O web/assets/deps/utils.js --no-verbose
           https://raw.githubusercontent.com/imhvost/chart-utils/refs/heads/master/dist/chart-utils.min.js
+      - go get resty.dev/v3
 
   gen-sql:
     cmds:
       - go run ./scripts/gen_sql_schema
       - go tool sqlc generate
 
+  build-server:
+    cmd: go build
+      -ldflags="-X 'main.ProdBuild=true'"
+      -tags tbot_prod
+      -o {{.SECAI_ID}} ./cmd
+
+  build-server-prod:
+    cmd: go build
+      -ldflags="-w -s -X 'main.ProdBuild=true'"
+      -tags tbot_prod
+      -o {{.SECAI_ID}} ./cmd
+
   build:
     requires:
       vars: [ SECAI_ID ]
-    deps: [build-wasm]
-    cmd: go build -o {{.SECAI_ID}} ./cmd
+    cmds:
+      - task: build-wasm
+      - task: build-server
 
   build-prod:
     requires:
       vars: [ SECAI_ID ]
-    deps: [build-wasm-prod]
-    cmd: go build -ldflags="-w -s" -o {{.SECAI_ID}} ./cmd
+    cmds:
+      - task: build-wasm-prod
+      - task: build-server-prod
+
+  build-size: goda weight -h {{.SECAI_ID}} | head
+  build-deps-graph: godepgraph -s . | dot -Tsvg -o deps-graph.svg
+  build-deps: go list -deps 
+      -f '{{ "{{" }}.ImportPath{{ "}}" }} {{ "{{" }}.Imports{{ "}}" }}'
+      ./cmd/ > build-deps.md
 
   # WASM
+
+  build-wasm-reload:
+    desc: Hot reload WASM with verbose debugging
+    env:
+      GOOS: js
+      GOARCH: wasm
+    cmd: go build -o web/app.wasm -tags verbose ./web/cmd
 
   build-wasm:
     env:
       GOOS: js
       GOARCH: wasm
-    deps: [install-deps-wasm]
     cmds:
+      - task: install-deps-wasm
       - mkdir -p web
-      - go build -o web/app.wasm
-          github.com/pancsta/secai/web/browser/cmd
+      - task: build-wasm-reload
 
   build-wasm-prod:
     env:
       GOOS: js
       GOARCH: wasm
-    deps: [install-deps-wasm]
     cmds:
+      - task: install-deps-wasm
       - mkdir -p web
-      - go build -ldflags="-s -w" -o web/app.wasm
-          github.com/pancsta/secai/web/browser/cmd
+      - go build -ldflags="-s -w" -o web/app.wasm ./web/cmd
       # TODO breaks
 #      - wasm-opt -O3 web/app.wasm -o web/app.wasm --enable-bulk-memory-opt
+
+
+  wasm-build-size: goda weight -h {{.SECAI_ID}} | head
+  wasm-build-deps-graph: godepgraph -tags "wasm,js" -s . | dot -Tsvg -o deps-wasm-graph.svg
+  wasm-build-deps: go list -deps 
+      -f '{{ "{{" }}.ImportPath{{ "}}" }} {{ "{{" }}.Imports{{ "}}" }}'
+      ./cmd/ > build-wasm-deps.md
 
   # TUI
 
@@ -99,7 +132,7 @@ tasks:
   # CONFIG
 
   env:
-    desc: Generate .env from config.kdl
+    desc: Generate config.env from config.kdl
     cmd: go run ./cmd env
 
   sync-configs:
@@ -127,7 +160,7 @@ tasks:
     desc: Start the TUI debugger
     silent: false
     ignore_error: true
-    cmd: go tool am-dbg 
+    cmd: go tool am-dbg update
       --dir "{{.SECAI_DIR}}"
       --output-diagrams 1
       --output-clients
@@ -137,6 +170,10 @@ tasks:
   repl:
     desc: Start the REPL
     cmd: go tool arpc -d "{{.SECAI_DIR}}"
+
+  open-terminal:
+    desc: Open local terminal emulator and run a command
+    cmd: go run -tags terminal ./scripts/open_terminal {{.CLI_ARGS}}
 
   metrics-prometheus:
     desc: Open Prometheus
@@ -163,3 +200,7 @@ tasks:
       - |
         echo Grafana: http://localhost:3000
         echo Jaeger: http://localhost:16686
+
+  cleanup-db: rm "{{.SECAI_DIR}}/*.sqlite"
+
+  cleanup-db-release: rm /home/tob/.local/share/taskbot/*.sqlite

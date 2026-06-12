@@ -7,7 +7,6 @@ import (
 	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
 
-	"github.com/pancsta/secai"
 	sa "github.com/pancsta/secai/agent_llm/schema"
 	"github.com/pancsta/secai/examples/cook/states"
 	"github.com/pancsta/secai/shared"
@@ -21,7 +20,57 @@ var ss = states.CookStates
 // ///// PROMPTS
 
 // ///// ///// /////
+
 // Comments are automatically converted to a jsonschema_description tag.
+
+// AGENT LLM DEPS
+
+func NewPromptGenCharacter(agent shared.AgentBaseAPI) *sa.PromptGenCharacter {
+	return shared.NewPrompt[sa.ParamsGenCharacter, sa.ResultGenCharacter](
+		agent, ss.GenCharacter, `
+			- You're generating a character which will lead a live cooking show.
+			- You're being given a vague character's profession and the current year.
+		`, `
+			1. Generate info related to conversations and cooking.
+			2. Add some personality to the character.
+			3. Assign a more specific profession from the requested period.
+			4. Assign a name.
+		`, ``)
+}
+
+func NewPromptGenResources(agent shared.AgentBaseAPI) *sa.PromptGenResources {
+	return shared.NewPrompt[sa.ParamsGenResources, sa.ResultGenResources](
+		agent, ss.GenResources, `
+			- You're a text and speech database.
+		`, `
+			1. Translate the provided phrases to the expected form, following the character's personality.
+			2. Keep a humoristic and entertaining tone of a cooking tv show.
+		`, `
+			Translate each phrase into 3 different versions. Generate at maximum twice the word count of the original text. Keep the %d and other substitutions in the right place.
+		`)
+}
+
+func NewPromptOrienting(agent shared.AgentBaseAPI) *sa.PromptOrienting {
+	// TODO add offer menu integration to avoid DUPs
+	p := shared.NewPrompt[sa.ParamsOrienting, sa.ResultOrienting](
+		agent, ss.Orienting, `
+			- You're a text matcher in a board game.
+		`, `
+			1. Try to extract a choice from the user, based on provided lists of MovesCooking and MovesStory. 
+			2. Distinguish past and present tense in the prompt, when choosing the right cooking step.
+			
+			Examples:
+			- "rice cooked" is "StepRiceCooked"
+			- "rice cooking" is "StepRiceCooking"
+			- "switch to story ingredients" is "StoryIngredientsPicking"
+		`, `
+			Reply only if the user gives you a choice.
+		`)
+
+	// disable history
+	p.HistoryMsgLen = 0
+	return p
+}
 
 // RESOURCES DATA
 
@@ -48,10 +97,10 @@ var LLMResources = sa.ParamsGenResources{
 
 // JOKES
 
-type PromptGenJokes = secai.Prompt[ParamsGenJokes, ResultGenJokes]
+type PromptGenJokes = shared.Prompt[ParamsGenJokes, ResultGenJokes]
 
 func NewPromptGenJokes(agent shared.AgentBaseAPI) *PromptGenJokes {
-	return secai.NewPrompt[ParamsGenJokes, ResultGenJokes](
+	return shared.NewPrompt[ParamsGenJokes, ResultGenJokes](
 		agent, ss.GenJokes, `
 			- You're a database of jokes
 		`, `
@@ -78,10 +127,10 @@ type ResultGenJokes struct {
 
 // INGREDIENTS
 
-type PromptIngredientsPicking = secai.Prompt[ParamsIngredientsPicking, ResultIngredientsPicking]
+type PromptIngredientsPicking = shared.Prompt[ParamsIngredientsPicking, ResultIngredientsPicking]
 
 func NewPromptIngredientsPicking(agent shared.AgentBaseAPI) *PromptIngredientsPicking {
-	return secai.NewPrompt[ParamsIngredientsPicking, ResultIngredientsPicking](
+	return shared.NewPrompt[ParamsIngredientsPicking, ResultIngredientsPicking](
 		agent, ss.StoryIngredientsPicking, `
 			- You're a database of cooking ingredients.
 		`, `
@@ -118,10 +167,10 @@ type ResultIngredientsPicking struct {
 
 // RECIPE
 
-type PromptRecipePicking = secai.Prompt[ParamsRecipePicking, ResultRecipePicking]
+type PromptRecipePicking = shared.Prompt[ParamsRecipePicking, ResultRecipePicking]
 
 func NewPromptRecipePicking(agent shared.AgentBaseAPI) *PromptRecipePicking {
-	return secai.NewPrompt[ParamsRecipePicking, ResultRecipePicking](
+	return shared.NewPrompt[ParamsRecipePicking, ResultRecipePicking](
 		agent, ss.StoryRecipePicking, `
 			- You're a database of cooking recipes.
 		`, `
@@ -158,10 +207,10 @@ type ResultRecipePicking struct {
 
 // STEPS
 
-type PromptGenSteps = secai.Prompt[ParamsGenSteps, ResultGenSteps]
+type PromptGenSteps = shared.Prompt[ParamsGenSteps, ResultGenSteps]
 
 func NewPromptGenSteps(agent shared.AgentBaseAPI) *PromptGenSteps {
-	p := secai.NewPrompt[ParamsGenSteps, ResultGenSteps](
+	p := shared.NewPrompt[ParamsGenSteps, ResultGenSteps](
 		agent, ss.GenSteps, `
 			- You're a cooking process planner.
 		`, `
@@ -212,6 +261,10 @@ func NewPromptGenSteps(agent shared.AgentBaseAPI) *PromptGenSteps {
 				- Require: MealBaked
 		`, `
 			2 states CAN'T require and remove each other - these relations are for a single point in time. Skip empty fields (null, false). Start the "idx:" counter from 1. If the same "idx" tag is present for more than 1 state, pick a final state from the same group "idx" group and mark it with a "final" tag (eg WaterBoiled is a final state for WaterBoiling).
+		
+			"Require" does not mean "active before", it means "active at the same time".
+		
+			Steps with the same "idx:" have to Remove each other.
 		`)
 
 	// short history
@@ -230,10 +283,10 @@ type ResultGenSteps struct {
 
 // STEP COMMENTS
 
-type PromptGenStepComments = secai.Prompt[ParamsGenStepComments, ResultGenStepComments]
+type PromptGenStepComments = shared.Prompt[ParamsGenStepComments, ResultGenStepComments]
 
 func NewPromptGenStepComments(agent shared.AgentBaseAPI) *PromptGenStepComments {
-	return secai.NewPrompt[ParamsGenStepComments, ResultGenStepComments](
+	return shared.NewPrompt[ParamsGenStepComments, ResultGenStepComments](
 		agent, ss.GenStepComments, `
 			- You're a cooking show host.
 		`, `
@@ -256,10 +309,10 @@ type ResultGenStepComments struct {
 
 // COOKING
 
-type PromptCookingStarted = secai.Prompt[ParamsCookingStarted, ResultCookingStarted]
+type PromptCookingStarted = shared.Prompt[ParamsCookingStarted, ResultCookingStarted]
 
 func NewPromptCookingStarted(agent shared.AgentBaseAPI) *PromptCookingStarted {
-	return secai.NewPrompt[ParamsCookingStarted, ResultCookingStarted](
+	return shared.NewPrompt[ParamsCookingStarted, ResultCookingStarted](
 		agent, ss.StoryCookingStarted, `
 			- You're a person who is cooking.
 		`, `
@@ -334,7 +387,7 @@ var StoryJoke = &shared.Story{
 	// Either 1st time or the current clocks for steps (sum) are equal or greater than ticks of this story's state.
 	CanActivate: func(s *shared.Story) bool {
 		mem := s.Memory.Mach
-		stepStates := mem.StateNamesMatch(MatchSteps)
+		stepStates := mem.StateNames().FilterMatch(MatchSteps)
 		stepsNow := mem.Time(stepStates).Sum(nil) + s.Epoch
 		freq := 1.5
 		// freq := 2.0

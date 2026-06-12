@@ -43,7 +43,7 @@ Agent {
     MachLevel 3
   //    MachPrint true
   // path to log file
-    File "tmp-cook/cook.jsonl"
+  //    File "tmp-cook/cook.jsonl"
   // log prompts
     Prompts true
   }
@@ -83,6 +83,7 @@ TUI {
 Web {
 //  Addr "-1"
   DBPort 13180
+  LogPort 12858
 }
 
 Cook {
