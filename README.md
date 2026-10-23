@@ -8,6 +8,7 @@ precise behavior modeling of agents, including interruptions, concurrency, and f
 It's a sophisticated replacement for frameworks like LangGraph and offers deeply relational consensus of state.
 
 * Demos
+  * [v0.8 - Production](#v08---production)
   * [v0.5 - Fully Embedded](#v05---fully-embedded)
   * [v0.4 - Local One](#v04---catch-up)
   * [v0.2 - User Demo](#v02---user-demo)
@@ -20,6 +21,10 @@ It's a sophisticated replacement for frameworks like LangGraph and offers deeply
 * [Getting Started](#getting-started)
 * [Differences](#differences)
 * [Scripting](#bash-scripts)
+
+## v0.8 - Production
+
+**secai** framework powers the [Deepswapp Browser](https://deepswapp.com)!
 
 ## v0.5 - Fully Embedded
 
