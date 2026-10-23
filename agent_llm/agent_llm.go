@@ -1,4 +1,4 @@
-// Package agent_llm is a base agent extended with common LLM prompts.
+// Package agent_llm is the base agent extended with common LLM prompts.
 package agent_llm
 
 import (
@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/brianvoe/gofakeit/v7"
 	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
@@ -167,17 +168,23 @@ func (a *AgentLLM) Queries() *sqlc.Queries {
 	return a.dbQueries
 }
 
+func (a *AgentLLM) IsStoryDisabled(storyState string) bool {
+	mach := a.Mach()
+	storyName := strings.TrimPrefix(storyState, ssbase.PrefixStory)
+	disabled := ssbase.PrefixStoryDisable + storyName
+	if mach.Has1(disabled) && mach.Is1(disabled) {
+		return true
+	}
+
+	return false
+}
+
 func (a *AgentLLM) MemoryWipe(ctx context.Context, e *am.Event) {
 	mach := a.Mach()
 	err := a.Queries().DeleteAllCharacter(ctx)
 	mach.EvAddErrState(e, ss.ErrDB, err, nil)
 	err = a.Queries().DeleteAllResources(ctx)
 	mach.EvAddErrState(e, ss.ErrDB, err, nil)
-}
-
-func IsStory(state string) bool {
-	return strings.HasPrefix(state, ssbase.PrefixStory) && state != ss.StoryChanged &&
-		!strings.HasPrefix(state, ssbase.PrefixStoryDisable) && state != ss.StoryAction
 }
 
 // private
@@ -195,10 +202,27 @@ func (a *AgentLLM) child() ChildAPI {
 var _ = ss.ConfigValidating
 
 func (a *AgentLLM) ConfigValidatingState(e *am.Event) {
-	ctx := a.Mach().NewStateCtx(ss.ConfigValidating)
-	a.Mach().Fork(ctx, e, func() {
-		_, err := a.PConfigTest.Exec(e, struct{}{})
-		a.Mach().EvAddErr(e, err, nil)
+	mach := a.Mach()
+	ctx := mach.NewStateCtx(ss.ConfigValidating)
+	mach.Fork(ctx, e, func() {
+		// TODO debug
+		time.Sleep(1 * time.Second)
+		res, usage, err := a.PConfigTest.Exec(e, struct{}{}, nil)
+		if err != nil || !res.Ok {
+			mach.EvAddErr(e, err, nil)
+			// TODO retries
+			mach.EvRemove(e, am.S{ss.ConfigValidating}, nil)
+			return
+		}
+
+		model := ""
+		if usage != nil {
+			model = usage.Model
+		}
+		a.LogCtx(ctx, "hello received", "model", model)
+
+		// next
+		mach.EvAdd1(e, ss.ConfigValid, nil)
 	})
 }
 
@@ -264,7 +288,7 @@ func (a *AgentLLM) CheckingMenuRefsState(e *am.Event) {
 				}),
 				Prompt: args.Prompt,
 			}
-			res, err := llm.Exec(e, params)
+			res, _, err := llm.Exec(e, params, nil)
 			if err != nil {
 				a.Mach().AddErr(err, nil)
 				continue
@@ -308,7 +332,7 @@ func (a *AgentLLM) GenResourcesState(e *am.Event) {
 	mach.Fork(ctx, e, func() {
 		for range retires {
 			// run the prompt (checks ctx)
-			res, err := llm.Exec(e, params)
+			res, _, err := llm.Exec(e, params, nil)
 			if ctx.Err() != nil {
 				return // expired
 			}
@@ -360,10 +384,13 @@ func (a *AgentLLM) OrientingState(e *am.Event) {
 	for _, name := range mach.StateNames() {
 		state := cookSchema[name]
 
-		isStory := IsStory(name)
+		isStory := shared.IsStory(name)
+		if isStory && a.IsStoryDisabled(name) {
+			continue
+		}
+
 		isTrigger := amhelp.TagValue(state.Tags, ssbase.TagTrigger) != ""
 		isManual := amhelp.TagValue(state.Tags, ssbase.TagManual) != ""
-		// TODO reflect godoc?
 		desc := ""
 		if isStory {
 			// TODO unsafe
@@ -398,7 +425,7 @@ func (a *AgentLLM) OrientingState(e *am.Event) {
 		}()
 
 		// run the prompt (checks ctx)
-		resp, err := llm.Exec(e, params)
+		resp, _, err := llm.Exec(e, params, nil)
 		if ctx.Err() != nil {
 			return // expired
 		}
@@ -440,17 +467,17 @@ func (a *AgentLLM) OrientingMoveState(e *am.Event) {
 		var res am.Result
 		if mem != nil && mem.Has1(m) {
 			if res = mem.EvAdd1(e, m, nil); res == am.Canceled {
-				a.Log("mem canceled", "move", m)
+				a.LogCtx(ctx, "mem canceled", "move", m)
 			}
 
 		} else if s := a.AgentImpl().Story(m); s != nil {
 			if res = a.StoryActivate(e, m); res == am.Canceled {
-				a.Log("story canceled", "move", m)
+				a.LogCtx(ctx, "story canceled", "move", m)
 			}
 
 		} else if mach.Has1(m) {
 			if res = mach.EvAdd1(e, m, nil); res == am.Canceled {
-				a.Log("move canceled", "move", m)
+				a.LogCtx(ctx, "move canceled", "move", m)
 			}
 		}
 
@@ -508,7 +535,7 @@ func (a *AgentLLM) GenCharacterState(e *am.Event) {
 				CharacterProfession: gofakeit.JobTitle(),
 				CharacterYear:       rand.Intn(120) + 1900,
 			}
-			res, err := llm.Exec(e, params)
+			res, _, err := llm.Exec(e, params, nil)
 			if ctx.Err() != nil {
 				return // expired
 			}

@@ -21,6 +21,7 @@ type Prompt[P any, R any] struct {
 
 	tools map[string]ToolApi
 	docs  map[string]*Document
+	lastClient *AIClient
 }
 
 func NewPrompt[P any, R any](agent AgentBaseAPI, state, condition, steps, results string) *Prompt[P, R] {
@@ -38,6 +39,10 @@ func NewPrompt[P any, R any](agent AgentBaseAPI, state, condition, steps, result
 		tools: make(map[string]ToolApi),
 		docs:  make(map[string]*Document),
 	}
+}
+
+type AIClient struct {
+	// TODO mock
 }
 
 // AgentBaseAPI is the base agent API implemented by the framework.
@@ -58,7 +63,23 @@ type AgentBaseAPI interface {
 	Start() am.Result
 	Stop(disposeCtx context.Context) am.Result
 	Log(msg string, args ...any)
+	LogTrace(msg string, args ...any)
+	LogDebug(msg string, args ...any)
+	LogWarn(msg string, err error, args ...any)
 	LogErr(msg string, err error, args ...any)
+
+	LogCtx(ctx context.Context, txt string, args ...any)
+	LogCtxDebug(ctx context.Context, txt string, args ...any)
+	LogCtxTrace(ctx context.Context, txt string, args ...any)
+	LogCtxWarn(ctx context.Context, txt string, err error, args ...any)
+	LogCtxErr(ctx context.Context, msg string, err error, args ...any)
+
+	LogEv(e *am.Event, txt string, args ...any)
+	LogEvDebug(e *am.Event, txt string, args ...any)
+	LogEvTrace(e *am.Event, txt string, args ...any)
+	LogEvWarn(e *am.Event, txt string, err error, args ...any)
+	LogEvErr(e *am.Event, msg string, err error, args ...any)
+
 	Logger() *slog.Logger
 	Store() *AgentStore
 

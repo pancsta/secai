@@ -1,4 +1,4 @@
-package tui
+package ui
 
 import (
 	"context"
@@ -16,7 +16,7 @@ import (
 
 var placeholder = "Enter text here..."
 
-// TODO merge into TUI
+// TODO merge into TUIAgent
 type Chat struct {
 	msgs      []*shared.Msg
 	msgsView  *cview.TextView
@@ -26,10 +26,10 @@ type Chat struct {
 	prompt    *cview.InputField
 	clockView *tvxwidgets.Plot
 	dispose   func() error
-	t         *TUI
+	t         *TUIAgent
 }
 
-func NewChat(tui *TUI, msgs []*shared.Msg) *Chat {
+func NewChat(tui *TUIAgent, msgs []*shared.Msg) *Chat {
 
 	c := &Chat{
 		t:    tui,

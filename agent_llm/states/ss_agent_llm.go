@@ -41,6 +41,8 @@ type AgentLLMStatesDef struct {
 
 // AgentLLMGroupsDef contains all the state groups LLMAgent state machine.
 type AgentLLMGroupsDef struct {
+	*ss.AgentBaseGroupsDef
+
 	// All the states for the character generation.
 	Character S
 	// All the states for resource generation.

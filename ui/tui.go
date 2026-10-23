@@ -1,10 +1,9 @@
-package tui
+package ui
 
 import (
 	"errors"
 	"log/slog"
 	"path/filepath"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,7 +19,7 @@ import (
 
 	"github.com/pancsta/secai/shared"
 	ssbase "github.com/pancsta/secai/states"
-	"github.com/pancsta/secai/tui/states"
+	"github.com/pancsta/secai/ui/states"
 )
 
 // aliases
@@ -30,7 +29,7 @@ type S = am.S
 var ss = ssbase.AgentBaseStates
 var ssT = states.TUIStates
 
-type TUI struct {
+type TUIAgent struct {
 	*ssam.DisposedHandlers
 
 	// MachTUI is a mach dedicated to this UI instance (fork)
@@ -60,9 +59,9 @@ var (
 	clickDelay            = 500 * time.Millisecond
 )
 
-func NewTui(agent *am.Machine, logger *slog.Logger, config *shared.Config, clientAddr string) *TUI {
+func NewTui(agent *am.Machine, logger *slog.Logger, config *shared.Config, clientAddr string) *TUIAgent {
 
-	c := &TUI{
+	c := &TUIAgent{
 		DisposedHandlers: &ssam.DisposedHandlers{},
 		ClientAddr:       clientAddr,
 		Id:               amhelp.RandId(10),
@@ -82,7 +81,7 @@ func NewTui(agent *am.Machine, logger *slog.Logger, config *shared.Config, clien
 
 // ///// ///// /////
 
-func (t *TUI) Init(
+func (t *TUIAgent) Init(
 	screen tcell.Screen, name string, stories *Stories, clock *Clock, chat *Chat,
 ) error {
 
@@ -108,11 +107,6 @@ func (t *TUI) Init(
 		}
 	}
 
-	// TODO read from groups and schema org
-	trackedStates := mach.StateNames()
-	lastState := slices.Index(trackedStates, ssbase.AgentBaseStates.UICleanOutput)
-	trackedStates = trackedStates[0 : lastState+1]
-
 	if err := t.stories.Init(); err != nil {
 		return err
 	}
@@ -134,7 +128,7 @@ func (t *TUI) Init(
 	return nil
 }
 
-func (t *TUI) DisposingState(e *am.Event) {
+func (t *TUIAgent) DisposingState(e *am.Event) {
 	t.DisposedHandlers.DisposingState(e)
 	if t.dispose != nil {
 		_ = t.dispose()
@@ -142,7 +136,7 @@ func (t *TUI) DisposingState(e *am.Event) {
 	t.app.Stop()
 }
 
-func (t *TUI) InitComponents() {
+func (t *TUIAgent) InitComponents() {
 	leftColumn := cview.NewFlex()
 	leftColumn.SetDirection(cview.FlexRow)
 	leftColumn.AddItem(t.clock.layout, 5, 1, false)
@@ -170,14 +164,14 @@ func (t *TUI) InitComponents() {
 	})
 }
 
-func (t *TUI) Stop() error {
+func (t *TUIAgent) Stop() error {
 	_ = t.dispose()
 	t.app.Stop()
 
 	return nil
 }
 
-func (t *TUI) Redraw() {
+func (t *TUIAgent) Redraw() {
 	t.app.SetAfterDrawFunc(func(screen tcell.Screen) {
 		// over-draw in cview
 		t.clock.Redraw()
@@ -186,7 +180,7 @@ func (t *TUI) Redraw() {
 }
 
 // Start starts the UI and optionally returns the error and mutates with UIErr.
-func (t *TUI) Start(dispose func() error) error {
+func (t *TUIAgent) Start(dispose func() error) error {
 	t.dispose = dispose
 
 	// start the UI
@@ -202,7 +196,7 @@ func (t *TUI) Start(dispose func() error) error {
 	return err
 }
 
-func (t *TUI) Logger() *slog.Logger {
+func (t *TUIAgent) Logger() *slog.Logger {
 	return t.logger
 }
 

@@ -1,4 +1,4 @@
-package tui
+package ui
 
 import (
 	"slices"
@@ -12,15 +12,15 @@ import (
 	"github.com/pancsta/secai/shared"
 )
 
-// TODO merge into TUI
+// TODO merge into TUIAgent
 // TODO bind mem to the clock
 type Clock struct {
-	t      *TUI
+	t      *TUIAgent
 	layout *cview.Grid
 	diff   atomic.Pointer[[][]int] // [ series ][ tick]
 }
 
-func NewClock(tui *TUI, diff [][]int) *Clock {
+func NewClock(tui *TUIAgent, diff [][]int) *Clock {
 	ret := &Clock{
 		t: tui,
 	}
@@ -117,7 +117,7 @@ func (c *Clock) Redraw() {
 
 // ///// ///// /////
 
-// ///// SERVICE
+// ///// SERVICE TODO keep separate
 
 // ///// ///// /////
 

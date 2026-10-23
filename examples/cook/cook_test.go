@@ -87,8 +87,8 @@ func TestGenSteps(t *testing.T) {
 	p := sa.NewPromptGenSteps(a)
 	params := LoadPrompt[sa.ParamsGenSteps](t, ss.GenSteps, "")
 
-	// TODO panics sometimes https://github.com/jxnl/instructor-go/issues/66
-	res, err := p.Exec(nil, params, shared.PromptOpts{
+	// TODO panics sometimes https://github.com/pancsta/instructor-go/issues/66
+	res, _, err := p.Exec(nil, params, nil, shared.PromptOpts{
 		SkipState: true,
 	})
 	require.NoError(t, err)

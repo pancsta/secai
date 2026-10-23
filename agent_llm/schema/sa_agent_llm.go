@@ -21,16 +21,20 @@ var ss = states.AgentLLMStates
 
 // Test AI connection.
 
-type PromptConfigTest = shared.Prompt[struct{}, struct{}]
+type PromptConfigTest = shared.Prompt[struct{}, ResultConfigTest]
 
 func NewPromptConfigTest(agent shared.AgentBaseAPI) *PromptConfigTest {
-	p := shared.NewPrompt[struct{}, struct{}](
+	p := shared.NewPrompt[struct{}, ResultConfigTest](
 		agent, ss.ConfigValidating, ``, `
 			Reply OK.
 		`, ``)
 	p.HistoryMsgLen = 0
 
 	return p
+}
+
+type ResultConfigTest struct {
+	Ok bool
 }
 
 // MENU

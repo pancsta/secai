@@ -3,11 +3,13 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -43,6 +45,14 @@ type REPL struct{}
 type Log struct {
 	Tail  bool `arg:"-t,--tail" help:"Tail the log (keep streaming)."`
 	Lines int  `arg:"-n,--lines" help:"Number of lines to show." default:"250"`
+
+	LvlErr   bool `arg:"--lvl-err" help:"Show error level logs."`
+	LvlWarn  bool `arg:"--lvl-warn" help:"Show warn level logs."`
+	LvlInfo  bool `arg:"--lvl-info" help:"Show info level logs (default)."`
+	LvlDebug bool `arg:"--lvl-debug" help:"Show debug level logs."`
+	LvlTrace bool `arg:"--lvl-trace" help:"Show trace level logs."`
+
+	IncludeAi bool `arg:"--inc-ai" help:"Include AI layer entries."`
 }
 
 type Env struct {
@@ -168,7 +178,7 @@ func cmdREPL(ctx context.Context, cfg cook.Config) error {
 		return err
 	}
 	rootCmd := repl.NewRootCommand(r, nil, nil)
-	args := []string{"--dir", cfg.Agent.Dir}
+	args := []string{"--dir", filepath.Join(cfg.Agent.Dir, "repl")}
 	if cfg.Debug.DBGAddr != "" {
 		args = append(args, "--am-dbg-addr", cfg.Debug.DBGAddr)
 	}
@@ -190,14 +200,16 @@ func cmdREPL(ctx context.Context, cfg cook.Config) error {
 }
 
 func cmdLog(ctx context.Context, cfg cook.Config) error {
-	f, err := os.Open(cfg.Agent.LogPath(false))
+	// TODO re-run on new file saved as logPath
+	logPath := cfg.Agent.LogPath(true)
+	f, err := os.Open(logPath)
 	if err != nil {
 		return fmt.Errorf("failed to open file: %w", err)
 	}
 	defer f.Close()
 
 	// find the offset and rewind
-	offset, err := findStartOffset(f, 100)
+	offset, err := findStartOffset(f, cli.Log.Lines)
 	if err != nil {
 		return fmt.Errorf("failed to seek: %w", err)
 	}
@@ -212,10 +224,18 @@ func cmdLog(ctx context.Context, cfg cook.Config) error {
 	logSettings.DumpAll = true // exclude nothing
 	logSettings.ExcludedValues = []string{"msg", "time", "level"}
 
+	minLevel := 50
+	if cli.Log.LvlDebug || cli.Log.LvlTrace {
+		minLevel = 20
+	} else if cli.Log.LvlInfo {
+		minLevel = 30
+	} else if cli.Log.LvlWarn {
+		minLevel = 40
+	}
+
 	// read
 	reader := bufio.NewReader(f)
 	for {
-		// Check if the context was cancelled
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -231,6 +251,36 @@ func cmdLog(ctx context.Context, cfg cook.Config) error {
 				continue
 			}
 			return fmt.Errorf("error reading file: %w", err)
+		}
+
+		var logEntry struct {
+			Level string `json:"level"`
+			Trace bool   `json:"trace"`
+			Ai    bool   `json:"ai"`
+		}
+		if err := json.Unmarshal([]byte(line), &logEntry); err == nil {
+			if logEntry.Trace && !cli.Log.LvlTrace {
+				continue
+			}
+			if logEntry.Ai && !cli.Log.IncludeAi {
+				continue
+			}
+
+			entryLevelInt := 0
+			switch strings.ToUpper(logEntry.Level) {
+			case "DEBUG":
+				entryLevelInt = 20
+			case "INFO":
+				entryLevelInt = 30
+			case "WARN", "WARNING":
+				entryLevelInt = 40
+			case "ERR", "ERROR", "FATAL":
+				entryLevelInt = 50
+			}
+
+			if entryLevelInt > 0 && entryLevelInt < minLevel {
+				continue
+			}
 		}
 
 		// pass to fblog
