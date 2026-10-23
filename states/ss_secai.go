@@ -22,11 +22,17 @@ type AgentBaseStatesDef struct {
 	// Sharing PTY over web err
 	ErrWebPTY string
 
+	// external errs
+
+	ErrLog  string
+	WarnLog string
+
 	// STATUS
 
 	ConfigUpdate     string
 	ConfigValidating string
-	ConfigValid      string
+	// TODO refac: ConfigValidated
+	ConfigValid string
 	// Agent is waiting for user input.
 	InputPending string
 	// User input is blocked by the agent.
@@ -130,7 +136,8 @@ type AgentBaseStatesDef struct {
 
 // AgentBaseGroupsDef contains all the state groups Agent state machine.
 type AgentBaseGroupsDef struct {
-	UI am.S
+	UI       am.S
+	Requests S
 }
 
 // AgentSchema represents all relations and properties of AgentBaseStates.
@@ -168,9 +175,16 @@ var AgentSchema = ssam.BasicSchema.Merge(
 			Require: S{ssA.UIMode},
 		},
 
+		// external
+
+		ssA.ErrLog:  {Multi: true},
+		ssA.WarnLog: {Multi: true},
+
 		// BASIC OVERRIDES
 
+		// TODO refac blocking GORM tracers
 		ssA.Start: {Add: S{ssA.BaseDBStarting, ssA.HistoryDBStarting}},
+		ssA.Start: {Add: S{ssA.BaseDBStarting}},
 		ssA.Ready: {
 			Require: S{ssA.Start},
 			Add:     S{ssA.Loop},
@@ -184,7 +198,7 @@ var AgentSchema = ssam.BasicSchema.Merge(
 		},
 		ssA.ConfigValidating: {
 			Auto:    true,
-			Require: S{ssA.Start},
+			Require: S{ssA.Start, ssA.BaseDBReady},
 			Remove:  S{ssA.ConfigValid},
 		},
 		ssA.ConfigValid: {Remove: S{ssA.ConfigValidating}},
@@ -349,10 +363,11 @@ const PrefixStory = "Story"
 var (
 	ssA = am.NewStates(AgentBaseStatesDef{})
 	sgA = am.NewStateGroups(AgentBaseGroupsDef{
-		UI: am.S{ssA.UIMsg, ssA.UIReady, ssA.UIButtonSend, ssA.UIButtonInter, ssA.UISaveOutput, ssA.UICleanOutput,
+		UI: S{ssA.UIMsg, ssA.UIReady, ssA.UIButtonSend, ssA.UIButtonInter, ssA.UISaveOutput, ssA.UICleanOutput,
 			ssA.UIRenderStories, ssA.SSHConn, ssA.SSHDisconn, ssA.SSHReady, ssA.WebSSHReady, ssA.WebHTTPReady,
 			ssA.WebRPCReady, ssA.WebConnected, ssA.RemoteDashReady, ssA.RemoteUIReady, ssA.UIRenderClock,
 			ssA.UIUpdateClock},
+		Requests: S{ssA.RequestingAI, ssA.RequestedAI, ssA.RequestingTool, ssA.RequestedAI, ssA.Requesting},
 	})
 
 	// AgentBaseStates contains all the states for the Agent machine.

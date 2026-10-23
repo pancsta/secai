@@ -3,6 +3,7 @@ package shared
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/gob"
 	"encoding/xml"
 	"errors"
@@ -24,7 +25,7 @@ import (
 	"unicode"
 
 	"github.com/BooleanCat/go-functional/v2/it"
-	"github.com/jxnl/instructor-go/pkg/instructor/core"
+	"github.com/pancsta/instructor-go/pkg/instructor/core"
 	"github.com/lithammer/dedent"
 	"github.com/orsinium-labs/enum"
 	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
@@ -32,6 +33,8 @@ import (
 	"github.com/pancsta/asyncmachine-go/pkg/telemetry/dbg"
 	"github.com/sblinch/kdl-go"
 	"github.com/sblinch/kdl-go/document"
+	"golang.org/x/text/language"
+	"golang.org/x/text/message"
 
 	"github.com/pancsta/secai/states"
 )
@@ -41,6 +44,7 @@ const (
 )
 
 var ss = states.AgentBaseStates
+var Fmt = message.NewPrinter(language.English)
 
 // From enum
 
@@ -53,6 +57,32 @@ var (
 	FromNarrator  = From{"narrator"}
 
 	FromEnum = enum.New(FromAssistant, FromSystem, FromUser)
+)
+
+// ValEnc enum
+
+type ValEnc enum.Member[string]
+
+var (
+	ValEncJson = ValEnc{"json"}
+	ValEncYaml = ValEnc{"yaml"}
+	ValEncDump = ValEnc{"dump"}
+	ValEncTxt  = ValEnc{"txt"}
+
+	ValEncEnum = enum.New(ValEncJson, ValEncYaml, ValEncDump, ValEncTxt)
+	ValEncs    = ValEncEnum
+)
+
+type ValFileEnc = ValEnc
+
+var (
+	ValFileEncJson = ValEncJson
+	ValFileEncYaml = ValEncYaml
+	ValFileEncDump = ValEncDump
+	ValFileEncTxt  = ValEncTxt
+
+	ValFileEncEnum = ValEncEnum
+	ValFileEncs    = ValEncs
 )
 
 type OfferRef struct {
@@ -559,6 +589,22 @@ type Config struct {
 	// File is the path to the loaded config file.
 	File      string `kdl:"-"`
 	ProdBuild bool   `kdl:"-"`
+	// ServerMode doesnt autorun the GUI and listens on 0.0.0.0
+	ServerMode bool `kdl:"-"`
+	DockerMode bool `kdl:"-"`
+	// random instance ID
+	SessionID string `kdl:"-"`
+}
+
+func (c Config) Clone() Config {
+	clone := c
+
+	// link root
+	clone.Web.Root = &clone
+	clone.Debug.Root = &clone
+	clone.TUI.Root = &clone
+
+	return clone
 }
 
 type ConfigAI struct {
@@ -573,6 +619,8 @@ type ConfigAICommon struct {
 	Model    string
 	Key      string
 	Disabled bool
+
+	Name string `kdl:",omitempty"`
 	// Def: 3
 	Retries  int      `kdl:",omitempty"`
 	Tags     []string `kdl:",omitempty"`
@@ -580,14 +628,20 @@ type ConfigAICommon struct {
 	// For how long blacklist this provider on error (def 1h).
 	FallbackTimeout time.Duration `kdl:",omitempty"`
 	// Number of concurrent req for this provider TODO
-	Concurrency int
+	Concurrency int `kdl:",omitempty"`
+	URL string `kdl:",omitempty"`
+
+	// TODO
+
+	// EnabledHoursUTC []int `kdl:",omitempty"`
+	// DisabledHoursUTC []int `kdl:",omitempty"`
 
 	// internal
 
 	// temporarily disabled (eg offline)
 	DisabledUntil time.Time `kdl:"-"`
 	// provider name
-	Provider string `kdl:"-"`
+	API string `kdl:"-"`
 	// num of times this backend was called without errs
 	Calls int `kdl:"-"`
 }
@@ -603,19 +657,23 @@ func (c *ConfigAICommon) IsEnabled() bool {
 		return false
 	}
 
+	// TODO EnabledHoursUTC, DisabledHoursUTC
+
 	return true
 }
 
 type ConfigAIOpenAI struct {
 	ConfigAICommon
 
-	URL string
 	// NoEnforceSchema skips `instr.WithMode(instr.ModeJSONSchema)` for local models
 	NoEnforceSchema bool
 }
 
 type ConfigAIGemini struct {
 	ConfigAICommon
+
+	// NoEnforceSchema skips `instr.WithMode(instr.ModeJSONSchema)` for local models
+	NoEnforceSchema bool
 }
 
 type ConfigAgent struct {
@@ -634,16 +692,22 @@ type ConfigAgent struct {
 type ConfigAgentLog struct {
 	// path to the log file
 	File string
-	// log prompts
+	// log prompts as log level debug
 	Prompts bool
-	// duplicate log to state-machine log
-	MachFwd bool
+	// mark log errs as ErrLog multi state
+	FwdErrState bool
+	// mark log warning as WarnLog multi state
+	FwdWarnState bool
 	// mach log level 0-5
 	MachLevel am.LogLevel
 	// print machine log
 	MachPrint bool
 	// agent log level
 	Level slog.Level
+	// enable instructor-go logging for AI requests
+	AI bool
+	// instructor-go log level TODO
+	// AILevel slog.Level
 }
 
 type ConfigAgentHistory struct {
@@ -653,6 +717,8 @@ type ConfigAgentHistory struct {
 }
 
 type ConfigWeb struct {
+	Root *Config `kdl:"-" json:"-"`
+
 	// Base address for HTTP services:
 	// - main HTTP server
 	// - +1 WebSocket addr of the agent's RPC server (dashboard)
@@ -665,6 +731,8 @@ type ConfigWeb struct {
 }
 
 type ConfigTUI struct {
+	Root *Config `kdl:"-" json:"-"`
+
 	// TODO Addr
 	// TODO WebAddr
 	// SSH host
@@ -692,14 +760,17 @@ type ConfigSearXNG struct {
 }
 
 type ConfigDebug struct {
+	Root *Config `kdl:"-" json:"-"`
+
 	// Display extra info about these stories in the machine log
 	Story []string
 	// Run the mock scenario
 	Mock bool
 	// Start pprof on addr
 	ProfilerAddr string
-	// Enable misc debugging modes (SQL history, am-relay, browser RPC)
-	Verbose    bool
+	// Enable misc debugging modes (am-relay, browser RPC, TRACE logs)
+	Verbose bool
+	// Enable SQL query logging
 	VerboseSQL bool
 	// Create value files for inspection
 	ValFiles bool
@@ -732,7 +803,9 @@ func ConfigDefault() Config {
 				Max:     1_000_000,
 			},
 			Log: ConfigAgentLog{
-				Level: slog.LevelInfo,
+				Level:        slog.LevelInfo,
+				FwdErrState:  true,
+				FwdWarnState: true,
 			},
 		},
 		Web: ConfigWeb{
@@ -765,7 +838,7 @@ func ConfigDefaultAIOpenAI() ConfigAIOpenAI {
 			// Model:   openai.GPT4o,
 			Model: "gpt-4o",
 			// TODO enum
-			Provider:        "openai",
+			API:             "openai",
 			FallbackTimeout: time.Hour,
 		},
 	}
@@ -778,7 +851,7 @@ func ConfigDefaultAIGemini() ConfigAIGemini {
 			// TODO link from genai pkg
 			Model: "gemini-2.5-flash",
 			// TODO enum
-			Provider:        "gemini",
+			API:             "gemini",
 			FallbackTimeout: time.Hour,
 		},
 	}
@@ -804,6 +877,22 @@ func (c *ConfigDebug) DbgAddrs() (dbgAddr, httpAddr, sshAddr string, err error) 
 	sshAddr = host + ":" + strconv.Itoa(sshPort)
 
 	return dbgAddr, httpAddr, sshAddr, nil
+}
+
+func (c *ConfigDebug) DbgAddrListen() (dbgAddr string, err error) {
+	dbgAddr = c.DBGAddr
+	if dbgAddr == "1" {
+		dbgAddr = dbg.DbgAddr
+	}
+	host, port, err := net.SplitHostPort(dbgAddr)
+	if err != nil {
+		return "", err
+	}
+	if c.Root.DockerMode {
+		host = "0.0.0.0"
+	}
+
+	return host + ":" + port, nil
 }
 
 // TODO ConfigToEnv(cfg any) (string, error) {
@@ -843,6 +932,22 @@ func (c *ConfigWeb) DBAddrs() (base, agent, mach string) {
 	return "localhost:" + strconv.Itoa(port),
 		"localhost:" + strconv.Itoa(port+1),
 		"localhost:" + strconv.Itoa(port+2)
+}
+
+func (c *ConfigWeb) DBAddrsListen() (base, agent, mach string) {
+	if c.DBPort == -1 {
+		return "", "", ""
+	}
+
+	host := "localhost"
+	if c.Root.ServerMode {
+		host = "0.0.0.0"
+	}
+
+	port := c.DBPort
+	return host + ":" + strconv.Itoa(port),
+		host + ":" + strconv.Itoa(port+1),
+		host + ":" + strconv.Itoa(port+2)
 }
 
 func (c *ConfigWeb) ConfigWebLogAddr() string {
@@ -892,9 +997,20 @@ func BinaryPath(absolute bool) string {
 	return bin
 }
 
-// TODO extract to configAPIs
-func (c *ConfigWeb) AddrAgent() string {
+func (c *ConfigWeb) AddrListen() string {
 	host, port, err := net.SplitHostPort(c.Addr)
+	if err != nil {
+		return ""
+	}
+	if c.Root.ServerMode {
+		host = "0.0.0.0"
+	}
+
+	return host + ":" + port
+}
+
+func (c *ConfigWeb) AddrAgent() string {
+	host, port, err := net.SplitHostPort(c.AddrListen())
 	if err != nil {
 		return ""
 	}
@@ -906,7 +1022,7 @@ func (c *ConfigWeb) AddrAgent() string {
 }
 
 func (c *ConfigWeb) REPLAddrDash() string {
-	host, _, err := net.SplitHostPort(c.Addr)
+	host, _, err := net.SplitHostPort(c.AddrListen())
 	if err != nil {
 		return ""
 	}
@@ -916,7 +1032,7 @@ func (c *ConfigWeb) REPLAddrDash() string {
 }
 
 func (c *ConfigWeb) REPLAddrAgentUI() string {
-	host, _, err := net.SplitHostPort(c.Addr)
+	host, _, err := net.SplitHostPort(c.AddrListen())
 	if err != nil {
 		return ""
 	}
@@ -933,7 +1049,7 @@ func (c *ConfigWeb) AgentURL() string {
 	return "http://" + c.Addr + "/agent"
 }
 
-func (cfg *Config) DotEnv() string {
+func (c Config) DotEnv() string {
 	var sb strings.Builder
 
 	writeEnv := func(key string, value any) {
@@ -950,60 +1066,60 @@ func (cfg *Config) DotEnv() string {
 	sb.WriteString("# ==========================================\n")
 	sb.WriteString("# AGENT CONFIGURATION\n")
 	sb.WriteString("# ==========================================\n")
-	writeEnv("ID", cfg.Agent.ID)
-	writeEnv("LABEL", cfg.Agent.Label)
-	writeEnv("DIR", cfg.Agent.Dir)
-	writeEnv("INTRO", cfg.Agent.Intro)
-	writeEnv("INTRO_DASH", cfg.Agent.IntroDash)
-	writeEnv("FOOTER", cfg.Agent.Footer)
+	writeEnv("ID", c.Agent.ID)
+	writeEnv("LABEL", c.Agent.Label)
+	writeEnv("DIR", c.Agent.Dir)
+	writeEnv("INTRO", c.Agent.Intro)
+	writeEnv("INTRO_DASH", c.Agent.IntroDash)
+	writeEnv("FOOTER", c.Agent.Footer)
 
-	writeEnv("LOG_FILE", cfg.Agent.Log.File)
-	writeEnv("LOG_PROMPTS", cfg.Agent.Log.Prompts)
-	writeEnv("LOG_MACH_FWD", cfg.Agent.Log.MachFwd)
-	writeEnv("LOG_MACH_LEVEL", cfg.Agent.Log.MachLevel)
-	writeEnv("LOG_MACH_PRINT", cfg.Agent.Log.MachPrint)
+	writeEnv("LOG_FILE", c.Agent.Log.File)
+	writeEnv("LOG_PROMPTS", c.Agent.Log.Prompts)
+	// TODO log fwd
+	writeEnv("LOG_MACH_LEVEL", c.Agent.Log.MachLevel)
+	writeEnv("LOG_MACH_PRINT", c.Agent.Log.MachPrint)
 
-	writeEnv("HISTORY_BACKEND", cfg.Agent.History.Backend)
-	writeEnv("HISTORY_MAX", cfg.Agent.History.Max)
+	writeEnv("HISTORY_BACKEND", c.Agent.History.Backend)
+	writeEnv("HISTORY_MAX", c.Agent.History.Max)
 
 	sb.WriteString("\n# ==========================================\n")
 	sb.WriteString("# WEB CONFIGURATION\n")
 	sb.WriteString("# ==========================================\n")
-	writeEnv("WEB_ADDR", cfg.Web.Addr)
-	writeEnv("WEB_ADDR_AGENT", cfg.Web.AddrAgent())
-	writeEnv("WEB_DASH_REPL_ADDR", cfg.Web.REPLAddrDash())
-	writeEnv("WEB_AGENTUI_REPL_ADDR", cfg.Web.REPLAddrAgentUI())
-	writeEnv("WEB_DB_PORT", cfg.Web.DBPort)
-	writeEnv("WEB_LOG_PORT", cfg.Web.LogPort)
+	writeEnv("WEB_ADDR", c.Web.Addr)
+	writeEnv("WEB_ADDR_AGENT", c.Web.AddrAgent())
+	writeEnv("WEB_DASH_REPL_ADDR", c.Web.REPLAddrDash())
+	writeEnv("WEB_AGENTUI_REPL_ADDR", c.Web.REPLAddrAgentUI())
+	writeEnv("WEB_DB_PORT", c.Web.DBPort)
+	writeEnv("WEB_LOG_PORT", c.Web.LogPort)
 
 	sb.WriteString("\n# ==========================================\n")
 	sb.WriteString("# TUI CONFIGURATION\n")
 	sb.WriteString("# ==========================================\n")
-	writeEnv("TUI_HOST", cfg.TUI.Host)
-	writeEnv("TUI_PORT_SSH", cfg.TUI.PortSSH)
-	writeEnv("TUI_WEB_HOST", cfg.TUI.WebHost)
-	writeEnv("TUI_PORT_WEB", cfg.TUI.PortWeb)
-	writeEnv("TUI_CLOCK_RANGE", cfg.TUI.ClockRange)
+	writeEnv("TUI_HOST", c.TUI.Host)
+	writeEnv("TUI_PORT_SSH", c.TUI.PortSSH)
+	writeEnv("TUI_WEB_HOST", c.TUI.WebHost)
+	writeEnv("TUI_PORT_WEB", c.TUI.PortWeb)
+	writeEnv("TUI_CLOCK_RANGE", c.TUI.ClockRange)
 
 	sb.WriteString("\n# ==========================================\n")
 	sb.WriteString("# TOOLS CONFIGURATION\n")
 	sb.WriteString("# ==========================================\n")
-	writeEnv("TOOLS_SEARXNG_PORT", cfg.Tools.SearXNG.Port)
-	writeEnv("TOOLS_SEARXNG_URL", cfg.Tools.SearXNG.URL)
+	writeEnv("TOOLS_SEARXNG_PORT", c.Tools.SearXNG.Port)
+	writeEnv("TOOLS_SEARXNG_URL", c.Tools.SearXNG.URL)
 
 	sb.WriteString("\n# ==========================================\n")
 	sb.WriteString("# DEBUG CONFIGURATION\n")
 	sb.WriteString("# ==========================================\n")
-	writeEnv("DEBUG_STORY", cfg.Debug.Story)
-	writeEnv("DEBUG_MOCK", cfg.Debug.Mock)
-	writeEnv("DEBUG_PROFILER_ADDR", cfg.Debug.ProfilerAddr)
-	writeEnv("DEBUG_VERBOSE", cfg.Debug.Verbose)
-	writeEnv("DEBUG_VERBOSE_SQL", cfg.Debug.VerboseSQL)
-	writeEnv("DEBUG_REPL", cfg.Debug.REPL)
-	writeEnv("DEBUG_DBG_ADDR", cfg.Debug.DBGAddr)
-	writeEnv("DEBUG_DBG_EMBED", cfg.Debug.DBGEmbed)
-	writeEnv("DEBUG_DBG_EMBED_WEB", cfg.Debug.DBGEmbedWeb)
-	writeEnv("DEBUG_REPL_WEB", cfg.Debug.REPLWeb)
+	writeEnv("DEBUG_STORY", c.Debug.Story)
+	writeEnv("DEBUG_MOCK", c.Debug.Mock)
+	writeEnv("DEBUG_PROFILER_ADDR", c.Debug.ProfilerAddr)
+	writeEnv("DEBUG_VERBOSE", c.Debug.Verbose)
+	writeEnv("DEBUG_VERBOSE_SQL", c.Debug.VerboseSQL)
+	writeEnv("DEBUG_REPL", c.Debug.REPL)
+	writeEnv("DEBUG_DBG_ADDR", c.Debug.DBGAddr)
+	writeEnv("DEBUG_DBG_EMBED", c.Debug.DBGEmbed)
+	writeEnv("DEBUG_DBG_EMBED_WEB", c.Debug.DBGEmbedWeb)
+	writeEnv("DEBUG_REPL_WEB", c.Debug.REPLWeb)
 
 	return sb.String()
 }
@@ -1309,12 +1425,15 @@ type PromptMsg struct {
 }
 
 type PromptOpts struct {
+	// TODO SortTags for favoring certain models eg "slow"
+
 	// required provider tags
-	Tags []string
+	RequiredTags []string
 	// disallowed provider tags
 	NoTags []string
 	// skip checking if state is active
 	SkipState bool
+	Reasoning string
 }
 
 // optBindOpts will return the first [BindOpts] from a list.
@@ -1360,14 +1479,14 @@ func (p *Prompt[P, R]) GenSysPrompt() string {
 		if len(c) == 0 {
 			continue
 		}
-		docs += "## " + doc.Title() + "\n\n" + strings.Join(doc.Parts(), "\n") + "\n\n"
+		docs += "## " + doc.Title() + "\n\n" + strings.Join(doc.Parts(), "\n    ") + "\n\n"
 	}
 	for _, d := range p.docs {
 		c := d.Parts()
 		if len(c) == 0 {
 			continue
 		}
-		docs += "## " + d.Title() + "\n\n" + strings.Join(d.Parts(), "\n") + "\n\n"
+		docs += "## " + d.Title() + "\n\n" + strings.Join(d.Parts(), "\n    ") + "\n\n"
 	}
 	if docs != "" {
 		docs = "# EXTRA INFORMATION AND CONTEXT\n\n" + docs
@@ -1402,14 +1521,16 @@ func (p *Prompt[P, R]) GenSysPrompt() string {
 // Conversation will create a conversation with history and system prompt, return sys prompt on the side.
 func (p *Prompt[P, R]) Conversation() (*core.Conversation, string) {
 	sys := p.GenSysPrompt()
-	// TODO marshal sys prompts, add generic params schema for attached documents
 	c := core.NewConversation(sys)
+
+	// max len
 	limit := max(100, p.HistoryMsgLen)
 	if l := len(p.Msgs); l > limit {
 		p.Msgs = p.Msgs[l-limit:]
 	}
-	for i := len(p.Msgs) - 1; i >= 0; i-- {
-		msg := p.Msgs[i]
+
+	// inject msgs
+	for _, msg := range p.Msgs {
 		c.AddMessage(msg.From, msg.Content)
 	}
 
@@ -1418,13 +1539,14 @@ func (p *Prompt[P, R]) Conversation() (*core.Conversation, string) {
 
 func (p *Prompt[P, R]) HistClean() {
 	p.Msgs = nil
+	p.lastClient = nil
 }
 
-var (
-	ErrHistNil = errors.New("history is nil")
-)
+// ///// ///// /////
 
-// DOCUMENT
+// ///// DOCUMENT
+
+// ///// ///// /////
 
 type Document struct {
 	title string
@@ -1480,6 +1602,10 @@ type ToolApi interface {
 
 // ///// ///// /////
 
+var (
+	ErrHistNil = errors.New("history is nil")
+)
+
 // ErrDB is for [states.AgentBaseStatesDef.ErrDB].
 var ErrDB = errors.New("DB error")
 
@@ -1526,4 +1652,44 @@ func GetVersion() string {
 	}
 
 	return ver
+}
+
+func NullString(s string) sql.NullString {
+	return sql.NullString{String: s, Valid: s != ""}
+}
+
+type HasPromptUsage interface {
+	GetPromptUsage() *PromptUsage
+}
+
+type PromptConfig struct {
+	ModelTag     string
+	ModelSortTag string
+	Reasoning    string
+	MaxTries     int
+	Concurrency  int
+}
+
+func IsStory(state string) bool {
+	return strings.HasPrefix(state, states.PrefixStory) && state != ss.StoryChanged &&
+		!strings.HasPrefix(state, states.PrefixStoryDisable) && state != ss.StoryAction
+}
+
+
+
+type PromptUsage struct {
+	Model              string
+	API                string
+	URL                string
+	PromptTokens       int
+	PromptTokensCached int
+	CompletionTokens   int
+	TotalTokens        int
+	PromptChars        int
+	HistoryChars       int
+	Provider           string
+}
+
+func (p *PromptUsage) Compute() {
+	p.TotalTokens = p.PromptTokens + p.PromptTokensCached + p.CompletionTokens
 }

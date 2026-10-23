@@ -12,23 +12,24 @@ import (
 )
 
 const addPrompt = `-- name: AddPrompt :one
-INSERT INTO prompts (session_id, agent, state, history_len, system, request, provider, model, created_at, mach_time_sum, mach_time)
+INSERT INTO prompts (session_id, agent, state, history_len, system, request, cache, created_at,
+                     mach_time_sum, mach_time, thread)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING id
 `
 
 type AddPromptParams struct {
-	SessionID   string    `json:"session_id"`
-	Agent       string    `json:"agent"`
-	State       string    `json:"state"`
-	HistoryLen  int64     `json:"history_len"`
-	System      string    `json:"system"`
-	Request     string    `json:"request"`
-	Provider    string    `json:"provider"`
-	Model       string    `json:"model"`
-	CreatedAt   time.Time `json:"created_at"`
-	MachTimeSum int64     `json:"mach_time_sum"`
-	MachTime    string    `json:"mach_time"`
+	SessionID   string         `json:"session_id"`
+	Agent       string         `json:"agent"`
+	State       string         `json:"state"`
+	HistoryLen  int64          `json:"history_len"`
+	System      string         `json:"system"`
+	Request     string         `json:"request"`
+	Cache       sql.NullString `json:"cache"`
+	CreatedAt   time.Time      `json:"created_at"`
+	MachTimeSum int64          `json:"mach_time_sum"`
+	MachTime    string         `json:"mach_time"`
+	Thread      sql.NullString `json:"thread"`
 }
 
 func (q *Queries) AddPrompt(ctx context.Context, arg AddPromptParams) (int64, error) {
@@ -39,11 +40,11 @@ func (q *Queries) AddPrompt(ctx context.Context, arg AddPromptParams) (int64, er
 		arg.HistoryLen,
 		arg.System,
 		arg.Request,
-		arg.Provider,
-		arg.Model,
+		arg.Cache,
 		arg.CreatedAt,
 		arg.MachTimeSum,
 		arg.MachTime,
+		arg.Thread,
 	)
 	var id int64
 	err := row.Scan(&id)
@@ -52,32 +53,32 @@ func (q *Queries) AddPrompt(ctx context.Context, arg AddPromptParams) (int64, er
 
 const addPromptResponse = `-- name: AddPromptResponse :exec
 UPDATE prompts
-SET response=?
+SET response=?,
+    usage=?,
+    h_time_taken=?
 WHERE id = ?
 RETURNING id
 `
 
 type AddPromptResponseParams struct {
-	Response sql.NullString `json:"response"`
-	ID       int64          `json:"id"`
+	Response   sql.NullString `json:"response"`
+	Usage      sql.NullString `json:"usage"`
+	HTimeTaken sql.NullString `json:"h_time_taken"`
+	ID         int64          `json:"id"`
 }
 
 func (q *Queries) AddPromptResponse(ctx context.Context, arg AddPromptResponseParams) error {
-	_, err := q.db.ExecContext(ctx, addPromptResponse, arg.Response, arg.ID)
-	return err
-}
-
-const dropPrompts = `-- name: DropPrompts :exec
-DROP TABLE prompts
-`
-
-func (q *Queries) DropPrompts(ctx context.Context) error {
-	_, err := q.db.ExecContext(ctx, dropPrompts)
+	_, err := q.db.ExecContext(ctx, addPromptResponse,
+		arg.Response,
+		arg.Usage,
+		arg.HTimeTaken,
+		arg.ID,
+	)
 	return err
 }
 
 const listPromptsBySessID = `-- name: ListPromptsBySessID :one
-SELECT id, session_id, agent, state, system, history_len, request, provider, model, response, created_at, mach_time_sum, mach_time
+SELECT id, session_id, agent, state, system, history_len, request, cache, response, usage, thread, created_at, mach_time_sum, mach_time, h_time_taken
 FROM prompts
 WHERE session_id = ?
 LIMIT 1
@@ -94,12 +95,14 @@ func (q *Queries) ListPromptsBySessID(ctx context.Context, sessionID string) (Pr
 		&i.System,
 		&i.HistoryLen,
 		&i.Request,
-		&i.Provider,
-		&i.Model,
+		&i.Cache,
 		&i.Response,
+		&i.Usage,
+		&i.Thread,
 		&i.CreatedAt,
 		&i.MachTimeSum,
 		&i.MachTime,
+		&i.HTimeTaken,
 	)
 	return i, err
 }

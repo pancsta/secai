@@ -21,14 +21,16 @@ type Prompt struct {
 	System     string `gorm:"not null"`
 	HistoryLen int    `gorm:"not null"`
 	Request    string `gorm:"not null"`
-	Provider   string `gorm:"not null"`
-	Model      string `gorm:"not null"`
+	Cache      string
 	Response   string
+	Usage      string
+	Thread     string
 
 	// Time
 	CreatedAt   time.Time `gorm:"not null"`
 	MachTimeSum int       `gorm:"not null"`
 	MachTime    string    `gorm:"not null"`
+	HTimeTaken  string
 }
 
 // AGENT LLM

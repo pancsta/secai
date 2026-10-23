@@ -38,6 +38,7 @@ tasks:
       - go get resty.dev/v3
 
   gen-sql:
+    desc: Generate SQL schema and Go queries. Migrates the DB on the next app start.
     cmds:
       - go run ./scripts/gen_sql_schema
       - go tool sqlc generate
@@ -204,3 +205,6 @@ tasks:
   cleanup-db: rm "{{.SECAI_DIR}}/*.sqlite"
 
   cleanup-db-release: rm /home/tob/.local/share/taskbot/*.sqlite
+
+  gen-schema-godoc:
+      - go run ./scripts/gen_schema_godoc

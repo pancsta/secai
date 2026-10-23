@@ -37,21 +37,22 @@ Agent {
   Footer "2025-2026 <a href='https://ai-gents.work' target=_blank>AI-gents.work</a>"
 
   Log {
-  // duplicate agent to state-machine log
-    MachFwd true
+    FwdErrState true
+    FwdWarnState true
   // state-machine log level
     MachLevel 3
-  //    MachPrint true
-  // path to log file
-  //    File "tmp-cook/cook.jsonl"
+//    MachPrint true
   // log prompts
-    Prompts true
+//    Prompts true
+    Level "DEBUG"
+//    File "tmp-cook/cook.jsonl"
+    AI true
   }
 
   History {
   // Available: memory, sqlite, bbolt (default: memory)
     Backend "sqlite"
-    Max 1_000_000
+    Max 10_000
   }
 }
 
@@ -61,7 +62,8 @@ Debug {
 // run the mock scenario
 //  Mock true
 // show verbose debug messages
-//  Verbose true
+  Verbose true
+//  VerboseSQL true
   REPL true
   ValFiles true
 

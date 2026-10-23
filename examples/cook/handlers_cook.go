@@ -22,7 +22,7 @@ import (
 	sa "github.com/pancsta/secai/examples/cook/schema"
 	"github.com/pancsta/secai/examples/cook/states"
 	"github.com/pancsta/secai/shared"
-	"github.com/pancsta/secai/tui"
+	"github.com/pancsta/secai/ui"
 )
 
 var _ = ss.Exception
@@ -246,92 +246,102 @@ func (a *Agent) CheckStoriesState(e *am.Event) {
 	// TODO move to base agent?
 	// TODO bind to When methods, dont re-run each time on AnyState
 	mach := a.Mach()
+	ctx := mach.NewStateCtx(ss.CheckStories)
 
-	var stateList S
-	var activateList []bool
-	for _, s := range a.stories {
-		// TODO env const
-		isDebug := os.Getenv("SECAI_DEBUG_STORY") == s.State
-		if isDebug {
-			a.Log("checking", "story", s.State)
-		}
+	a.Mach().Fork(ctx, e, func() {
 
-		// validate
-		if !mach.Has1(s.State) {
-			mach.AddErr(fmt.Errorf("%w: %s", am.ErrStateMissing, s.State), nil)
-			continue
-		}
+		var stateList S
+		var activateList []bool
+		for _, s := range a.stories {
 
-		s.Tick = mach.Tick(s.State)
-		// this story should be active
-		activate := false
-		// this story has automatic triggers
-		hasTriggers := false
-
-		// dont activate without passing triggers
-
-		// check the agent machine
-		if !s.Agent.Trigger.IsEmpty() {
-			activate = s.Agent.Trigger.Check(s.Agent.Mach)
+			// TODO env const
+			isDebug := slices.Contains(a.Config.Debug.Story, s.State)
 			if isDebug {
-				a.Log("cook", "check", activate)
+				a.Log("checking", "story", s.State)
 			}
-			hasTriggers = true
+
+			// validate
+			if !mach.Has1(s.State) {
+				mach.AddErr(fmt.Errorf("%w: %s", am.ErrStateMissing, s.State), nil)
+				continue
+			}
+
+			s.Tick = mach.Tick(s.State)
+			// this story should be active
+			activate := false
+			// this story has automatic triggers
+			hasTriggers := false
+
+			// dont activate without passing triggers
+
+			// check the agent machine
+			if !s.Agent.Trigger.IsEmpty() {
+				activate = s.Agent.Trigger.Check(s.Agent.Mach)
+				if isDebug {
+					a.Log("tbot", "check", activate)
+				}
+				hasTriggers = true
+			}
+
+			// check the memory machine
+			if !s.Memory.Trigger.IsEmpty() {
+				check := s.Memory.Trigger.Check(s.Memory.Mach)
+				activate = (activate || !hasTriggers) && check
+				if isDebug {
+					a.Log("memory", "check", check)
+				}
+				hasTriggers = true
+			}
+
+			// manual story
+			if !hasTriggers {
+				if isDebug {
+					a.Log("no triggers", "story", s.State)
+				}
+				continue
+			}
+
+			// add to the list after a passed "impossibility check"
+			if mach.Is1(s.State) && !activate && !amhelp.CantRemove1(mach, s.State, nil) ||
+				mach.Not1(s.State) && activate && !amhelp.CantAdd1(mach, s.State, nil) {
+
+				if isDebug {
+					a.Log("story changed", "story", s.State)
+				}
+				stateList = append(stateList, s.State)
+				activateList = append(activateList, activate)
+			}
+			if ctx.Err() != nil {
+				return // expired
+			}
 		}
 
-		// check the memory machine
-		if !s.Memory.Trigger.IsEmpty() {
-			check := s.Memory.Trigger.Check(s.Memory.Mach)
-			activate = (activate || !hasTriggers) && check
-			if isDebug {
-				a.Log("memory", "check", check)
-			}
-			hasTriggers = true
+		// apply the changes if any (no tracking)
+		if len(stateList) > 0 {
+			mach.Add1(ss.StoryChanged, Pass(&shared.AStoryChanged{
+				StatesList:   stateList,
+				ActivateList: activateList,
+			}))
 		}
-
-		// manual story
-		if !hasTriggers {
-			if isDebug {
-				a.Log("no triggers", "story", s.State)
-			}
-			continue
-		}
-
-		// add to the list after a passed "impossibility check"
-		if mach.Is1(s.State) && !activate && !amhelp.CantRemove1(mach, s.State, nil) ||
-			mach.Not1(s.State) && activate && !amhelp.CantAdd1(mach, s.State, nil) {
-
-			if isDebug {
-				a.Log("story changed", "story", s.State)
-			}
-			stateList = append(stateList, s.State)
-			activateList = append(activateList, activate)
-		}
-	}
-
-	// apply the changes if any
-	if len(stateList) > 0 {
-		mach.EvAdd1(e, ss.StoryChanged, Pass(&shared.AStoryChanged{
-			StatesList:   stateList,
-			ActivateList: activateList,
-		}))
-	}
-
-	// re-render all buttons
-	a.hRenderStories(e)
+	})
 }
 
 var _ = ss.StoryChanged
 
+// TODO move to secai?
 func (a *Agent) StoryChangedState(e *am.Event) {
 	mach := a.Mach()
 	args := am.ParseArgs[shared.AStoryChanged](e.Args)
-	states := args.StatesList
+	list := args.StatesList
 	activates := args.ActivateList
 	ctx := mach.NewStateCtx(ss.StoryChanged)
 
 	mach.Fork(ctx, e, func() {
-		for i, name := range states {
+		for i, name := range list {
+			if ctx.Err() != nil {
+				return // expired
+			}
+
 			activate := activates[i]
 			s := a.stories[name]
 
@@ -340,32 +350,38 @@ func (a *Agent) StoryChangedState(e *am.Event) {
 				continue
 			}
 
-			// deactivate
-			if mach.Is1(s.State) && !activate {
-				res := mach.EvRemove1(e, s.State, nil)
+			if a.IsStoryDisabled(s.State) {
+				a.LogTrace("story disabled", "state", name)
+				continue
+			}
 
-				// TODO handle Queued?
-				if res != am.Canceled {
+			// deactivate
+			if mach.Is1(s.State) && (!activate || a.IsStoryDisabled(s.State)) {
+				if amhelp.EvRemove1Sync(ctx, e, mach, s.State) {
 					s.Agent.TimeDeactivated = mach.Time(nil)
-					s.Memory.TimeDeactivated = a.mem.Time(nil)
+					if a.mem != nil {
+						s.Memory.TimeDeactivated = a.mem.Time(nil)
+					}
 					s.DeactivatedAt = time.Now()
 					s.LastActiveTicks = s.Agent.TimeDeactivated.Sum(nil) -
 						s.Agent.TimeActivated.Sum(nil)
+				} else {
+					a.LogDebug("failed to de-activate", "state", name)
 				}
 
 				// activate
-			} else if mach.Not1(s.State) && activate {
-				res := mach.EvAdd1(e, s.State, nil)
-
-				// TODO handle Queued?
-				if res != am.Canceled {
+			} else if mach.Not1(s.State) && activate && !a.IsStoryDisabled(s.State) {
+				if amhelp.EvAdd1Sync(ctx, e, mach, s.State) {
 					s.Agent.TimeActivated = mach.Time(nil)
-					s.Memory.TimeActivated = a.mem.Time(nil)
+					if a.mem != nil {
+						s.Memory.TimeActivated = a.mem.Time(nil)
+					}
 				} else {
-					a.Log("failed to activate", "state", name)
+					a.LogDebug("failed to activate", "state", name)
 				}
 			}
 		}
+
 		// re-render all buttons TODO method
 		mach.Eval("StoryChangedState", func() {
 			a.hRenderStories(e)
@@ -424,7 +440,7 @@ func (a *Agent) SSHConnState(e *am.Event) {
 	done := args.Done
 	ctx := mach.NewStateCtx(ss.UIMode)
 
-	screen, err := tui.NewSessionScreen(sess)
+	screen, err := ui.NewSessionScreen(sess)
 	if err != nil {
 		err = fmt.Errorf("unable to create screen: %w", err)
 		mach.EvAddErrState(e, ss.ErrUI, err, nil)
@@ -433,7 +449,7 @@ func (a *Agent) SSHConnState(e *am.Event) {
 
 	// new UI will add UIReady
 	mach.Remove1(ss.UIReady, nil)
-	uiMain := tui.NewTui(mach, a.Logger(), a.ConfigBase(),
+	uiMain := ui.NewTui(mach, a.Logger(), a.ConfigBase(),
 		// TODO remote addr of local fwder, not the browser
 		sess.RemoteAddr().String())
 
@@ -444,9 +460,9 @@ func (a *Agent) SSHConnState(e *am.Event) {
 	}
 
 	// init the UI TODO merge into 1
-	stories := tui.NewStories(uiMain, a.Actions(), a.Stories(), a.ConfigBase())
-	chat := tui.NewChat(uiMain, slices.Clone(a.msgs))
-	clock := tui.NewClock(uiMain, a.Store().ClockDiff)
+	stories := ui.NewStories(uiMain, a.Actions(), a.Stories(), a.ConfigBase())
+	chat := ui.NewChat(uiMain, slices.Clone(a.msgs))
+	clock := ui.NewClock(uiMain, a.Store().ClockDiff)
 
 	err = uiMain.Init(screen, a.nextUIName(), stories, clock, chat)
 	if err != nil {
@@ -484,7 +500,7 @@ func (a *Agent) SSHDisconnState(e *am.Event) {
 	addr := args.Addr
 
 	before := len(a.tuis)
-	a.tuis = slices.DeleteFunc(a.tuis, func(t *tui.TUI) bool {
+	a.tuis = slices.DeleteFunc(a.tuis, func(t *ui.TUIAgent) bool {
 		// dispose all on web disconn TODO add conn IDs via users, match IDs
 		if args.Id == "" {
 			amhelp.DisposeEv(t.MachTUI, e)
@@ -941,7 +957,7 @@ func (a *Agent) StoryIngredientsPickingState(e *am.Event) {
 			params.Prompt = a.UserInput
 
 			// run the prompt (checks ctx)
-			res, err := llm.Exec(e, params)
+			res, _, err := llm.Exec(e, params, nil)
 			if ctx.Err() != nil {
 				return // expired
 			}
@@ -1039,7 +1055,7 @@ func (a *Agent) StoryRecipePickingState(e *am.Event) {
 		for a.loopRecipe.Ok(nil) {
 
 			// run the prompt (checks ctx)
-			res, err := llm.Exec(e, params)
+			res, _, err := llm.Exec(e, params, nil)
 			if ctx.Err() != nil {
 				return // expired
 			}
@@ -1163,7 +1179,7 @@ func (a *Agent) StoryCookingStartedState(e *am.Event) {
 			a.runOrienting(ctx, e)
 
 			// run the prompt (checks ctx)
-			res, err = llm.Exec(e, params)
+			res, _, err = llm.Exec(e, params, nil)
 			if ctx.Err() != nil {
 				return // expired
 			}

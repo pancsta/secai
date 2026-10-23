@@ -1,4 +1,4 @@
-package tui
+package ui
 
 import (
 	"fmt"
@@ -11,7 +11,7 @@ import (
 	"github.com/pancsta/secai/shared"
 )
 
-// TODO merge into TUI
+// TODO merge into TUIAgent
 type Stories struct {
 	storiesList *cview.TextView
 	layout      *cview.Flex
@@ -21,7 +21,7 @@ type Stories struct {
 	// handlers for the parent agent machine
 	handlers *StoriesHandlers
 	header   *cview.TextView
-	t        *TUI
+	t        *TUIAgent
 	cfg      *shared.Config
 	// currently clicked button ID
 	clicked atomic.Pointer[string]
@@ -29,8 +29,8 @@ type Stories struct {
 	buttons map[string]*cview.Button
 }
 
-// NewStories returns a new TUI dedicated to showing stories and their progress (as buttons).
-func NewStories(tui *TUI, actions []shared.ActionInfo, stories []shared.StoryInfo, cfg *shared.Config) *Stories {
+// NewStories returns a new TUIAgent dedicated to showing stories and their progress (as buttons).
+func NewStories(tui *TUIAgent, actions []shared.ActionInfo, stories []shared.StoryInfo, cfg *shared.Config) *Stories {
 	s := &Stories{
 		t:       tui,
 		actions: actions,
@@ -294,7 +294,7 @@ func (s *Stories) renderStories() string {
 
 // ///// ///// /////
 
-// StoriesHandlers are handlers for the agent's machine from the Stories TUI.
+// StoriesHandlers are handlers for the agent's machine from the Stories TUIAgent.
 type StoriesHandlers struct {
 	s *Stories
 }

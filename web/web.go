@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -88,6 +89,7 @@ type Handlers struct {
 	dashboards     []*arpc.Client
 	agentUIs       []*arpc.Client
 	relay          *amrelay.Relay
+	Relay          atomic.Pointer[amrelay.Relay]
 	nextDashNum    int
 	nextAgentUINum int
 }
@@ -244,7 +246,7 @@ func (h *Handlers) BaseDBReadyState(e *am.Event) {
 	}
 
 	mach.Fork(mach.NewStateCtx(ss.BaseDBReady), e, func() {
-		addr, _, _ := cfg.DBAddrs()
+		addr, _, _ := cfg.DBAddrsListen()
 		err := sqliter.New(addr, h.A.DBBase())
 		if err != nil {
 			AddErr(e, mach, err, nil)
@@ -265,8 +267,8 @@ func (h *Handlers) DBReadyState(e *am.Event) {
 	}
 
 	// TODO move state to ss_secai
-	mach.Fork(mach.NewStateCtx("DBReady"), e, func() {
-		_, addr, _ := cfg.DBAddrs()
+	mach.Fork(mach.NewStateCtx(ss.DBReady), e, func() {
+		_, addr, _ := cfg.DBAddrsListen()
 		err := sqliter.New(addr, h.A.AgentImpl().DBAgent())
 		if err != nil {
 			AddErr(e, mach, err, nil)
@@ -287,7 +289,7 @@ func (h *Handlers) HistoryDBReadyState(e *am.Event) {
 	}
 
 	mach.Fork(mach.NewStateCtx(ss.HistoryDBReady), e, func() {
-		_, _, addr := cfg.DBAddrs()
+		_, _, addr := cfg.DBAddrsListen()
 		err := sqliter.New(addr, h.A.DBHistory())
 		if err != nil {
 			AddErr(e, mach, err, nil)
@@ -515,6 +517,9 @@ func (h *Handlers) ExposeCmd(
 	appOptions.TitleFormat = title
 	// TODO config
 	appOptions.Address = "localhost"
+	if h.A.ConfigBase().DockerMode {
+		appOptions.Address = "0.0.0.0"
+	}
 	appOptions.Port = webPort
 	// TODO doesnt fully render
 	// appOptions.EnableReconnect = true
@@ -592,7 +597,7 @@ func (h *Handlers) StartHTTP(e *am.Event) error {
 		Debug:  cfg.Debug.DBGAddr != "" && cfg.Debug.Verbose,
 		Parent: mach,
 		Wasm: &amrelayt.ArgsWasm{
-			ListenAddr: cfg.Web.Addr,
+			ListenAddr: cfg.Web.AddrListen(),
 			// catch UI machines in-process (avoid TCP tunns)
 			// without tunnel matching, only 1 UI instance can exist per 1 port
 			TunnelMatchers: []amrelayt.TunnelMatcher{{
@@ -644,6 +649,7 @@ func (h *Handlers) StartHTTP(e *am.Event) error {
 
 	// TODO maybe race
 	h.relay = relay
+	h.Relay.Store(relay)
 
 	return nil
 }
@@ -694,6 +700,7 @@ func (h *Handlers) pushMetrics(e *am.Event, browsers []*arpc.Client, store *shar
 	}
 }
 
+// newDashFunc returns a new client for a WASM relay matcher.
 func (h *Handlers) newDashFunc(e *am.Event) amrelayt.NewClientFunc {
 	mach := h.A.Mach()
 
@@ -734,6 +741,7 @@ func (h *Handlers) newDashFunc(e *am.Event) amrelayt.NewClientFunc {
 	}
 }
 
+// newAgentUIFunc returns a new client for a WASM relay matcher.
 func (h *Handlers) newAgentUIFunc(e *am.Event) amrelayt.NewClientFunc {
 	mach := h.A.Mach()
 	// pipes for states with arguments

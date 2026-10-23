@@ -119,6 +119,7 @@ func (p *BasePage) OnMount(app goapp.Context) {
 		p.Error(err)
 		return
 	}
+	// TODO check 500 err
 
 	// initial config
 	boot := res.Result().(*types.DataBoostrap)
@@ -128,6 +129,11 @@ func (p *BasePage) OnMount(app goapp.Context) {
 	}
 	p.Boot = boot
 	p.Dump(ss.Config, p.Boot.Config)
+
+	// link config
+	p.Boot.Config.Web.Root = p.Boot.Config
+	p.Boot.Config.Debug.Root = p.Boot.Config
+	p.Boot.Config.TUI.Root = p.Boot.Config
 
 	p.initDebug()
 	if err := p.initBrowserMach(); err != nil {
@@ -265,7 +271,7 @@ func (p *BasePage) initServerMach() error {
 
 	machID := types.GenBrowserID(agentID, id, randID)
 	agentHandMach, err := am.NewCommon(ctx, machID, p.Boot.MachSchema, p.Boot.MachStates, nil, p.Mach, &am.Opts{
-		Tags: []string{arpc.TagRpcHandler},
+		Tags: []string{ssrpc.TagRpcHandler},
 	})
 	if err != nil {
 		return err

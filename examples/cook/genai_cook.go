@@ -90,7 +90,7 @@ func (a *Agent) GenJokesState(e *am.Event) {
 	mach.Fork(ctx, e, func() {
 		for range retires {
 			// run the prompt (checks ctx)
-			res, err := llm.Exec(e, params)
+			res, _, err := llm.Exec(e, params, nil)
 			if ctx.Err() != nil {
 				return // expired
 			}
@@ -165,7 +165,7 @@ func (a *Agent) GenStepCommentsState(e *am.Event) {
 
 				// run the prompt (checks ctx)
 			} else {
-				res, err = llm.Exec(e, params)
+				res, _, err = llm.Exec(e, params, nil)
 				if ctx.Err() != nil {
 					return // expired
 				}
@@ -196,7 +196,7 @@ func (a *Agent) GenStepCommentsState(e *am.Event) {
 		}
 
 		// store and next
-		a.ValFile(nil, "step-comments", res, "yaml")
+		a.ValFile(nil, "step-comments", res, shared.ValEncYaml)
 		a.stepComments.Store(res)
 		mach.EvAdd1(e, ss.StepCommentsReady, nil)
 	})
@@ -243,7 +243,7 @@ func (a *Agent) GenStepsState(e *am.Event) {
 			} else {
 				// run the prompt (checks ctx)
 				var err error
-				res, err = llm.Exec(e, params)
+				res, _, err = llm.Exec(e, params, nil)
 				if ctx.Err() != nil {
 					return // expired
 				}
@@ -411,7 +411,7 @@ func (a *Agent) processStepSchema(ctx context.Context, res *sa.ResultGenSteps) (
 	//
 
 	schemaRAW := res.Schema
-	a.ValFile(nil, "steps", schemaRAW, "yaml")
+	a.ValFile(nil, "steps", schemaRAW, shared.ValEncYaml)
 
 	// prefix and checksum the schema TODO why count?
 	cBefore := 0
@@ -478,11 +478,11 @@ func (a *Agent) processStepSchema(ctx context.Context, res *sa.ResultGenSteps) (
 	stepNames := sortSteps(schema)
 	newNames := a.mem.StateNames().Add(stepNames)
 
-	a.ValFile(nil, "mem", memSchema, "yaml")
+	a.ValFile(nil, "mem", memSchema, shared.ValEncYaml)
 
 	err := a.validateStepSchema(memSchema, stepNames, newNames)
 	if err != nil {
-		a.ValFile(nil, "steps-failed", schemaRAW, "yaml")
+		a.ValFile(nil, "steps-failed", schemaRAW, shared.ValEncYaml)
 		return nil, nil, err
 	}
 

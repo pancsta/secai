@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"embed"
 	"encoding/gob"
+	"encoding/json"
 	"fmt"
 	"runtime/debug"
 	"slices"
@@ -26,7 +27,7 @@ import (
 	"github.com/pancsta/secai/shared"
 	ssbase "github.com/pancsta/secai/states"
 	"github.com/pancsta/secai/tools/searxng"
-	"github.com/pancsta/secai/tui"
+	"github.com/pancsta/secai/ui"
 	"github.com/pancsta/secai/web"
 	ssp "github.com/pancsta/secai/web/browser/states"
 )
@@ -92,6 +93,9 @@ var webAssets embed.FS
 
 //go:embed config.tpl.kdl
 var ConfigTpl []byte
+
+//go:embed schema/godoc.json
+var schemaGodoc []byte
 
 // ///// ///// /////
 
@@ -160,7 +164,7 @@ type Agent struct {
 
 	storiesOrder []string
 	stories      map[string]*shared.Story
-	tuis         []*tui.TUI
+	tuis         []*ui.TUIAgent
 	msgs         []*shared.Msg
 	tuiNum       int
 
@@ -205,7 +209,7 @@ type Agent struct {
 	orientingPending bool
 	lastStoryCheck   uint64
 	handlersWeb      *Web
-	clockService     *tui.ClockService
+	clockService     *ui.ClockService
 	lastActions      []shared.ActionInfo
 	lastStories      []shared.StoryInfo
 
@@ -282,12 +286,26 @@ func (a *Agent) Init(cfg *Config) error {
 	// }
 
 	// init prompts
+	// TODO move
+	var schemaGodocMap map[string]string
+	if len(schemaGodoc) > 0 {
+		err := json.Unmarshal(schemaGodoc, &schemaGodocMap)
+		if err != nil {
+			a.LogErr("unmarshal schema godoc", err)
+		}
+	}
 	a.pGenJokes = sa.NewPromptGenJokes(a)
+	a.pGenJokes.SetGodoc(schemaGodocMap)
 	a.pIngredientsPicking = sa.NewPromptIngredientsPicking(a)
+	a.pIngredientsPicking.SetGodoc(schemaGodocMap)
 	a.pRecipePicking = sa.NewPromptRecipePicking(a)
+	a.pRecipePicking.SetGodoc(schemaGodocMap)
 	a.pCookingStarted = sa.NewPromptCookingStarted(a)
+	a.pCookingStarted.SetGodoc(schemaGodocMap)
 	a.pGenSteps = sa.NewPromptGenSteps(a)
+	a.pGenSteps.SetGodoc(schemaGodocMap)
 	a.pGenStepComments = sa.NewPromptGenStepComments(a)
+	a.pGenStepComments.SetGodoc(schemaGodocMap)
 
 	// register tools
 	// secai.ToolAddToPrompts(a.tSearxng, a.pSearchingLLM, a.pAnswering)
@@ -300,7 +318,7 @@ func (a *Agent) Init(cfg *Config) error {
 
 	a.initStories()
 	// TODO NewClockService
-	a.clockService = &tui.ClockService{
+	a.clockService = &ui.ClockService{
 		Cfg:       &a.Config.Config,
 		Hist:      a.Hist,
 		Agent:     mach,
@@ -489,6 +507,7 @@ func (a *Agent) Story(state string) *shared.Story {
 	return s
 }
 
+// TODO move to LLM
 func (a *Agent) Actions() []shared.ActionInfo {
 	mach := a.Mach()
 	var ret []shared.ActionInfo
@@ -498,16 +517,24 @@ func (a *Agent) Actions() []shared.ActionInfo {
 		for i := range s.Actions {
 			act := &s.Actions[i]
 			info := shared.ActionInfo{
-				ID:           act.ID,
-				Label:        act.Label,
-				Desc:         act.Desc,
-				StateAdd:     act.StateAdd,
-				StateRemove:  act.StateRemove,
-				VisibleAgent: act.VisibleAgent.Check(mach),
-				VisibleMem:   act.VisibleMem.Check(a.mem),
-				LabelEnd:     act.LabelEnd,
-				Pos:          act.Pos,
-				PosInferred:  act.PosInferred,
+				ID:          act.ID,
+				Label:       act.Label,
+				Desc:        act.Desc,
+				StateAdd:    act.StateAdd,
+				StateRemove: act.StateRemove,
+				LabelEnd:    act.LabelEnd,
+				Pos:         act.Pos,
+				PosInferred: act.PosInferred,
+			}
+			if !act.VisibleAgent.IsEmpty() {
+				info.VisibleAgent = act.VisibleAgent.Check(mach)
+			} else {
+				info.VisibleAgent = true
+			}
+			if !act.VisibleMem.IsEmpty() && a.mem != nil {
+				info.VisibleMem = act.VisibleMem.Check(a.mem)
+			} else {
+				info.VisibleMem = true
 			}
 			if act.Value != nil {
 				info.Value = act.Value()
@@ -526,7 +553,7 @@ func (a *Agent) Actions() []shared.ActionInfo {
 		}
 	}
 
-	a.ValFile(nil, "actions", ret, "")
+	a.ValFile(nil, "actions", ret, shared.ValEncJson)
 	return ret
 }
 

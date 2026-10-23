@@ -190,9 +190,9 @@ func (d *Dashboard) SubmitConfig(ctx Context, e Event) {
 				OpenAI: []shared.ConfigAIOpenAI{{
 					ConfigAICommon: shared.ConfigAICommon{
 						Key:   d.FormKey,
-						Model: "deepseek-chat",
+						Model: "deepseek-v4.1-flash",
+						URL: "https://api.deepseek.com/v1",
 					},
-					URL: "https://api.deepseek.com/v1",
 				}},
 			},
 		}
@@ -213,8 +213,8 @@ func (d *Dashboard) SubmitConfig(ctx Context, e Event) {
 					ConfigAICommon: shared.ConfigAICommon{
 						Key:   d.FormKey,
 						Model: d.FormModel,
+						URL: d.FormURL,
 					},
-					URL: d.FormURL,
 				}},
 			},
 		}

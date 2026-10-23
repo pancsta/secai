@@ -28,12 +28,14 @@ type Prompt struct {
 	System      string         `json:"system"`
 	HistoryLen  int64          `json:"history_len"`
 	Request     string         `json:"request"`
-	Provider    string         `json:"provider"`
-	Model       string         `json:"model"`
+	Cache       sql.NullString `json:"cache"`
 	Response    sql.NullString `json:"response"`
+	Usage       sql.NullString `json:"usage"`
+	Thread      sql.NullString `json:"thread"`
 	CreatedAt   time.Time      `json:"created_at"`
 	MachTimeSum int64          `json:"mach_time_sum"`
 	MachTime    string         `json:"mach_time"`
+	HTimeTaken  sql.NullString `json:"h_time_taken"`
 }
 
 type Resource struct {
