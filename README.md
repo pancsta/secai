@@ -1,9 +1,10 @@
 # secai
 
-**secai** is a Golang framework for _Reasoning AI Workflows_, implemented using a unique state machine which thrives in
-complexity. It's a solid foundation for complex, proactive, and **long-lived AI Agents** with deep and structured
-memory. Each bot ships with embedded devtools and several UIs. The execution flow is graph-based, which allows for
-precise behavior modeling of agents, including interruptions, concurrency, and fault tolerance.
+**secai** is a Golang framework for _Local-first AI Workflows_, implemented using a special state machine which excels in
+synchronizing complexity and nondeterminism, both crucial aspects for scaling AI. It's a solid foundation for complex,
+proactive, and **long-lived AI Agents** with deep and structured memory. Each bot ships with embedded devtools and
+several UIs. The execution flow is graph-based, which allows for precise behavior modeling of agents, including
+interruptions, concurrency, and fault tolerance.
 
 It's a sophisticated replacement for frameworks like LangGraph and offers deeply relational consensus of state.
 
