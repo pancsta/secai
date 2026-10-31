@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -100,9 +101,7 @@ func main() {
 		p.Fail(err.Error())
 	}
 	cfg.File = cli.Config
-
-	// embed WASM
-	cfg.ProdBuild = true
+	cfg.ProdBuild = os.Getenv("COOK_DEV") == ""
 
 	// REPL
 	if cli.REPL != nil {
@@ -181,6 +180,15 @@ func cmdREPL(ctx context.Context, cfg cook.Config) error {
 	args := []string{"--dir", filepath.Join(cfg.Agent.Dir, "repl")}
 	if cfg.Debug.DBGAddr != "" {
 		args = append(args, "--am-dbg-addr", cfg.Debug.DBGAddr)
+	}
+	// web REPL over livepage (Unix PTY only)
+	if cfg.Debug.REPLWeb > 0 && runtime.GOOS != "windows" {
+		host := "localhost"
+		if cfg.DockerMode {
+			host = "0.0.0.0"
+		}
+		args = append(args, "--livepage", "--livepage-addr",
+			fmt.Sprintf("%s:%d", host, cfg.Debug.REPLWeb))
 	}
 	rootCmd.SetArgs(args)
 	r.Cmd = rootCmd

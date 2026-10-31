@@ -1,51 +1,346 @@
+// Package browser contains the server-rendered (livepage) web UIs of secai,
+// built with go-app components. The components are bound to the local agent
+// machine, just like the TUI, and are served by the local web server.
 package browser
 
 import (
-	"errors"
-	"fmt"
-	"net"
-	"os"
-	"strconv"
+	"context"
+	_ "embed"
+	"html"
+	"net/http"
 	"time"
 
-	"github.com/gookit/goutil/dump"
-	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
-	arpc "github.com/pancsta/asyncmachine-go/pkg/rpc"
-	ssrpc "github.com/pancsta/asyncmachine-go/pkg/rpc/states"
-	ampipe "github.com/pancsta/asyncmachine-go/pkg/states/pipes"
-	"github.com/pancsta/asyncmachine-go/pkg/telemetry/dbg"
-	goapp "github.com/pancsta/go-app/pkg/app"
-	"resty.dev/v3"
+	. "github.com/pancsta/go-app/pkg/app"
+	lp "github.com/pancsta/livepage"
 
 	"github.com/pancsta/secai/shared"
 	ssbase "github.com/pancsta/secai/states"
-	"github.com/pancsta/secai/web/browser/states"
-	"github.com/pancsta/secai/web/types"
 )
 
-// agent base
+//go:embed browser.js
+var browserJS string
 
 var ssA = ssbase.AgentBaseStates
-var ssAUI = states.AgentUIStates
-
-var ss = states.PageStates
-
-var randID = amhelp.RandId(4)
 
 var AppClass = "p-4"
 
 // ///// ///// /////
 
-// ///// CMD
+// ///// PAGES
 
 // ///// ///// /////
 
-func Cmd() {
-	goapp.Route("/", goapp.NewZeroComponentFactory(&Dashboard{}))
-	goapp.Route("/agent", goapp.NewZeroComponentFactory(&AgentUI{}))
-	goapp.RunWhenOnBrowser()
+const (
+	// DefaultDashPrefix is the default URL prefix of the dashboard.
+	DefaultDashPrefix = ""
+	// DefaultAgentUIPrefix is the default URL prefix of the agent UI.
+	DefaultAgentUIPrefix = "/agent"
+	// defaultDebounce is the default delay of pushing HTML to the clients.
+	defaultDebounce = 100 * time.Millisecond
+)
+
+// Model is the local agent model rendered by the web UIs. It's implemented by
+// [shared.AgentAPI].
+type Model interface {
+	Mach() *am.Machine
+	ConfigBase() *shared.Config
+	Store() *shared.AgentStore
+	Msgs() []*shared.Msg
+	Stories() []shared.StoryInfo
+	Actions() []shared.ActionInfo
+	Splash() string
 }
+
+// Opts are the options of [NewPages].
+type Opts struct {
+	// DashPrefix is the URL prefix of the dashboard. Defaults to the root.
+	DashPrefix string
+	// AgentUIPrefix is the URL prefix of the agent UI. Defaults to
+	// [DefaultAgentUIPrefix].
+	AgentUIPrefix string
+	// Debounce is the delay of pushing HTML to the clients.
+	Debounce time.Duration
+}
+
+// PageRef is a livepage page of a component.
+type PageRef interface {
+	HRefresh()
+	Clients() int
+}
+
+// PageSetter is implemented by extendable page components.
+type PageSetter interface {
+	SetPage(PageRef)
+}
+
+// RefreshPage re-renders and pushes a page, if it has clients.
+func RefreshPage(page PageRef) {
+	if page == nil || page.Clients() == 0 {
+		return
+	}
+
+	page.HRefresh()
+}
+
+// Pages are the server-rendered web UIs of an agent. They read the model
+// directly, are bound to its machine, and are served by the local web server.
+type Pages[D lp.CompoLiveApi, A lp.CompoLiveApi] struct {
+	Dashboard *lp.Page[D]
+	AgentUI   *lp.Page[A]
+
+	mach          *am.Machine
+	dashBind      string
+	agentBind     string
+	dashPrefix    string
+	agentUIPrefix string
+}
+
+// NewPages creates the web UIs for the passed model. The UIs read the model
+// directly and refresh on transitions of its machine.
+func NewPages(ctx context.Context, model Model, opts Opts) (*Pages[*Dashboard, *AgentUI], error) {
+	dash := &Dashboard{
+		BasePage:    NewBasePage(model),
+		FormBackend: "openai",
+	}
+	agentUI := &AgentUI{BasePage: NewBasePage(model)}
+
+	return NewPagesCustom(ctx, model, dash, agentUI, opts)
+}
+
+// NewPagesCustom creates the web UIs for custom components. The components
+// should embed [Dashboard] and [AgentUI] (or at least implement [PageSetter]),
+// and can override their Render methods.
+func NewPagesCustom[D lp.CompoLiveApi, A lp.CompoLiveApi](
+	ctx context.Context, model Model, dash D, agentUI A, opts Opts,
+) (*Pages[D, A], error) {
+	if opts.DashPrefix == "/" {
+		opts.DashPrefix = DefaultDashPrefix
+	}
+	if opts.AgentUIPrefix == "" {
+		opts.AgentUIPrefix = DefaultAgentUIPrefix
+	}
+	if opts.Debounce <= 0 {
+		opts.Debounce = defaultDebounce
+	}
+	pageOpts := func(prefix, bodyClass string) lp.Opts {
+		return lp.Opts{
+			Prefix:   prefix,
+			Debounce: opts.Debounce,
+			DiffHtml: true,
+			HtmlPage: htmlPage(model, bodyClass),
+		}
+	}
+
+	// dashboard
+	dashPage, err := lp.New(ctx, dash, pageOpts(opts.DashPrefix, AppClass))
+	if err != nil {
+		return nil, err
+	}
+	setPage(dash, dashPage)
+	dashBind, err := model.Mach().HandlersBind(dash, am.BindOpts{Id: "browser.dash"})
+	if err != nil {
+		dashPage.Dispose()
+		return nil, err
+	}
+
+	// agent UI
+	agentPage, err := lp.New(ctx, agentUI,
+		pageOpts(opts.AgentUIPrefix, "h-screen w-screen overflow-hidden "+AppClass))
+	if err != nil {
+		_ = model.Mach().HandlersDetach(dashBind)
+		dashPage.Dispose()
+		return nil, err
+	}
+	setPage(agentUI, agentPage)
+	agentBind, err := model.Mach().HandlersBind(agentUI, am.BindOpts{Id: "browser.agentui"})
+	if err != nil {
+		agentPage.Dispose()
+		_ = model.Mach().HandlersDetach(dashBind)
+		dashPage.Dispose()
+		return nil, err
+	}
+
+	return &Pages[D, A]{
+		Dashboard:     dashPage,
+		AgentUI:       agentPage,
+		mach:          model.Mach(),
+		dashBind:      dashBind,
+		agentBind:     agentBind,
+		dashPrefix:    opts.DashPrefix,
+		agentUIPrefix: opts.AgentUIPrefix,
+	}, nil
+}
+
+// setPage sets the livepage page on a [PageSetter] component.
+func setPage(compo lp.CompoLiveApi, page PageRef) {
+	if s, ok := compo.(PageSetter); ok {
+		s.SetPage(page)
+	}
+}
+
+// Mount mounts the pages on the passed local mux.
+func (p *Pages[D, A]) Mount(mux *http.ServeMux) {
+	mux.Handle(p.dashPrefix+"/", p.Dashboard.NewHandler())
+	mux.Handle(p.agentUIPrefix+"/", p.AgentUI.NewHandler())
+}
+
+// Dispose stops the pages and detaches their machine handlers.
+func (p *Pages[D, A]) Dispose() {
+	if p.Dashboard != nil {
+		p.Dashboard.Dispose()
+	}
+	if p.AgentUI != nil {
+		p.AgentUI.Dispose()
+	}
+	_ = p.mach.HandlersDetach(p.dashBind)
+	_ = p.mach.HandlersDetach(p.agentBind)
+}
+
+// valueTo captures the value forwarded by a livepage DOM event.
+func valueTo(field *string) EventHandler {
+	return func(_ Context, e Event) {
+		*field = e.Data["value"]
+	}
+}
+
+// toRef dumps a reference to a DOM node for further processing in a defer. It
+// keeps the DOM chain in one piece.
+func toRef[T UI](target *T, elem T) T {
+	return lp.ToRef(target, elem)
+}
+
+// htmlPage wraps the rendered component into a whole HTML document and loads
+// the shared styles, chart, and livepage hooks.
+func htmlPage(model Model, bodyClass string) func(body string) string {
+	return func(body string) string {
+		cfg := model.ConfigBase()
+		title := html.EscapeString(cfg.Agent.Label)
+		pre := "/web/assets/deps/"
+
+		return `<!DOCTYPE html>
+<html lang="en" data-theme="business" class="bg-base-300">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>` + title + `</title>
+<style>
+html, body { height: 100%; margin: 0; }
+*, *::before, *::after { box-sizing: border-box; }
+</style>
+<link rel="stylesheet" href="` + pre + `daisyui@5.css">
+<link rel="stylesheet" href="` + pre + `themes.css">
+<script src="` + pre + `tailwind@4.js"></script>
+<script src="` + pre + `chart.js"></script>
+<script src="` + pre + `utils.js"></script>
+</head>
+<body class="bg-base-300 ` + bodyClass + `">` + body + `
+<script>` + browserJS + `</script>
+<script>` + livepageJS + `</script>
+</body>
+</html>`
+	}
+}
+
+// livepageJS bridges the livepage DOM morphs with the browser-only JS helpers
+// in browser.js (chart, scroll, and form field drafts).
+const livepageJS = `
+(function () {
+  function msgs() { return document.getElementById('msgs') }
+
+  var stick = true
+  document.addEventListener('scroll', function (e) {
+    var m = msgs()
+    if (m && e.target === m) {
+      stick = m.scrollHeight - m.scrollTop - m.clientHeight < 40
+    }
+  }, true)
+
+  // the clock chart is updated from the server-rendered JSON
+  function clock() {
+    var canvas = document.getElementById('clockmoji')
+    if (!canvas) { return }
+    if (!window.clockmojiChart || window.clockmojiChart.canvas !== canvas) {
+      if (window.clockmojiChart) { window.clockmojiChart.destroy() }
+      window.clockmojiChart = null
+      clockmojiInit()
+    }
+    var diff
+    try {
+      diff = JSON.parse(canvas.getAttribute('data-diff'))
+    } catch (e) {
+      return
+    }
+    if (diff && diff.length) { clockmojiUpdate(diff) }
+  }
+
+  // form values live in the DOM only, so morphs reset and drafts restore them
+  function isField(el) {
+    if (!el) { return false }
+    if (el.tagName === 'TEXTAREA') { return true }
+    if (el.tagName !== 'INPUT') { return false }
+    var t = (el.getAttribute('type') || 'text').toLowerCase()
+    return t === 'text' || t === 'password' || t === 'url' ||
+      t === 'email' || t === 'search' || t === 'tel' || t === 'number'
+  }
+
+  function fields() {
+    // server-side resets
+    var els = document.querySelectorAll('[data-reset]')
+    for (var i = 0; i < els.length; i++) {
+      var resetEl = els[i]
+      var gen = resetEl.getAttribute('data-reset')
+      if (resetEl.__lpReset !== gen) {
+        resetEl.__lpReset = gen
+        if (gen !== '0') {
+          resetEl.value = ''
+          resetEl.__lpValue = ''
+        }
+      }
+    }
+
+    // unsent drafts
+    els = document.querySelectorAll('input, textarea')
+    for (var j = 0; j < els.length; j++) {
+      var el = els[j]
+      if (!isField(el)) { continue }
+      if (el.__lpValue !== undefined && el.value !== el.__lpValue) {
+        el.value = el.__lpValue
+      }
+    }
+  }
+
+  function draft(e) {
+    var t = e && e.target
+    if (isField(t)) { t.__lpValue = t.value }
+  }
+
+  document.addEventListener('input', draft, true)
+  document.addEventListener('change', draft, true)
+
+  window.addEventListener('livepage:morph', function () {
+    var m = msgs()
+    if (m && stick) { m.scrollTop = m.scrollHeight }
+    fields()
+    clock()
+  })
+
+  // keep the tailwind runtime styles, which the document morph removes
+  new MutationObserver(function (mutations) {
+    mutations.forEach(function (mutation) {
+      mutation.removedNodes.forEach(function (node) {
+        if (node.nodeType === 1 && node.tagName === 'STYLE' &&
+          node.textContent.indexOf('--tw-') !== -1) {
+          document.head.appendChild(node)
+        }
+      })
+    })
+  }).observe(document.head, {childList: true})
+
+  fields()
+  clock()
+})()
+`
 
 // ///// ///// /////
 
@@ -53,312 +348,33 @@ func Cmd() {
 
 // ///// ///// /////
 
+// BasePage is the base for the server-rendered web UIs. It binds the go-app
+// component to the local agent machine.
 type BasePage struct {
-	goapp.Compo
-	*am.ExceptionHandler
+	lp.Compo
 
-	// config
-
-	// ID of this page
-	Id types.ID
-	// Page schema, defaults to secai/web/browser/states.
-	PageSchema am.Schema
-	PageStates am.States
-
-	// instances
-
-	App goapp.Context
-	// BasePage state machine
-	Mach *am.Machine
-	// Network machine of AgentClient (nil before ReadyState).
-	Agent *arpc.NetworkMachine
-	// Agent RPC client, uses the schema from the top-level agent.
-	AgentClient *arpc.Client
-
-	// BasePage RPC server
-	srv *arpc.Server
-	// Agent handler machine
-	agentHand *am.Machine
-
-	// data
-
-	Boot *types.DataBoostrap
+	model Model
 }
 
-var _ goapp.Initializer = &BasePage{}
-var _ goapp.Mounter = &BasePage{}
-
-func (p *BasePage) OnInit() {
-	// default machine
-	p.PageSchema = states.PageSchema
-	p.PageStates = states.PageStates
+// NewBasePage creates a base page bound to the model. It's meant for custom
+// components embedding [Dashboard] or [AgentUI].
+func NewBasePage(model Model) BasePage {
+	return BasePage{model: model}
 }
 
-// OnMount gets called when the component is mounted
-// This is after Render was called for the first time
-func (p *BasePage) OnMount(app goapp.Context) {
-	p.App = app
-
-	// TODO config
-	// page styles, dark theme TODO proper DOM API
-	// a.Html().Class("bg-base-300").DataSet("theme", "dark")
-	htmlEl := goapp.Window().Get("document").Get("documentElement")
-	htmlEl.Call("setAttribute", "data-theme", "business")
-	// TODO colors?
-	htmlEl.Call("setAttribute", "class", "bg-base-300")
-	goapp.Window().Get("document").Get("body").
-		Call("setAttribute", "class", "bg-base-300 "+AppClass)
-
-	// initial data
-	c := resty.New()
-	defer c.Close()
-	res, err := c.R().
-		SetResult(&types.DataBoostrap{}).
-		Get("/bootstrap")
-	if err != nil {
-		p.Error(err)
-		return
-	}
-	// TODO check 500 err
-
-	// initial config
-	boot := res.Result().(*types.DataBoostrap)
-	if boot.Config == nil || boot.MachStates == nil || boot.MachSchema == nil {
-		p.Error(fmt.Errorf("incomplete bootstrap data: %+v", boot))
-		return
-	}
-	p.Boot = boot
-	p.Dump(ss.Config, p.Boot.Config)
-
-	// link config
-	p.Boot.Config.Web.Root = p.Boot.Config
-	p.Boot.Config.Debug.Root = p.Boot.Config
-	p.Boot.Config.TUI.Root = p.Boot.Config
-
-	p.initDebug()
-	if err := p.initBrowserMach(); err != nil {
-		p.Error(err)
-		return
-	}
-	if err := p.initServerMach(); err != nil {
-		p.Error(err)
-		return
-	}
+// Mach returns the local agent machine.
+func (p *BasePage) Mach() *am.Machine {
+	return p.model.Mach()
 }
 
-func (p *BasePage) OnDismount(ctx goapp.Context) {
-	// TODO stop RPCs
-}
-
-func (p *BasePage) Error(err error) {
-	// TODO UI err
-	panic(err)
-}
-
+// Ready returns true when the agent machine has started.
 func (p *BasePage) Ready() bool {
-	return p.Mach != nil && p.Mach.Is1(ss.Start)
+	return p.model.Mach().Is1(ssA.Start)
 }
 
-//
-
-// HANDLERS
-
-//
-
-var _ = am.StateAny
-
-func (p *BasePage) AnyState(e *am.Event) {
-	// no render on health
-	called := e.Transition().TimeIndexCalled()
-	if called.Any1(ss.Healthcheck, ss.Heartbeat) {
-		return
-	}
-
-	// TODO optimize with Diff
-	p.Draw()
-}
-
-var _ = ss.Config
-
-func (p *BasePage) ConfigEnter(e *am.Event) bool {
-	return am.ParseArgs[types.AConfig](e.Args).Config != nil
-}
-
-func (p *BasePage) ConfigState(e *am.Event) {
-	// config update
-	p.Boot.Config = am.ParseArgs[types.AConfig](e.Args).Config
-}
-
-//
-
-// METHODS
-
-//
-
-func (p *BasePage) Draw() {
-	p.App.Update()
-}
-
-// TODO switch to tags verbose
-func (p *BasePage) Dump(val ...any) {
-	if p.Boot != nil && !p.Boot.Config.Debug.Verbose {
-		return
-	}
-	dump.Println(val...)
-}
-
-func (p *BasePage) initBrowserMach() error {
-	ctx := p.App.Context
-	id := p.Boot.Config.Agent.ID
-	cfg := p.Boot.Config.Web
-	replAddr := ""
-	// TODO IoC
-	switch p.Id {
-	case types.IDDashboardPage:
-		replAddr = cfg.REPLAddrDash()
-	case types.IDAgentUIPage:
-		replAddr = cfg.REPLAddrAgentUI()
-	}
-
-	machID := types.GenBrowserID(p.Id, id, randID)
-	mach, err := am.NewCommon(ctx, machID, p.PageSchema, p.PageStates.Names(), nil, nil, nil)
-	if err != nil {
-		return err
-	}
-	mach.SemLogger().SetArgsMapper(amhelp.LogArgsMapper)
-	amhelp.MachDebugEnv(mach)
-	p.Mach = mach
-	// re-set the config
-	mach.Add1(ss.Config, am.Pass(&types.AConfig{
-		Config: p.Boot.Config,
-	}))
-	repl, err := arpc.MachReplWs(mach, cfg.Addr, &arpc.ReplOpts{
-		WebSocketTunnel: arpc.WsListenPath("repl-"+mach.Id(), replAddr),
-		Args:            types.ArgsRPC,
-	})
-	if err == nil {
-		repl.Start(nil)
-	}
-
-	// RPC Server
-
-	srv, err := arpc.NewServer(ctx, cfg.Addr, machID, mach, &arpc.ServerOpts{
-		WebSocketTunnel: arpc.WsListenPath(mach.Id(), "localhost:0"),
-		Parent:          mach,
-	})
-	if err != nil {
-		return err
-	}
-	p.srv = srv
-
-	return nil
-}
-
-func (p *BasePage) initServerMach() error {
-	ctx := p.App.Context
-	id := p.Boot.Config.Agent.ID
-	cfg := p.Boot.Config.Web
-	var agentID types.ID
-	// TODO IoC
-	switch p.Id {
-	case types.IDDashboardPage:
-		agentID = types.IDDashboardAgent
-	case types.IDAgentUIPage:
-		agentID = types.IDAgentUIAgent
-	}
-
-	// RPC Handlers Machine
-
-	machID := types.GenBrowserID(agentID, id, randID)
-	agentHandMach, err := am.NewCommon(ctx, machID, p.Boot.MachSchema, p.Boot.MachStates, nil, p.Mach, &am.Opts{
-		Tags: []string{ssrpc.TagRpcHandler},
-	})
-	if err != nil {
-		return err
-	}
-	p.agentHand = agentHandMach
-	amhelp.MachDebugEnv(agentHandMach)
-	agentHandMach.SemLogger().SetArgsMapper(amhelp.LogArgsMapper)
-
-	// RPC Client (Net Machine) via relay
-
-	agentRPC, err := arpc.NewClient(ctx, cfg.Addr, agentHandMach.Id(), p.Boot.MachSchema, &arpc.ClientOpts{
-		Parent:    agentHandMach,
-		WebSocket: arpc.WsDialPath(id, cfg.AddrAgent()),
-	})
-	if err != nil {
-		return err
-	}
-	p.AgentClient = agentRPC
-
-	// pipe rpc to Dashboard
-	pipeFrom := am.S{ssrpc.ClientStates.Ready, ssrpc.ClientStates.Connecting}
-	pipeTo := am.S{ss.RPCConnected, ss.RPCConnecting}
-	_, err = ampipe.BindMany(agentRPC.Mach, p.Mach, pipeFrom, pipeTo)
-	if err != nil {
-		return err
-	}
-
-	// finish setting up handlers
-	// ah.handMach = agentHandMach
-
-	return nil
-}
-
-func (p *BasePage) initDebug() {
-	cfg := p.Boot.Config
-	// log
-
-	os.Setenv(am.EnvAmLog, cfg.Agent.Log.MachLevel.Level())
-	if cfg.Agent.Log.MachPrint {
-		os.Setenv(amhelp.EnvAmLogPrint, "1")
-	}
-
-	// dbg
-	if cfg.Debug.DBGAddr == "1" {
-		os.Setenv(dbg.EnvAmDbgAddr, "1")
-		os.Setenv(amhelp.EnvAmLogFull, "1")
-
-		// TODO move to amhelp
-	} else if cfg.Debug.DBGAddr != "" {
-		host, port, err := net.SplitHostPort(cfg.Debug.DBGAddr)
-		if err != nil {
-			p.Error(err)
-			return
-		}
-		portNum, err := strconv.Atoi(port)
-		if err != nil {
-			p.Error(err)
-			return
-		}
-		os.Setenv(dbg.EnvAmDbgAddr, host+":"+strconv.Itoa(portNum+1))
-		os.Setenv(amhelp.EnvAmLogFull, "1")
-	}
-
-	// RPC debug
-	if cfg.Debug.Verbose {
-		if cfg.Debug.DBGAddr != "" {
-			os.Setenv(arpc.EnvAmRpcDbg, "1")
-		}
-		os.Setenv(arpc.EnvAmRpcLogClient, "1")
-		os.Setenv(arpc.EnvAmRpcLogServer, "1")
-		os.Setenv(amhelp.EnvAmHealthcheck, "1")
-	}
-}
-
-func (p *BasePage) start() error {
-	p.srv.Start(nil)
-	p.AgentClient.Start(nil)
-	// wait for RPC TODO timeout?
-	<-p.AgentClient.Mach.When1(ssrpc.ClientStates.Ready, nil)
-
-	// start the Dashboard
-	p.Mach.Add1(ss.Start, nil)
-	return nil
-}
-
-func (p *BasePage) Spinner() goapp.UI {
-	return goapp.Progress().Class("progress w-56")
+// Spinner returns a loading indicator.
+func (p *BasePage) Spinner() UI {
+	return Progress().Class("progress w-56")
 }
 
 // ///// ///// /////
@@ -367,92 +383,39 @@ func (p *BasePage) Spinner() goapp.UI {
 
 // ///// ///// /////
 
+// Dashboard is the web dashboard, bound to the local agent machine.
 type Dashboard struct {
 	BasePage
 
-	// data & config
-
-	SkipHandlers bool
-	Data         *types.DataDashboard
-
 	// Dashboard state
-	FormBackend    string
-	FormKey        string
-	FormURL        string
-	FormModel      string
-	FormSubmitting bool
-	FormErr        string
+	FormBackend string
+	FormKey     string
+	FormURL     string
+	FormModel   string
+
+	// Page is the livepage page of this component, set by [NewPagesCustom].
+	Page PageRef
 }
 
-// OnInit constructor
-func (d *Dashboard) OnInit() {
-	d.BasePage.OnInit()
-	d.Id = types.IDDashboardPage
+var _ lp.CompoLiveApi = &Dashboard{}
+var _ PageSetter = &Dashboard{}
 
-	// defaults
-	d.FormBackend = "openai"
-	d.Data = &types.DataDashboard{}
+// SetPage sets the livepage page of this component.
+func (d *Dashboard) SetPage(page PageRef) {
+	d.Page = page
 }
 
-func (d *Dashboard) OnMount(ctx goapp.Context) {
-	d.BasePage.OnMount(ctx)
+var _ = am.StateAny
 
-	// dashboard UI page TODO align Agent UI page
-	if !d.SkipHandlers {
-		_, err := d.Mach.HandlersBind(d)
-		if err != nil {
-			d.Error(err)
-			return
-		}
-	} else {
-		d.Dump("skipping handlers mount")
-	}
-
-	// start (block)
-	if err := d.start(); err != nil {
-		d.Error(err)
-	}
-	d.Dump("netAgent mounted")
-	netAgent := d.AgentClient.NetMach
-	d.Agent = netAgent
-
-	// bind and sync the handler mach to net mach
-	d.agentHand.Set(netAgent.ActiveStates(nil), nil)
-	if _, err := ampipe.BindAny(netAgent, d.agentHand); err != nil {
-		d.Error(err)
+// AnyState re-renders the page on transitions of the local machine.
+func (d *Dashboard) AnyState(e *am.Event) {
+	// ignore health-only txs
+	called := e.Transition().TimeIndexCalled()
+	if called.Any1(ssA.Healthcheck, ssA.Heartbeat) {
 		return
 	}
 
-	// whole agent time sync
-	_, err := NewNetAgent(netAgent, d, nil, d)
-	if err != nil {
-		d.Error(err)
-		return
-	}
-}
-
-//
-
-// HANDLERS
-
-//
-
-func (d *Dashboard) DataEnter(e *am.Event) bool {
-	args := am.ParseArgs[types.AData](e.Args)
-	// dump.Println(e.Args)
-	// dump.Println(args)
-	return args.DataDash != nil
-}
-
-func (d *Dashboard) DataState(e *am.Event) {
-	dash := am.ParseArgs[types.AData](e.Args).DataDash
-
-	if dash.Metrics != nil {
-		d.Data.Metrics = dash.Metrics
-	}
-	if dash.Splash != "" {
-		d.Data.Splash = dash.Splash
-	}
+	RefreshPage(d.Page)
 }
 
 // ///// ///// /////
@@ -461,246 +424,36 @@ func (d *Dashboard) DataState(e *am.Event) {
 
 // ///// ///// /////
 
+// AgentUI is the web agent UI, bound to the local agent machine.
 type AgentUI struct {
 	BasePage
 
-	// data
+	// Agent UI state
+	formPrompt    string
+	promptReset   int
+	buttonClicked string
 
-	data *types.DataAgent
-
-	// Dashboard state
-	formPrompt        string
-	formSubmitting    bool
-	formErr           string
-	msgsScrollPending bool
-	buttonClicked     string
-	clockInit         bool
+	// Page is the livepage page of this component, set by [NewPagesCustom].
+	Page PageRef
 }
 
-// OnInit constructor
-func (a *AgentUI) OnInit() {
-	a.BasePage.OnInit()
-	a.Id = types.IDAgentUIPage
-	a.PageSchema = states.AgentUISchema
-	a.PageStates = states.AgentUIStates
-	a.data = &types.DataAgent{}
-}
+var _ lp.CompoLiveApi = &AgentUI{}
+var _ PageSetter = &AgentUI{}
 
-func (a *AgentUI) OnMount(ctx goapp.Context) {
-	a.BasePage.OnMount(ctx)
-	// TODO proper DOM API
-	goapp.Window().Get("document").Get("body").
-		Call("setAttribute", "class", "bg-base-300 h-screen w-screen "+AppClass)
-
-	// agent UI page
-	_, err := a.Mach.HandlersBind(a)
-	if err != nil {
-		a.Error(err)
-		return
-	}
-
-	// start (block)
-	if err := a.start(); err != nil {
-		a.Error(err)
-	}
-	netAgent := a.AgentClient.NetMach
-	a.Agent = netAgent
-
-	// bind and sync the handler mach to net mach
-	a.agentHand.Set(netAgent.ActiveStates(nil), nil)
-	if _, err := ampipe.BindAny(netAgent, a.agentHand); err != nil {
-		a.Error(err)
-		return
-	}
-
-	// whole agent time sync
-	_, err = NewNetAgent(netAgent, a, a, nil)
-	if err != nil {
-		a.Error(err)
-		return
-	}
-}
-
-func (a *AgentUI) updateClock() {
-	if !a.Ready() {
-		return
-	}
-
-	if !a.clockInit {
-		a.clockInit = true
-		a.App.Dispatch(func(_ goapp.Context) {
-			time.Sleep(time.Second)
-			goapp.Window().Call("clockmojiInit")
-			a.updateClockSet()
-		})
-
-		return
-	}
-
-	a.updateClockSet()
-}
-
-func (a *AgentUI) updateClockSet() {
-	if len(a.data.ClockDiff) == 0 {
-		return
-	}
-
-	// TODO extract limit
-	limit := 4
-	jsDiff := make([]any, limit)
-	for i, diff := range a.data.ClockDiff {
-		// TODO limit
-		if i == limit {
-			break
-		}
-
-		// fml...
-		inner := make([]any, len(diff))
-		for ii, v := range diff {
-			inner[ii] = v
-		}
-
-		jsDiff[i] = inner
-	}
-
-	// log.Printf("clockmojiUpdate %+v", jsDiff)
-	goapp.Window().Call("clockmojiUpdate", jsDiff)
-}
-
-//
-
-// HANDLERS
-
-//
-
-var _ = ssAUI.Data
-
-func (a *AgentUI) DataEnter(e *am.Event) bool {
-	return am.ParseArgs[types.AData](e.Args).DataAgent != nil
-}
-
-func (a *AgentUI) DataState(e *am.Event) {
-	// TODO handle all the UIRender* here via Add rel
-	data := am.ParseArgs[types.AData](e.Args).DataAgent
-
-	if a.data == nil {
-		a.data = &types.DataAgent{}
-	}
-
-	if data.Msgs != nil {
-		a.data.Msgs = data.Msgs
-		a.msgsScrollPending = true
-	}
-	if data.Stories != nil {
-		a.data.Stories = data.Stories
-	}
-	if data.Actions != nil {
-		a.data.Actions = data.Actions
-	}
-	if data.ClockDiff != nil {
-		a.data.ClockDiff = data.ClockDiff
-	}
-	a.Dump(ss.Data, data)
-}
-
-var _ = ssAUI.UIMsg
-
-func (a *AgentUI) UIMsgEnter(e *am.Event) bool {
-	return am.ParseArgs[shared.AUIMsg](e.Args).Msg != nil
-}
-
-func (a *AgentUI) UIMsgState(e *am.Event) {
-	msg := am.ParseArgs[shared.AUIMsg](e.Args).Msg
-	a.data.Msgs = append(a.data.Msgs, msg)
-	scrolled := a.msgsScrolled()
-	a.Dump("UIMsgState/scroll", scrolled)
-	if scrolled {
-		a.msgsScrollPending = true
-	}
-}
-
-var _ = ssAUI.UIRenderClock
-
-func (a *AgentUI) UIRenderClockEnter(e *am.Event) bool {
-	return am.ParseArgs[shared.AUIRenderClock](e.Args).ClockDiff != nil
-}
-
-func (a *AgentUI) UIRenderClockState(e *am.Event) {
-	a.data.ClockDiff = am.ParseArgs[shared.AUIRenderClock](e.Args).ClockDiff
-	// a.Dump("UIRenderClockState", a.data.ClockDiff)
-	a.updateClock()
-}
-
-var _ = ssAUI.UIRenderStories
-
-func (a *AgentUI) UIRenderStoriesState(e *am.Event) {
-	args := am.ParseArgs[shared.AUIRenderStories](e.Args)
-	// a.Dump("UIRenderStoriesState/Stories", args.Stories)
-	// a.Dump("UIRenderStoriesState/Actions", args.Actions)
-	if args.Stories != nil {
-		a.data.Stories = args.Stories
-	}
-	if args.Actions != nil {
-		a.data.Actions = args.Actions
-	}
-}
-
-var _ = ssAUI.UICleanOutput
-
-func (a *AgentUI) UICleanOutputState(e *am.Event) {
-	a.data.Msgs = nil
-}
-
-// ///// ///// /////
-
-// ///// AGENT NETMACH
-
-// ///// ///// /////
-
-type PageAPI interface {
-	Draw()
-	Dump(...any)
-}
-
-// NetAgent is aRPC client handlers
-type NetAgent struct {
-	page      PageAPI
-	pageAgent *AgentUI
-	pageDash  *Dashboard
-}
-
-func NewNetAgent(netMach *arpc.NetworkMachine, page PageAPI, pageAgent *AgentUI, pageDash *Dashboard) (*NetAgent, error) {
-	if page == nil {
-		return nil, errors.New("page is nil")
-	}
-
-	h := &NetAgent{
-		page:      page,
-		pageAgent: pageAgent,
-		pageDash:  pageDash,
-	}
-	_, err := netMach.HandlersBind(h)
-	if err != nil {
-		return nil, err
-	}
-
-	return h, nil
+// SetPage sets the livepage page of this component.
+func (a *AgentUI) SetPage(page PageRef) {
+	a.Page = page
 }
 
 var _ = am.StateAny
 
-func (h *NetAgent) AnyState(e *am.Event) {
-	// arpc syncs have aggregated called states
-	diff := e.Transition().TimeIndexTimeDiff()
-	num := len(diff.ActiveStates(nil))
+// AnyState re-renders the page on transitions of the local machine.
+func (a *AgentUI) AnyState(e *am.Event) {
 	// ignore health-only txs
-	if (num == 2 && diff.Is(am.S{ss.Healthcheck, ss.Heartbeat})) ||
-		(num == 1 && diff.Any1(ss.Healthcheck, ss.Heartbeat)) {
-
+	called := e.Transition().TimeIndexCalled()
+	if called.Any1(ssA.Healthcheck, ssA.Heartbeat) {
 		return
 	}
 
-	// h.page.Dump(am.StateAny, diff.ActiveStates(nil))
-	// TODO optimize with Diff + allowlist
-	h.page.Draw()
+	RefreshPage(a.Page)
 }

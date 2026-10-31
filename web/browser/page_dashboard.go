@@ -3,11 +3,8 @@ package browser
 import (
 	"fmt"
 	"regexp"
-	"slices"
 	"strings"
-	"time"
 
-	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
 	. "github.com/pancsta/go-app/pkg/app"
 
@@ -19,11 +16,21 @@ var addAnchorClassRe = regexp.MustCompile(`<a`)
 
 var AnchorUrls = true
 
-func (d *Dashboard) Render() UI {
-	if !d.Ready() {
-		return d.Spinner()
-	}
+// backends are the AI backend options of the config form.
+var backends = []struct{ label, value string }{
+	{"OpenAI", "openai"},
+	{"DeepSeek", "deepseek"},
+	{"Gemini", "gemini"},
+	{"OpenAI compatible", "openai-compat"},
+}
 
+func (d *Dashboard) Render() UI {
+	return If(!d.Ready(), func() UI {
+		return d.Spinner()
+	}).Else(d.renderPage)
+}
+
+func (d *Dashboard) renderPage() UI {
 	return Div().Body(
 		d.Header(),
 		d.ConfigForm(),
@@ -34,164 +41,242 @@ func (d *Dashboard) Render() UI {
 }
 
 func (d *Dashboard) Header() UI {
-	mach := d.Mach
-	a := d.AgentClient.NetMach
+	cfg := d.model.ConfigBase()
+	class, label := d.configBadge()
 
-	var err UI
-	if a.IsErr() {
-		err = Div().Class("badge mr-1 badge-error").Text("Exception")
-	}
-
-	// connection badge
-	conn := Div().Class("badge-success").Text("Agent Connected")
-	if mach.Not1(ss.RPCConnected) {
-		// TODO reconn on click
-		conn = Div().Class("badge-error").Text("Agent Missing")
-		if mach.Is1(ss.RPCConnecting) {
-			conn = Div().Class("badge-primary").Text("Agent Connecting...")
+	var errBadge HTMLDiv
+	defer func() {
+		if d.model.Mach().IsErr() {
+			errBadge.Class("badge mr-1 badge-error").Text("Exception")
 		}
-	}
-	conn = conn.Class("badge mr-1")
+	}()
 
-	// config badge
-	cfg := Div().Class("badge badge-success").Text("AI Connected")
-	if a.Not1(ssA.ConfigValid) {
-		cfg = Div().Class("badge badge-primary").Text("AI Connecting...")
-		if a.Is1(ssA.ErrAI) {
-			cfg = Div().Class("badge badge-error").Text("AI Config Error")
-		}
-	}
-	cfg = cfg.Class("badge")
-
-	// header
-
-	return []UI{
-
-		// <HTML>
-		Div().Body(
-			H2().Class("card-title text-warning mb-5").Text(d.Boot.Config.Agent.Label),
-			Div().Class("card card-border bg-base-100 mb-5").Body(
-				Div().Class("card-body").Body(
-					Raw(fixHTMLAnchors("<div>"+d.Boot.Config.Agent.IntroDash+"</div>")),
-				),
-				Div().Class("text-right pb-3 pr-3").Body(err, conn, cfg),
+	return Div().Body(
+		H2().Class("card-title text-warning mb-5").Text(cfg.Agent.Label),
+		Div().Class("card card-border bg-base-100 mb-5").Body(
+			Div().Class("card-body").Body(
+				Raw(fixHTMLAnchors("<div>"+cfg.Agent.IntroDash+"</div>")),
+			),
+			Div().Class("text-right pb-3 pr-3").Body(
+				toRef(&errBadge, Div()),
+				Div().Class(class).Text(label),
 			),
 		),
+	)
+}
 
-		// </HTML>
+// configBadge returns the class and the label of the AI config badge.
+func (d *Dashboard) configBadge() (class, label string) {
+	mach := d.model.Mach()
 
-	}[0]
+	switch {
+	case mach.Is1(ssA.ConfigValid):
+		return "badge mr-1 badge-success", "AI Connected"
+	case mach.Is1(ssA.ErrAI):
+		return "badge mr-1 badge-error", "AI Config Error"
+	default:
+		return "badge mr-1 badge-primary", "AI Connecting..."
+	}
 }
 
 func (d *Dashboard) ConfigForm() UI {
-	a := d.AgentClient.NetMach
-	if a.Is1(ssA.ConfigValid) || !a.IsErr() || d.Mach.Transition() != nil {
+	mach := d.model.Mach()
+	if mach.Is1(ssA.ConfigValid) || !mach.IsErr() {
 		return nil
 	}
 
-	valid := ""
-	if d.FormKey == "" {
-		valid = "validator"
-	}
-	fKey := []UI{
-		Input().Class("input " + valid).Type("password").Required(true).Placeholder("API Key").
-			Value(d.FormKey).OnChange(d.ValueTo(&d.FormKey)),
-		Div().Class("validator-hint").Text("API key not valid"),
-	}
+	var (
+		inKey   HTMLInput
+		inURL   HTMLInput
+		inModel HTMLInput
+	)
+	defer func() {
+		inKey.Class("input " + validatorClass(d.FormKey)).
+			Type("password").
+			Required(true).
+			Placeholder("API Key").
+			Value(d.FormKey).
+			OnChange(valueTo(&d.FormKey))
 
-	valid = ""
-	if d.FormURL == "" {
-		valid = "validator"
-	}
-	fURL := []UI{
-		Input().Class("input " + valid).Type("url").Required(true).Placeholder("Base URL").
-			Value(d.FormURL).OnChange(d.ValueTo(&d.FormURL)),
-		Div().Class("validator-hint").Text("URL not valid"),
-	}
+		if d.FormBackend != "openai-compat" {
+			return
+		}
+		inURL.Class("input " + validatorClass(d.FormURL)).
+			Type("url").
+			Required(true).
+			Placeholder("Base URL").
+			Value(d.FormURL).
+			OnChange(valueTo(&d.FormURL))
+		inModel.Class("input").
+			Required(true).
+			Placeholder("Model name").
+			Value(d.FormModel).
+			OnChange(valueTo(&d.FormModel))
+	}()
 
-	fModel := []UI{
-		Input().Class("input").Required(true).Placeholder("Model name").
-			Value(d.FormModel).OnChange(d.ValueTo(&d.FormModel)),
-	}
-
-	var formFields []UI
-	// TODO enum
-	switch d.FormBackend {
-	case "openai":
-		fallthrough
-	case "deepseek":
-		fallthrough
-	case "gemini":
-		formFields = fKey
-	case "openai-compat":
-		formFields = slices.Concat(
-			fKey,
-			fURL,
-			fModel,
-		)
-	}
-
-	return []UI{
-
-		// <HTML>
-
-		Form().Class("content-center mb-5").
-			OnSubmit(d.SubmitConfig).Body(
-			FieldSet().Class(
-				"fieldset bg-base-100 border-base-300 rounded-box w-xs border p-4 mx-auto").Body(
-				Legend().Class("fieldset-legend text-lg").Text("Config"),
-				Label().Class("select").Body(
-					Span().Class("label").Text("AI backend"),
-					Select().Class("select").Body(
-						// TODO enum
-						Option().Text("OpenAI").Value("openai"),
-						Option().Text("DeepSeek").Value("deepseek"),
-						Option().Text("Gemini").Value("gemini"),
-						Option().Text("OpenAI compatible").Value("openai-compat"),
-					).OnChange(d.ValueTo(&d.FormBackend)),
+	return Form().Class("content-center mb-5").OnSubmit(d.SubmitConfig).Body(
+		FieldSet().Class("fieldset bg-base-100 border-base-300 rounded-box w-xs border p-4 mx-auto").Body(
+			Legend().Class("fieldset-legend text-lg").Text("Config"),
+			Label().Class("select").Body(
+				Span().Class("label").Text("AI backend"),
+				// TODO enum
+				Select().Class("select").OnChange(valueTo(&d.FormBackend)).Body(
+					Range(backends).Slice(func(i int) UI {
+						return d.backendOption(i)
+					}),
 				),
-
-				Div().Body(formFields...),
-
-				Button().Class("btn btn-neutral mt-4").Text("Save"),
 			),
+
+			// API key
+			Div().Body(
+				toRef(&inKey, Input()),
+				Div().Class("validator-hint").Text("API key not valid"),
+			),
+
+			// OpenAI compatible fields
+			If(d.FormBackend == "openai-compat", func() UI {
+				return Div().Body(
+					toRef(&inURL, Input()),
+					Div().Class("validator-hint").Text("URL not valid"),
+				)
+			}),
+			If(d.FormBackend == "openai-compat", func() UI {
+				return Div().Body(
+					toRef(&inModel, Input()),
+				)
+			}),
+
+			Button().Class("btn btn-neutral mt-4").Text("Save"),
 		),
-
-		// </HTML>
-
-	}[0]
+	)
 }
 
-func (d *Dashboard) SubmitConfig(ctx Context, e Event) {
-	e.PreventDefault()
-	agent := d.AgentClient.NetMach
+func (d *Dashboard) backendOption(i int) UI {
+	b := backends[i]
+	opt := Option().Text(b.label).Value(b.value)
+	// Selected(false) would render selected="false", which selects the option
+	if d.FormBackend == b.value {
+		opt.Selected(true)
+	}
 
+	return opt
+}
+
+func (d *Dashboard) SubmitConfig(_ Context, _ Event) {
 	// TODO validate
-	if d.FormKey == "" {
+	args := configArgs(d.FormBackend, d.FormKey, d.FormURL, d.FormModel)
+	if args == nil {
 		return
 	}
 
+	d.model.Mach().Add1(ssA.ConfigUpdate, am.Pass(args))
+}
+
+func (d *Dashboard) Metrics() UI {
+	reqAI, reqTools, ceil := d.requestMetrics()
+
+	rows := []struct {
+		label string
+		value uint64
+	}{
+		{"AI", reqAI},
+		{"Tools", reqTools},
+	}
+
+	// TODO meter connected TUIs
+	return Div().Class("mb-5").Body(
+		H2().Class("text-xl mb-5").Text("Active Requests"),
+		Ul().Class("list bg-base-100 rounded-box").Body(
+			Range(rows).Slice(func(i int) UI {
+				row := rows[i]
+				return Li().Class("list-row").Body(
+					Div().Class("size-10 pt-3").Text(row.label),
+					Div().Class("tooltip").
+						Attr("data-tip", fmt.Sprintf("%d / %d", row.value, ceil)).Body(
+						Progress().Class("progress mt-4").Value(row.value).Max(ceil),
+					),
+					Div().Class("size-3 pt-3").Text(row.value),
+				)
+			}),
+		),
+	)
+}
+
+// requestMetrics returns the active AI and tool requests, and the bar ceiling.
+func (d *Dashboard) requestMetrics() (reqAI, reqTools, ceil uint64) {
+	mach := d.model.Mach()
+
+	reqAI = (mach.Tick(ssA.RequestingAI) - mach.Tick(ssA.RequestedAI)) / 2
+	reqTools = (mach.Tick(ssA.RequestingTool) - mach.Tick(ssA.RequestedTool)) / 2
+	ceil = max(10, reqAI*2, reqTools*2)
+
+	return reqAI, reqTools, ceil
+}
+
+func (d *Dashboard) Splash() UI {
+	splash := d.model.Splash()
+	if splash == "" {
+		return nil
+	}
+
+	lines := strings.Split(httpToAnchor(d.model.ConfigBase(), splash), "\n")
+
+	// TODO give names to links
+	// TODO black via css
+	return Div().Class("mockup-code bg-black w-full mb-5").Body(
+		Range(lines).Slice(func(i int) UI {
+			return Raw("<pre>" + lines[i] + "</pre>")
+		}),
+	)
+}
+
+func (d *Dashboard) Footer() UI {
+	cfg := d.model.ConfigBase()
+
+	return Footer().Class(
+		"footer sm:footer-horizontal footer-center rounded-box bg-base-100 text-base-content p-4").Body(
+		Aside().Body(
+			P().Body(Raw("<span>" + fixHTMLAnchors(cfg.Agent.Footer) + "</span>")),
+		),
+	)
+}
+
+// validatorClass returns the input class of a required field.
+func validatorClass(value string) string {
+	if value == "" {
+		return "validator"
+	}
+
+	return ""
+}
+
+// configArgs converts the config form to config update args.
+func configArgs(backend, key, url, model string) *shared.AConfigUpdate {
+	// TODO validate
+	if key == "" {
+		return nil
+	}
+
 	// TODO enum
-	var args *shared.AConfigUpdate
-	switch d.FormBackend {
+	switch backend {
 
 	case "openai":
 		cfg := shared.ConfigDefaultAIOpenAI()
-		cfg.Key = d.FormKey
-		args = &shared.AConfigUpdate{
+		cfg.Key = key
+		return &shared.AConfigUpdate{
 			ConfigAI: &shared.ConfigAI{
 				OpenAI: []shared.ConfigAIOpenAI{cfg},
 			},
 		}
 
 	case "deepseek":
-		args = &shared.AConfigUpdate{
+		return &shared.AConfigUpdate{
 			ConfigAI: &shared.ConfigAI{
 				OpenAI: []shared.ConfigAIOpenAI{{
 					ConfigAICommon: shared.ConfigAICommon{
-						Key:   d.FormKey,
+						Key:   key,
 						Model: "deepseek-v4.1-flash",
-						URL: "https://api.deepseek.com/v1",
+						URL:   "https://api.deepseek.com/v1",
 					},
 				}},
 			},
@@ -199,119 +284,28 @@ func (d *Dashboard) SubmitConfig(ctx Context, e Event) {
 
 	case "gemini":
 		cfg := shared.ConfigDefaultAIGemini()
-		cfg.Key = d.FormKey
-		args = &shared.AConfigUpdate{
+		cfg.Key = key
+		return &shared.AConfigUpdate{
 			ConfigAI: &shared.ConfigAI{
 				Gemini: []shared.ConfigAIGemini{cfg},
 			},
 		}
 
 	case "openai-compat":
-		args = &shared.AConfigUpdate{
+		return &shared.AConfigUpdate{
 			ConfigAI: &shared.ConfigAI{
 				OpenAI: []shared.ConfigAIOpenAI{{
 					ConfigAICommon: shared.ConfigAICommon{
-						Key:   d.FormKey,
-						Model: d.FormModel,
-						URL: d.FormURL,
+						Key:   key,
+						Model: model,
+						URL:   url,
 					},
 				}},
 			},
 		}
 	}
 
-	// TODO state?
-	d.FormSubmitting = true
-	go func() {
-		defer func() {
-			d.FormSubmitting = false
-		}()
-
-		when := agent.When1(ssA.ConfigUpdate, ctx.Context)
-		agent.Add1(ssA.ConfigUpdate, am.Pass(args))
-		err := amhelp.WaitForAll(ctx.Context, 3*time.Second, when)
-		if err != nil {
-			d.FormErr = "timeout"
-			return
-		}
-	}()
-}
-
-func (d *Dashboard) Metrics() UI {
-	a := d.AgentClient
-	if a == nil {
-		return nil
-	}
-
-	reqAI := a.NetMach.Tick(ssA.RequestingAI) - a.NetMach.Tick(ssA.RequestedAI)
-	reqAI /= 2
-	reqTools := a.NetMach.Tick(ssA.RequestingTool) - a.NetMach.Tick(ssA.RequestedTool)
-	reqTools /= 2
-	ceil := max(10, reqAI*2, reqTools*2)
-
-	// TODO meter connected TUIs
-	return []UI{
-
-		// <HTML>
-
-		Div().Class("mb-5").Body(
-			H2().Class("text-xl mb-5").Text("Active Requests"),
-			Ul().Class("list bg-base-100 rounded-box").Body(
-				Li().Class("list-row").Body(
-					Div().Class("size-10 pt-3").Text("AI"),
-					Div().Class("tooltip").Attr("data-tip", fmt.Sprintf("%d / %d", reqAI, ceil)).Body(
-						Progress().Class("progress mt-4").Value(reqAI).Max(ceil),
-					),
-					Div().Class("size-3 pt-3").Text(reqAI),
-				),
-				Li().Class("list-row").Body(
-					Div().Class("size-10 pt-3").Text("Tools"),
-					Div().Class("tooltip").Attr("data-tip", fmt.Sprintf("%d / %d", reqTools, ceil)).Body(
-						Progress().Class("progress mt-4").Value(reqTools).Max(ceil),
-					),
-					Div().Class("size-3 pt-3").Text(reqTools),
-				),
-			),
-		),
-
-		// </HTML>
-
-	}[0]
-}
-
-func (d *Dashboard) Splash() UI {
-	if d.Mach.Not1(ss.Data) || d.Mach.Transition() != nil {
-		return nil
-	}
-
-	// \n to <pre>
-	var lines []UI
-	splash := httpToAnchor(d.Boot.Config, d.Data.Splash)
-	for _, l := range strings.Split(splash, "\n") {
-		lines = append(lines, Raw("<pre>"+l+"</pre>"))
-	}
-
-	// TODO give names to links
-	// TODO black via css
-	return Div().Class("mockup-code bg-black w-full mb-5").Body(lines...)
-}
-
-func (d *Dashboard) Footer() UI {
-
-	return []UI{
-
-		// <HTML>
-
-		Footer().Class(
-			"footer sm:footer-horizontal footer-center rounded-box bg-base-100 text-base-content p-4").Body(
-			Aside().Body(
-				P().Body(Raw("<span>" + fixHTMLAnchors(d.Boot.Config.Agent.Footer) + "</span>")),
-			),
-		),
-
-		// </HTML>
-
-	}[0]
+	return nil
 }
 
 func httpToAnchor(cfg *shared.Config, html string) string {

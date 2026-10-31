@@ -40,7 +40,7 @@ vendor/
 *.rdb
 
 # Go workspace file
-go.work
+go.work*
 
 # local dev
 /.dev

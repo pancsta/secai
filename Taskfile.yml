@@ -30,21 +30,15 @@ tasks:
     dir: "{{.SECAI_AGENT_DIR}}"
     cmd: task gen-sql
 
-  deps-wasm-graph:
-    dir: web/browser
-    cmd: godepgraph -tags "wasm,js" -s . | dot -Tsvg -o deps-graph.svg
-
-  deps-wasm:
+  deps:
     dir: web/browser
     cmd: go list -deps 
       -f '{{ "{{" }}.ImportPath{{ "}}" }} {{ "{{" }}.Imports{{ "}}" }}'
-      -tags wasm,js .
-        > deps.md
+      . > deps.md
 
   release:
     cmds:
-      - task --dir {{.SECAI_AGENT_DIR}} install-deps-wasm
-      - task --dir {{.SECAI_AGENT_DIR}} build-wasm
+      - task --dir {{.SECAI_AGENT_DIR}} install-deps
       - task: gen-license
       - rm -R dist/*
       - go tool goreleaser release --clean --skip publish --skip validate

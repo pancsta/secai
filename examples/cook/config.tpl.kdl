@@ -98,3 +98,111 @@ Cook {
   HeartbeatFreq "1h"
   OrientingMoveThreshold 0.5
 }
+
+// /////
+// ///// DEFAULT VALUES
+// /////
+
+/*
+AI {
+  // Max LLM requests per session.
+  ReqLimit 0
+}
+Agent {
+  // bot ID
+  ID "cook"
+  Label ""
+  // // dir for tmp files, defaults to CWD
+  Dir "tmp-cook"
+  Intro ""
+  IntroDash ""
+  Footer ""
+  Log {
+    // path to the log file
+    File ""
+    // log prompts as log level debug
+    Prompts false
+    // mark log errs as ErrLog multi state
+    FwdErrState true
+    // mark log warning as WarnLog multi state
+    FwdWarnState true
+    // mach log level 0-5
+    MachLevel 0
+    // print machine log
+    MachPrint false
+    // agent log level
+    Level "INFO"
+    // enable instructor-go logging for AI requests
+    AI false
+  }
+  History {
+    Backend "memory"
+    Max 1000000
+  }
+}
+Web {
+  // Main HTTP server
+  Addr "localhost:12854"
+  // Start a DBPort web UI on http://localhost:{DBPort[0-2]}
+  DBPort -1
+  // Start a log web UI on http://localhost:{LogPort}
+  LogPort 12858
+}
+TUI {
+  // SSH host
+  Host "localhost"
+  // SSH port
+  PortSSH 12868
+  // Web host
+  WebHost ""
+  // Web port
+  PortWeb 12878
+  // Number of transitions to show on the clock
+  ClockRange 10
+}
+Tools {
+  SearXNG {
+    // Port to start a local instance on
+    Port "7452"
+    // URL of an existing instance (disables Port).
+    URL ""
+  }
+}
+Debug {
+  // Run the mock scenario
+  Mock false
+  // Start pprof on addr
+  ProfilerAddr ""
+  // Enable misc debugging modes (am-relay, browser RPC, TRACE logs)
+  Verbose false
+  // Enable SQL query logging
+  VerboseSQL false
+  // Create value files for inspection
+  ValFiles false
+  // Enable REPL for agent, mem, and tools
+  REPL false
+  // Connect and send dbg info to am-dbg
+  DBGAddr ""
+  // Start an embedded debugger on localhost:{DBGAddr}
+  DBGEmbed false
+  // Enable the embedded debugger web UI (livepage) on localhost:{DBGAddr}+1
+  DBGEmbedWeb false
+  // Start a web REPL on http://localhost:{REPLWeb}
+  REPLWeb -1
+}
+Cook {
+  // Number of ingredients to collect.
+  MinIngredients 3
+  GenJokesAmount 3
+  SessionTimeout "1h"
+  // Number of recipes to generate.
+  GenRecipes 3
+  MinPromptLen 2
+  // Step comment frequency. Lower number = higher frequency of step comments. 2=50%, 3=33%.
+  StepCommentFreq 2
+  // Heartbeat frequency.
+  HeartbeatFreq "1h"
+  // Certainty above which the orienting move should be accepted.
+  OrientingMoveThreshold 0.5
+}
+*/

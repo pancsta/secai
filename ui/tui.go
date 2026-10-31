@@ -165,7 +165,9 @@ func (t *TUIAgent) InitComponents() {
 }
 
 func (t *TUIAgent) Stop() error {
-	_ = t.dispose()
+	if t.dispose != nil {
+		_ = t.dispose()
+	}
 	t.app.Stop()
 
 	return nil

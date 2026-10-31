@@ -17,7 +17,7 @@ function clockmojiUpdate(newDiff) {
     // ]
 
     maxVal = 0
-    window.clockmoji.data.datasets.forEach((dataset, i) => {
+    window.clockmojiChart.data.datasets.forEach((dataset, i) => {
         dataset.data.length = 0
         newDiff[i].forEach((v) => {
             // TODO handle in go
@@ -28,15 +28,15 @@ function clockmojiUpdate(newDiff) {
             }
         })
     });
-    window.clockmoji.options.scales.y.max = maxVal
-    window.clockmoji.update("none")
+    window.clockmojiChart.options.scales.y.max = maxVal
+    window.clockmojiChart.update("none")
 }
 
 function clockmojiInit() {
     const ctx = document.getElementById('clockmoji').getContext('2d');
     const Utils = ChartUtils.init();
 
-    window.clockmoji = new Chart(ctx, {
+    window.clockmojiChart = new Chart(ctx, {
         type: 'radar',
         data: {
             labels: Array.from({length: 15}, (_, i) => i),

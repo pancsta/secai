@@ -75,9 +75,6 @@ func (c *Clock) Redraw() {
 	x, y, width, height := c.layout.Box.GetInnerRect()
 
 	s := c.t.app.GetScreen()
-	c.t.app.Lock()
-	defer c.t.app.Unlock()
-	defer s.Show()
 
 	// no center
 	// data := diff

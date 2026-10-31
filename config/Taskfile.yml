@@ -18,10 +18,10 @@ tasks:
   # BUILD
 
   install-deps:
-    - task: install-deps-wasm
+    - task: install-deps-assets
     - go mod tidy
 
-  install-deps-wasm:
+  install-deps-assets:
     silent: true
     cmds:
       - mkdir -p web/assets/deps
@@ -35,7 +35,6 @@ tasks:
           https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4
       - wget -O web/assets/deps/utils.js --no-verbose
           https://raw.githubusercontent.com/imhvost/chart-utils/refs/heads/master/dist/chart-utils.min.js
-      - go get resty.dev/v3
 
   gen-sql:
     desc: Generate SQL schema and Go queries. Migrates the DB on the next app start.
@@ -59,14 +58,12 @@ tasks:
     requires:
       vars: [ SECAI_ID ]
     cmds:
-      - task: build-wasm
       - task: build-server
 
   build-prod:
     requires:
       vars: [ SECAI_ID ]
     cmds:
-      - task: build-wasm-prod
       - task: build-server-prod
 
   build-size: goda weight -h {{.SECAI_ID}} | head
@@ -74,42 +71,6 @@ tasks:
   build-deps: go list -deps 
       -f '{{ "{{" }}.ImportPath{{ "}}" }} {{ "{{" }}.Imports{{ "}}" }}'
       ./cmd/ > build-deps.md
-
-  # WASM
-
-  build-wasm-reload:
-    desc: Hot reload WASM with verbose debugging
-    env:
-      GOOS: js
-      GOARCH: wasm
-    cmd: go build -o web/app.wasm -tags verbose ./web/cmd
-
-  build-wasm:
-    env:
-      GOOS: js
-      GOARCH: wasm
-    cmds:
-      - task: install-deps-wasm
-      - mkdir -p web
-      - task: build-wasm-reload
-
-  build-wasm-prod:
-    env:
-      GOOS: js
-      GOARCH: wasm
-    cmds:
-      - task: install-deps-wasm
-      - mkdir -p web
-      - go build -ldflags="-s -w" -o web/app.wasm ./web/cmd
-      # TODO breaks
-#      - wasm-opt -O3 web/app.wasm -o web/app.wasm --enable-bulk-memory-opt
-
-
-  wasm-build-size: goda weight -h {{.SECAI_ID}} | head
-  wasm-build-deps-graph: godepgraph -tags "wasm,js" -s . | dot -Tsvg -o deps-wasm-graph.svg
-  wasm-build-deps: go list -deps 
-      -f '{{ "{{" }}.ImportPath{{ "}}" }} {{ "{{" }}.Imports{{ "}}" }}'
-      ./cmd/ > build-wasm-deps.md
 
   # TUI
 
@@ -201,10 +162,6 @@ tasks:
       - |
         echo Grafana: http://localhost:3000
         echo Jaeger: http://localhost:16686
-
-  cleanup-db: rm "{{.SECAI_DIR}}/*.sqlite"
-
-  cleanup-db-release: rm /home/tob/.local/share/taskbot/*.sqlite
 
   gen-schema-godoc:
       - go run ./scripts/gen_schema_godoc

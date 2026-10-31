@@ -168,17 +168,6 @@ func (a *AgentLLM) Queries() *sqlc.Queries {
 	return a.dbQueries
 }
 
-func (a *AgentLLM) IsStoryDisabled(storyState string) bool {
-	mach := a.Mach()
-	storyName := strings.TrimPrefix(storyState, ssbase.PrefixStory)
-	disabled := ssbase.PrefixStoryDisable + storyName
-	if mach.Has1(disabled) && mach.Is1(disabled) {
-		return true
-	}
-
-	return false
-}
-
 func (a *AgentLLM) MemoryWipe(ctx context.Context, e *am.Event) {
 	mach := a.Mach()
 	err := a.Queries().DeleteAllCharacter(ctx)

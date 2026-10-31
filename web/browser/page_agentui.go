@@ -1,12 +1,12 @@
 package browser
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
-	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
 	. "github.com/pancsta/go-app/pkg/app"
 
@@ -15,406 +15,335 @@ import (
 
 const idMsgs = "msgs"
 
+// clockWidth is the number of series rendered by the clock chart.
+const clockWidth = 4
+
 var Pass = am.Pass
 
 func (a *AgentUI) Render() UI {
-	a.Dump("Render", nil)
-	if !a.Ready() {
+	return If(!a.Ready(), func() UI {
 		return a.Spinner()
-	}
+	}).Else(a.renderPage)
+}
 
-	a.updateClock()
+func (a *AgentUI) renderPage() UI {
+	cfg := a.model.ConfigBase()
 
-	// TODO Dispatch is enough?
-	if a.msgsScrollPending {
-		a.scrollMsgs()
-		a.msgsScrollPending = false
-	}
+	return Div().Class("grid grid-cols-10 gap-4 h-full max-h-full").Body(
 
-	cfg := a.Boot.Config
-	return []UI{
+		// LEFT COLUMN
+		Div().Class("col-span-5 flex flex-col gap-4 h-full overflow-hidden").Body(
 
-		// <HTML>
-
-		Div().Class("grid grid-cols-10 gap-4 h-full max-h-full").Body(
-
-			// LEFT COLUMN
-			Div().Class("col-span-5 flex flex-col gap-4 h-full overflow-hidden").Body(
-
-				a.renderClock(),
-				a.renderMsgs(),
-				a.renderPromptForm(),
-			),
-
-			// RIGHT COLUMN
-			Div().Class("col-span-5 flex flex-col gap-4 overflow-hidden").Body(
-
-				// agent Card
-				Div().Class("card bg-base-100 rounded-lg border border-base-200 max-h-24").Body(
-					Div().Class("card-body p-4 h-full").Body(
-						H2().Class("card-title text-sm text-base-content/50 uppercase tracking-wider self-center").Text(
-							cfg.Agent.Label),
-						P().Class("text-xs text-base-content/70 overflow-y-auto").Body(
-							Raw("<span>"+strings.ReplaceAll(cfg.Agent.Intro, "\n", "<br>")+"</span>"),
-						),
-					),
-				),
-
-				a.renderStories(),
-				a.renderActions(),
-			),
+			a.renderClock(),
+			a.renderMsgs(),
+			a.renderPromptForm(),
 		),
 
-		// </HTML>
+		// RIGHT COLUMN
+		Div().Class("col-span-5 flex flex-col gap-4 overflow-hidden").Body(
 
-	}[0]
+			// agent Card
+			Div().Class("card bg-base-100 rounded-lg border border-base-200 max-h-24").Body(
+				Div().Class("card-body p-4 h-full").Body(
+					H2().Class("card-title text-sm text-base-content/50 uppercase tracking-wider self-center").
+						Text(cfg.Agent.Label),
+					P().Class("text-xs text-base-content/70 overflow-y-auto").Body(
+						Raw(introHTML(cfg.Agent.Intro)),
+					),
+				),
+			),
+
+			a.renderStories(),
+			a.renderActions(),
+		),
+	)
 }
 
 func (a *AgentUI) renderStories() UI {
-	storiesDivs := make([]UI, 0, len(a.data.Stories))
-	for i, story := range a.data.Stories {
-		// conditions
-		badge := Div().Class("text-xs")
+	stories := a.model.Stories()
 
-		if !story.DeactivatedAt.IsZero() {
-			badge.Text(fmt.Sprintf("%.0fm ago for t%d",
-				time.Since(story.DeactivatedAt).Minutes(), story.LastActiveTicks))
-		}
-		class := "opacity-60"
-		if a.Agent.Is1(story.State) {
-			class = "bg-success/10 p-2 rounded-lg border border-success/30"
-			badge = Div().Class("badge badge-success badge-sm animate-pulse").Text("Active")
-		}
-
-		storiesDivs = append(storiesDivs, []UI{
-
-			// <HTML>
-
-			Div().Class(class).Body(
-				Div().Class("flex justify-between items-center mb-1").Body(
-					Span().Class("font-semibold text-sm").Text(fmt.Sprintf("%d. %s", i+1, story.Title)),
-					badge,
-				),
-				P().Class("text-xs pl-4 border-l-2 border-base-300").Text(story.Desc),
-			),
-
-			// </HTML>
-		}...)
-	}
-
-	return []UI{
-
-		// <HTML>
-
-		Div().Class("card bg-base-100 rounded-lg flex-1 overflow-hidden border border-base-200").Body(
-			Div().Class("card-body p-4 flex flex-col h-full").Body(
-				H2().Class("card-title text-sm text-base-content/50 uppercase tracking-wider mb-2 self-center").Text(
-					"Stories"),
-				Div().Class("flex-1 overflow-y-auto space-y-3 pr-2").Body(
-					storiesDivs...,
-				),
+	return Div().Class("card bg-base-100 rounded-lg flex-1 overflow-hidden border border-base-200").Body(
+		Div().Class("card-body p-4 flex flex-col h-full").Body(
+			H2().Class("card-title text-sm text-base-content/50 uppercase tracking-wider mb-2 self-center").
+				Text("Stories"),
+			Div().Class("flex-1 overflow-y-auto space-y-3 pr-2").Body(
+				Range(stories).Slice(func(i int) UI {
+					return a.renderStory(i, stories[i])
+				}),
 			),
 		),
+	)
+}
 
-		// </HTML>
+func (a *AgentUI) renderStory(i int, story shared.StoryInfo) UI {
+	class, active, ago := a.storyState(story)
 
-	}[0]
+	var badge HTMLDiv
+	defer func() {
+		if !active {
+			badge.Text(ago)
+			return
+		}
+		badge.Class("badge badge-success badge-sm animate-pulse").Text("Active")
+	}()
+
+	return Div().Class(class).Body(
+		Div().Class("flex justify-between items-center mb-1").Body(
+			Span().Class("font-semibold text-sm").Textf("%d. %s", i+1, story.Title),
+			toRef(&badge, Div().Class("text-xs")),
+		),
+		P().Class("text-xs pl-4 border-l-2 border-base-300").Text(story.Desc),
+	)
+}
+
+// storyState returns the story card class, whether it's active, and the
+// deactivation label.
+func (a *AgentUI) storyState(story shared.StoryInfo) (class string, active bool, ago string) {
+	if a.model.Mach().Is1(story.State) {
+		return "bg-success/10 p-2 rounded-lg border border-success/30", true, ""
+	}
+	if !story.DeactivatedAt.IsZero() {
+		ago = fmt.Sprintf("%.0fm ago for t%d",
+			time.Since(story.DeactivatedAt).Minutes(), story.LastActiveTicks)
+	}
+
+	return "opacity-60", false, ago
 }
 
 func (a *AgentUI) renderActions() UI {
-	rows := make([]UI, len(a.data.Actions))
-	for i, action := range a.data.Actions {
-		if !action.VisibleMem || !action.VisibleAgent {
-			continue
-		}
-		enabled := !action.IsDisabled
+	actions := a.model.Actions()
 
-		if action.ValueEnd > 0 {
-			rows[i] = a.renderProgress(action, enabled)
-		} else {
-			rows[i] = a.renderButton(action, enabled)
-		}
-	}
-
-	return []UI{
-
-		// <HTML>
-
-		Div().Class("card bg-base-100 flex-1 rounded-lg border border-base-200 overflow-y-auto").Body(
-			Div().Class("card-body p-4").Body(
-				rows...,
-			),
+	return Div().Class("card bg-base-100 flex-1 rounded-lg border border-base-200 overflow-y-auto").Body(
+		Div().Class("card-body p-4").Body(
+			Range(actions).Slice(func(i int) UI {
+				return a.renderAction(actions[i])
+			}),
 		),
-
-		// </HTML>
-
-	}[0]
+	)
 }
 
-func (a *AgentUI) renderButton(action shared.ActionInfo, enabled bool) UI {
-	button := Button().Class("btn rounded-lg btn-outline btn-sm w-full text-base-content/60").Text(
-		action.Label)
-
-	if a.buttonClicked == action.ID {
-		button.Class("btn-secondary")
+// renderAction returns a button or a progress bar for the action, or nil when
+// it's hidden.
+func (a *AgentUI) renderAction(action shared.ActionInfo) UI {
+	if !action.VisibleMem || !action.VisibleAgent {
+		return nil
 	}
 
-	if action.Action && enabled {
-		button.OnClick(func(ctx Context, e Event) {
-			a.Agent.Add1(ssA.StoryAction, Pass(&shared.AStoryAction{
-				ID: action.ID,
-			}))
-			a.buttonClicked = action.ID
-			go func() {
-				time.Sleep(time.Millisecond * 500)
-				if a.buttonClicked == action.ID {
-					a.buttonClicked = ""
-				}
-			}()
-		})
+	if action.ValueEnd > 0 {
+		return a.renderProgress(action)
 	}
 
-	if !enabled {
-		button.Disabled(true)
-	}
-
-	return button
+	return a.renderButton(action)
 }
 
-func (a *AgentUI) renderProgress(action shared.ActionInfo, enabled bool) UI {
-	return []UI{
+func (a *AgentUI) renderButton(action shared.ActionInfo) UI {
+	enabled := !action.IsDisabled
 
-		// <HTML>
+	var btn HTMLButton
+	defer func() {
+		if action.Action && enabled {
+			btn.OnClick(func(_ Context, _ Event) {
+				a.clickAction(action.ID)
+			})
+		}
+		if a.buttonClicked == action.ID {
+			btn.Class("btn-secondary")
+		}
+		if !enabled {
+			btn.Disabled(true)
+		}
+	}()
 
-		Div().Body(
-			Div().Class("flex justify-between text-xs text-base-content/70").Body(
-				Span().Text(action.Label),
-				Span().Text(strconv.Itoa(action.Value)+" / "+strconv.Itoa(action.ValueEnd)),
-			),
-			Progress().Class("progress progress-primary w-full h-3").Value(action.Value).Max(action.ValueEnd),
+	return toRef(&btn, Button().
+		Class("btn rounded-lg btn-outline btn-sm w-full text-base-content/60").
+		Text(action.Label))
+}
+
+func (a *AgentUI) renderProgress(action shared.ActionInfo) UI {
+	return Div().Body(
+		Div().Class("flex justify-between text-xs text-base-content/70").Body(
+			Span().Text(action.Label),
+			Span().Textf("%d / %d", action.Value, action.ValueEnd),
 		),
-
-		// </HTML>
-
-	}[0]
+		Progress().Class("progress progress-primary w-full h-3").
+			Value(action.Value).
+			Max(action.ValueEnd),
+	)
 }
 
 func (a *AgentUI) renderPromptForm() UI {
-	agent := a.AgentClient.NetMach
+	mach := a.model.Mach()
 
-	// init
-	textarea := Textarea()
-	btnSend := Button()
-	btnInter := Button()
+	var (
+		textarea HTMLTextarea
+		btnSend  HTMLButton
+		btnInter HTMLButton
+	)
+	defer func() {
+		if mach.Is1(ssA.Interrupted) {
+			btnSend.Disabled(true)
+			btnInter.Text("Resume")
+			textarea.Disabled(true)
+		}
+		if mach.Is1(ssA.Requesting) {
+			btnSend.Body(
+				Span().Class("loading loading-spinner loading-md"),
+				Span().Text(" Sending "),
+				Span().Class("loading loading-spinner loading-md"),
+			)
+		}
+	}()
 
-	ret := []UI{
+	return Form().Class("mt-2 flex flex-col gap-2").OnSubmit(a.promptSubmit).Body(
 
-		// <HTML>
+		// the prompt value lives in the DOM only, so it's reset via data-reset
+		toRef(&textarea, Textarea().
+			Class("textarea w-full shadow-sm grow rounded-lg").
+			DataSet("reset", strconv.Itoa(a.promptReset)).
+			Placeholder("Type your message here...").
+			OnInput(func(_ Context, e Event) {
+				a.formPrompt = e.Data["value"]
+			})),
 
-		Form().Class("mt-2 flex flex-col gap-2").Body(
-			textarea.Class("textarea w-full shadow-sm grow rounded-lg").
-				OnKeyDown(a.promptCtrlEnter).
-				OnInput(a.ValueTo(&a.formPrompt)).
-				Placeholder("Type your message here...").Text(a.formPrompt),
-			btnSend.Class("btn btn-primary w-full flex-none rounded-lg").Text("Send"),
-			btnInter.Class("btn btn-error btn-outline w-full flex-none rounded-lg").OnClick(a.clickInterrupt).Text(
-				"Interrupt"),
-		).
-			OnSubmit(a.promptSubmit),
+		toRef(&btnSend, Button().
+			Class("btn btn-primary w-full flex-none rounded-lg").
+			Text("Send")),
 
-		// </HTML>
+		toRef(&btnInter, Button().
+			Class("btn btn-error btn-outline w-full flex-none rounded-lg").
+			Text("Interrupt").
+			OnClick(a.interrupt)),
+	)
+}
 
-	}[0]
+func (a *AgentUI) renderMsgs() UI {
+	msgs := a.model.Msgs()
 
-	// conditions
-	if a.formErr != "" {
-		textarea.Class("validator")
+	return Div().Class("card bg-base-100 rounded-lg flex-1 overflow-hidden border border-base-200").Body(
+		Div().Class("card-body p-4 flex flex-col h-full").Body(
+			H2().Class("card-title text-sm text-base-content/50 uppercase tracking-wider mb-2 self-center").
+				Text("Messages"),
+			Div().ID(idMsgs).Class("flex-1 overflow-y-auto").Body(
+				Range(msgs).Slice(func(i int) UI {
+					return a.renderMsg(msgs[i])
+				}),
+			),
+		),
+	)
+}
+
+func (a *AgentUI) renderMsg(m *shared.Msg) UI {
+	// TODO sanitize
+	txt := strings.ReplaceAll(m.Text, "\n", "<br/>")
+	align, bubble := msgState(m.From)
+
+	var header HTMLDiv
+	defer func() {
+		// TODO day on old dates
+		date := Time().Class("text-xs opacity-50").Text(m.CreatedAt.Format(time.Kitchen))
+		from := Text(m.From.Value)
+		if m.From == shared.FromUser {
+			header.Body(date, from)
+			return
+		}
+		header.Body(from, date)
+	}()
+
+	return Div().Class("chat "+align).Body(
+		toRef(&header, Div().Class("chat-header text-xs mb-1 capitalize")),
+		Div().Class("chat-bubble italic text-sm overflow-x-scroll "+bubble).Body(
+			// TODO format HTML
+			Raw("<div>"+txt+"</div>"),
+		),
+	)
+}
+
+// msgState returns the row alignment and the bubble class for a message.
+func msgState(from shared.From) (align, bubble string) {
+	switch from {
+	case shared.FromUser:
+		return "chat-end", "chat-bubble-secondary"
+	case shared.FromNarrator:
+		return "chat-start", "chat-bubble-neutral"
+	case shared.FromAssistant:
+		return "chat-start", "chat-bubble-primary"
 	}
-	if a.formSubmitting {
-		textarea.Disabled(true)
-	}
-	if agent.Is1(ssA.Interrupted) {
-		btnSend.Disabled(true)
-		btnInter.Text("Resume")
-		textarea.Disabled(true)
-	}
-	if agent.Is1(ssA.Requesting) {
-		btnSend.Body(
-			Span().Class("loading loading-spinner loading-md"),
-			Span().Text(" Sending "),
-			Span().Class("loading loading-spinner loading-md"),
-		)
+
+	return "chat-start", ""
+}
+
+// renderClock renders the clock canvas. The chart itself is drawn by chart.js
+// from the server-rendered diff in the data-diff attribute.
+func (a *AgentUI) renderClock() UI {
+	return Div().Class("card bg-base-100 h-16 border border-base-200 rounded-lg items-center").Body(
+		Div().Class("card-body p-2 relative h-full w-40").Body(
+			Canvas().ID("clockmoji").DataSet("diff", a.clockDiffJSON()),
+		),
+	)
+}
+
+// clockDiffJSON returns the clock diff as JSON, padded to the chart series.
+func (a *AgentUI) clockDiffJSON() string {
+	diff, _ := json.Marshal(a.clockDiff())
+	return string(diff)
+}
+
+// clockDiff returns the clock diff padded to the number of chart series.
+func (a *AgentUI) clockDiff() [][]int {
+	diff := a.model.Store().ClockDiff
+	ret := make([][]int, clockWidth)
+	for i := range ret {
+		ret[i] = []int{}
+		if i < len(diff) {
+			ret[i] = diff[i]
+		}
 	}
 
 	return ret
 }
 
-func (a *AgentUI) renderMsgs() UI {
-	rows := make([]UI, len(a.data.Msgs))
-	for i, m := range a.data.Msgs {
+// ///// ///// /////
 
-		// init TODO sanitize
-		txt := m.Text
-		// TODO format HTML
-		txt = strings.ReplaceAll(txt, "\n", "<br/>")
-		divFrom := Div()
-		divText := Div()
+// ///// HANDLERS
 
-		// msg template
-		el := []HTMLDiv{
+// ///// ///// /////
 
-			// <HTML>
-
-			Div().Class("chat").Body(
-				divFrom.Class("chat-header text-xs mb-1 capitalize"),
-				divText.Class("chat-bubble italic text-sm overflow-x-scroll").Body(Raw(
-					"<div>"+txt+"</div>",
-				)),
-			),
-
-			// </HTML>
-
-		}[0]
-
-		// conditions
-		// TODO day on old dates
-		date := m.CreatedAt.Format(time.Kitchen)
-		switch m.From {
-		case shared.FromUser:
-			el.Class("chat-end")
-			divText.Class("chat-bubble-secondary")
-			divFrom.Body(
-				Time().Class("text-xs opacity-50").Text(date),
-				Text(m.From.Value),
-			)
-		case shared.FromNarrator:
-			el.Class("chat-start")
-			divText.Class("chat-bubble-neutral")
-			divFrom.Body(
-				Text(m.From.Value),
-				Time().Class("text-xs opacity-50").Text(date),
-			)
-		case shared.FromAssistant:
-			el.Class("chat-start")
-			divText.Class("chat-bubble-primary")
-			divFrom.Body(
-				Text(m.From.Value),
-				Time().Class("text-xs opacity-50").Text(date),
-			)
-		}
-
-		rows[i] = el
-	}
-
-	return []UI{
-
-		// <HTML>
-
-		Div().Class("card bg-base-100 rounded-lg flex-1 overflow-hidden border border-base-200").Body(
-			Div().Class("card-body p-4 flex flex-col h-full").Body(
-				H2().Class("card-title text-sm text-base-content/50 uppercase tracking-wider mb-2 self-center").Text("Messages"),
-				Div().ID(idMsgs).Class("flex-1 overflow-y-auto").Body(
-					rows...,
-				),
-			),
-		),
-
-		// </HTML>
-
-	}[0]
-}
-
-func (a *AgentUI) renderClock() UI {
-	return []HTMLDiv{
-
-		// <HTML>
-
-		Div().Class("card bg-base-100 h-16 border border-base-200 rounded-lg items-center").Body(
-			Div().Class("card-body p-2 relative h-full w-40").Body(
-				Canvas().ID("clockmoji"),
-			),
-		),
-
-		// </HTML>
-
-	}[0]
-}
-
-// UI UTILS
-
-func (a *AgentUI) scrollMsgs() {
-	a.App.Dispatch(func(ctx Context) {
-		Window().Call("scrollMsgs")
-	})
-}
-
-func (a *AgentUI) msgsScrolled() bool {
-	return Window().Call("isMsgsScrolledEnd").Bool()
-}
-
-// HANDLERS
-
-// TODO state
-func (a *AgentUI) clickInterrupt(ctx Context, e Event) {
-	e.PreventDefault()
-	e.StopImmediatePropagation()
-	agent := a.AgentClient.NetMach
-
-	a.formSubmitting = true
-	go func() {
-		defer func() {
-			a.formSubmitting = false
-		}()
-
-		when := agent.WhenTicks(ssA.Interrupted, 1, ctx.Context)
-		agent.Toggle1(ssA.Interrupted, nil)
-		err := amhelp.WaitForAll(ctx.Context, 3*time.Second, when)
-		if err != nil {
-			a.formErr = "timeout"
-			return
-		}
-	}()
-}
-
-func (a *AgentUI) promptCtrlEnter(ctx Context, e Event) { // 1. Check if the pressed key is "Enter"
-	isEnter := e.Get("key").String() == "Enter"
-	isCtrlOrCmd := e.Get("ctrlKey").Bool() || e.Get("metaKey").Bool()
-	if isEnter && isCtrlOrCmd {
-		a.Dump("promptCtrlEnter", nil)
-		a.promptSubmit(ctx, e)
-	}
-}
-
-// TODO state
-func (a *AgentUI) promptSubmit(ctx Context, e Event) {
-	a.Dump("promptSubmit", a.formPrompt)
-	e.PreventDefault()
-	agent := a.AgentClient.NetMach
-
-	// validate
+func (a *AgentUI) promptSubmit(_ Context, _ Event) {
 	if a.formPrompt == "" {
 		return
 	}
 
-	args := &shared.APrompt{
+	a.model.Mach().Add1(ssA.Prompt, Pass(&shared.APrompt{
 		Prompt: a.formPrompt,
-	}
+	}))
+	a.formPrompt = ""
+	a.promptReset++
+}
 
-	a.formSubmitting = true
-	go func() {
-		defer func() {
-			a.formSubmitting = false
-		}()
+func (a *AgentUI) interrupt(_ Context, _ Event) {
+	a.model.Mach().Toggle1(ssA.Interrupted, nil)
+}
 
-		when := agent.WhenTicks(ssA.Prompt, 1, ctx.Context)
-		agent.Add1(ssA.Prompt, Pass(args))
-		err := amhelp.WaitForAll(ctx.Context, 3*time.Second, when)
-		if err != nil {
-			a.Dump("promptSubmit/timeout", nil)
-			a.formErr = "timeout"
-			return
-		}
-		a.formPrompt = " "
-		a.scrollMsgs()
-	}()
+func (a *AgentUI) clickAction(id string) {
+	mach := a.model.Mach()
+	mach.Add1(ssA.StoryAction, Pass(&shared.AStoryAction{
+		ID: id,
+	}))
+	a.buttonClicked = id
+
+	// reset the button state on the queue
+	time.AfterFunc(500*time.Millisecond, func() {
+		mach.Eval("browser-agentui-reset", func() {
+			if a.buttonClicked != id {
+				return
+			}
+			a.buttonClicked = ""
+			RefreshPage(a.Page)
+		}, mach.Context())
+	})
+}
+
+// introHTML converts a plain text intro to HTML.
+func introHTML(intro string) string {
+	return "<span>" + strings.ReplaceAll(intro, "\n", "<br>") + "</span>"
 }
