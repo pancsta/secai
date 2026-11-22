@@ -29,7 +29,6 @@ import (
 	"github.com/pancsta/secai/tools/searxng"
 	"github.com/pancsta/secai/ui"
 	"github.com/pancsta/secai/web"
-	ssp "github.com/pancsta/secai/web/browser/states"
 )
 
 // Mock will run a sample scenario
@@ -79,7 +78,6 @@ var mock = Mock{
 
 var ss = states.CookStates
 var SAdd = am.SAdd
-var ssP = ssp.PageStates
 
 // EnvCookDev enabled dev mode (local config and data dir).
 var EnvCookDev = "COOK_DEV"
@@ -373,7 +371,7 @@ func (a *Agent) Splash() string {
 		version = info.Main.Version
 	}
 	logFile := cfg.Agent.LogPath(false)
-	logAddr := cfg.Web.ConfigWebLogAddr()
+	logAddr := cfg.Web.LogAddr()
 	binary := shared.BinaryPath(true)
 	argCfg := ""
 	if cfg.File != "config.kdl" {
@@ -412,12 +410,14 @@ func (a *Agent) Splash() string {
 
 	// TUI
 
-	if cfg.TUI.PortSSH > 0 {
+	if cfg.TUI.PortSSH > 0 || cfg.TUI.PortWeb > 0 {
 		l("TUI:")
 		if cfg.TUI.PortWeb > 0 {
 			l("- http://%s:%d", cfg.TUI.Host, cfg.TUI.PortWeb)
 		}
-		l("- ssh %s -p %d -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no", cfg.TUI.Host, cfg.TUI.PortSSH)
+		if cfg.TUI.PortSSH > 0 {
+			l("- ssh %s -p %d -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no", cfg.TUI.Host, cfg.TUI.PortSSH)
+		}
 		l("")
 	}
 
@@ -425,8 +425,8 @@ func (a *Agent) Splash() string {
 
 	if cfg.Debug.REPL {
 		l("REPL:")
-		if cfg.Debug.REPLWeb != -1 {
-			l("- http://localhost:%d", cfg.Debug.REPLWeb)
+		if cfg.Debug.REPLWeb > 0 {
+			l("- http://localhost:%d/", cfg.Debug.REPLWeb)
 		}
 		l("- %s repl%s", binary, argCfg)
 		l("")
@@ -449,8 +449,8 @@ func (a *Agent) Splash() string {
 		if err == nil {
 			sshAddr2 := strings.Split(sshAddr, ":")
 			l("Debugger:")
-			if cfg.Debug.DBGEmbedWeb > 0 {
-				l("- http://localhost:%d", cfg.Debug.DBGEmbedWeb)
+			if cfg.Debug.DBGEmbedWeb {
+				l("- http://%s/livepage", httpAddr)
 			}
 			l("- files: http://%s", httpAddr)
 			l("- ssh %s -p %s -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no", sshAddr2[0], sshAddr2[1])
@@ -1017,20 +1017,6 @@ type Web struct {
 
 func NewWeb(a *Agent) *Web {
 	w := &Web{}
-	w.Handlers = web.NewHandlers(a, w)
+	w.Handlers = web.NewHandlers(a)
 	return w
 }
-
-// custom page data
-// func (w *Web) PushDashData(
-// 	e *am.Event, client *arpc.Client, dash *typesweb.DataDashboard,
-// ) am.Result {
-// 	return client.NetMach.EvAdd1(e, ssP.Data, am.Pass(
-// 		&typesweb.AData{
-// 			DataDash: dash,
-// 		},
-// 		&shared.AData{
-// 			Browsers: shared.DetectBrowsers(),
-// 		},
-// 	))
-// }

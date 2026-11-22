@@ -17,3 +17,32 @@ tasks:
           https://raw.githubusercontent.com/pancsta/secai/refs/heads/main/config/Taskfile.yml
 
   # TODO agent's tasks go here
+
+  test-docker:
+    desc: Run cook tests inside Docker, capped at 5GB RAM
+    dir: '{{.TASKFILE_DIR}}'
+    vars:
+      WORKSPACE_ROOT: '{{.TASKFILE_DIR}}/../../../..'
+    cmds:
+      - docker build -f Dockerfile.cook-test -t secai-cook-test .
+      # warm the Go build cache outside the memory cap (compiling the dep graph
+      # can exceed 5GB on a cold cache)
+      - docker run --rm
+          --network=host
+          -v "{{.WORKSPACE_ROOT}}:{{.WORKSPACE_ROOT}}"
+          -v secai-cook-go-mod:/go/pkg/mod
+          -v secai-cook-go-build:/root/.cache/go-build
+          -w "{{.TASKFILE_DIR}}"
+          secai-cook-test
+          go test -count=1 -buildvcs=false -run '^$' ./...
+      # run the tests with a hard 5GB cap
+      - docker run --rm
+          --memory=5g --memory-swap=5g
+          --network=host
+          -v "{{.WORKSPACE_ROOT}}:{{.WORKSPACE_ROOT}}"
+          -v secai-cook-go-mod:/go/pkg/mod
+          -v secai-cook-go-build:/root/.cache/go-build
+          -w "{{.TASKFILE_DIR}}"
+          secai-cook-test
+          go test -count=1 -buildvcs=false ./... {{.CLI_ARGS}}
+

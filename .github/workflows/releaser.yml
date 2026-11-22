@@ -32,9 +32,6 @@ jobs:
 
       # build
       -
-        name: WASM
-        run: task --dir examples/cook build-wasm
-      -
         name: Gen license
         run: task gen-license
 

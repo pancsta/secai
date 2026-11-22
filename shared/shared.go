@@ -3,11 +3,16 @@ package shared
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding"
 	"encoding/gob"
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -21,16 +26,17 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
 	"github.com/BooleanCat/go-functional/v2/it"
-	"github.com/pancsta/instructor-go/pkg/instructor/core"
 	"github.com/lithammer/dedent"
 	"github.com/orsinium-labs/enum"
 	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
 	"github.com/pancsta/asyncmachine-go/pkg/telemetry/dbg"
+	"github.com/pancsta/instructor-go/pkg/instructor/core"
 	"github.com/sblinch/kdl-go"
 	"github.com/sblinch/kdl-go/document"
 	"golang.org/x/text/language"
@@ -506,7 +512,10 @@ type Action struct {
 	VisibleAgent amhelp.Cond
 	VisibleMem   amhelp.Cond
 	IsDisabled   func() bool
-	LabelEnd     string
+	// IsVisible is an optional dynamic visibility condition, evaluated on each
+	// UI render. It takes precedence over VisibleAgent and VisibleMem.
+	IsVisible func() bool
+	LabelEnd  string
 	// DisabledCook amhelp.Cond
 
 	// NotQuery string
@@ -628,8 +637,8 @@ type ConfigAICommon struct {
 	// For how long blacklist this provider on error (def 1h).
 	FallbackTimeout time.Duration `kdl:",omitempty"`
 	// Number of concurrent req for this provider TODO
-	Concurrency int `kdl:",omitempty"`
-	URL string `kdl:",omitempty"`
+	Concurrency int    `kdl:",omitempty"`
+	URL         string `kdl:",omitempty"`
 
 	// TODO
 
@@ -719,14 +728,12 @@ type ConfigAgentHistory struct {
 type ConfigWeb struct {
 	Root *Config `kdl:"-" json:"-"`
 
-	// Base address for HTTP services:
-	// - main HTTP server
-	// - +1 WebSocket addr of the agent's RPC server (dashboard)
-	// - +2 WebSocket addr of the agent's RPC server (agent UI)
+	// Main HTTP server
 	Addr string
 	// Start a DBPort web UI on http://localhost:{DBPort[0-2]}
 	DBPort int
 	// Start a log web UI on http://localhost:{LogPort}
+	// TODO inline into ConfigWeb.Addr under /logs, remove config
 	LogPort int
 }
 
@@ -785,10 +792,13 @@ type ConfigDebug struct {
 
 	// Start an embedded debugger on localhost:{DBGAddr}
 	DBGEmbed bool
-	// Expose the embedded debugger on http://localhost:{DBGEmbedWeb}
-	DBGEmbedWeb int
+	// Enable the embedded debugger web UI (livepage) on localhost:{DBGAddr}+1
+	DBGEmbedWeb bool
 	// Start a web REPL on http://localhost:{REPLWeb}
+	// TODO inline into ConfigWeb.Addr under /repl, remove REPLWeb cfg
 	REPLWeb int
+	// forward dbg to these addresses
+	DBGAddrsFwd []string
 }
 
 // defaults
@@ -834,9 +844,8 @@ func ConfigDefaultAIOpenAI() ConfigAIOpenAI {
 	return ConfigAIOpenAI{
 		ConfigAICommon: ConfigAICommon{
 			Retries: 3,
-			// TODO breaks WASM linking
 			// Model:   openai.GPT4o,
-			Model: "gpt-4o",
+			Model: "",
 			// TODO enum
 			API:             "openai",
 			FallbackTimeout: time.Hour,
@@ -849,7 +858,7 @@ func ConfigDefaultAIGemini() ConfigAIGemini {
 		ConfigAICommon: ConfigAICommon{
 			Retries: 3,
 			// TODO link from genai pkg
-			Model: "gemini-2.5-flash",
+			Model: "",
 			// TODO enum
 			API:             "gemini",
 			FallbackTimeout: time.Hour,
@@ -950,12 +959,38 @@ func (c *ConfigWeb) DBAddrsListen() (base, agent, mach string) {
 		host + ":" + strconv.Itoa(port+2)
 }
 
-func (c *ConfigWeb) ConfigWebLogAddr() string {
+func (c *ConfigWeb) LogAddr() string {
+	// TODO support windows
+	if runtime.GOOS == "windows" {
+		return ""
+	}
 	if c.LogPort == -1 {
 		return ""
 	}
 
-	return "localhost:" + strconv.Itoa(c.LogPort)
+	host := "localhost:"
+	if c.Root.DockerMode {
+		host = "0.0.0.0:"
+	}
+
+	return host + strconv.Itoa(c.LogPort)
+}
+
+func (c *ConfigWeb) REPLAddr() string {
+	// TODO support windows
+	if runtime.GOOS == "windows" {
+		return ""
+	}
+	if !c.Root.Debug.REPL || c.Root.Debug.REPLWeb == -1 {
+		return ""
+	}
+
+	host := "localhost:"
+	if c.Root.DockerMode {
+		host = "0.0.0.0:"
+	}
+
+	return host + strconv.Itoa(c.Root.Debug.REPLWeb)
 }
 
 // DirPath returns an absolute path to the agent's data directory.
@@ -1021,26 +1056,6 @@ func (c *ConfigWeb) AddrAgent() string {
 	return host + ":" + strconv.Itoa(webPort+1)
 }
 
-func (c *ConfigWeb) REPLAddrDash() string {
-	host, _, err := net.SplitHostPort(c.AddrListen())
-	if err != nil {
-		return ""
-	}
-
-	// REPLs are always random, as they'd collide without tunnel matchers
-	return host + ":0"
-}
-
-func (c *ConfigWeb) REPLAddrAgentUI() string {
-	host, _, err := net.SplitHostPort(c.AddrListen())
-	if err != nil {
-		return ""
-	}
-
-	// REPLs are always random, as they'd collide without tunnel matchers
-	return host + ":0"
-}
-
 func (c *ConfigWeb) DashURL() string {
 	return "http://" + c.Addr
 }
@@ -1050,6 +1065,9 @@ func (c *ConfigWeb) AgentURL() string {
 }
 
 func (c Config) DotEnv() string {
+	// link .Root fields, required by AddrListen/AddrAgent
+	c = c.Clone()
+
 	var sb strings.Builder
 
 	writeEnv := func(key string, value any) {
@@ -1086,9 +1104,6 @@ func (c Config) DotEnv() string {
 	sb.WriteString("# WEB CONFIGURATION\n")
 	sb.WriteString("# ==========================================\n")
 	writeEnv("WEB_ADDR", c.Web.Addr)
-	writeEnv("WEB_ADDR_AGENT", c.Web.AddrAgent())
-	writeEnv("WEB_DASH_REPL_ADDR", c.Web.REPLAddrDash())
-	writeEnv("WEB_AGENTUI_REPL_ADDR", c.Web.REPLAddrAgentUI())
 	writeEnv("WEB_DB_PORT", c.Web.DBPort)
 	writeEnv("WEB_LOG_PORT", c.Web.LogPort)
 
@@ -1130,10 +1145,43 @@ func (c Config) DotEnv() string {
 
 // ///// ///// /////
 
+// kdlTplMarker starts the DEFAULT VALUES section of an agent's KDL template.
+const kdlTplMarker = "// ///// DEFAULT VALUES"
+
+// kdlTplHeader is the header of the DEFAULT VALUES section.
+const kdlTplHeader = "// /////\n" + kdlTplMarker + "\n// /////\n\n"
+
+// KdlTplWrite replaces the DEFAULT VALUES section of a KDL template file with a
+// commented-out dump of cfg, keeping the rest of the file intact. The defaults
+// come only from cfg, eg [ConfigDefault]. The file is created from fallback if
+// missing.
+func KdlTplWrite(path string, fallback []byte, cfg any) error {
+	data, err := os.ReadFile(path)
+	exists := err == nil
+	if !exists {
+		data = fallback
+	}
+
+	// keep everything above the marker
+	head, _, found := strings.Cut(string(data), kdlTplMarker)
+	if found {
+		// drop the trailing section separator, it's part of the header
+		head = strings.TrimSuffix(strings.TrimRight(head, " \t\n"), "// /////")
+	}
+	out := strings.TrimRight(head, " \t\n") + "\n\n" + kdlTplHeader +
+		KdlCfgDump(cfg)
+
+	if exists && out == string(data) {
+		return nil
+	}
+
+	return os.WriteFile(path, []byte(out), 0o644)
+}
+
 // KdlFormat parses a raw KDL string and returns it formatted with proper
 // newlines, inherited indentation, and names resolved from the Config struct.
 func KdlFormat(input []byte, cfg any) string {
-	nameMap := kdlBuildNameMap(cfg)
+	f := &kdlFmt{nameMap: kdlBuildNameMap(cfg)}
 
 	doc, err := kdl.Parse(bytes.NewReader(input))
 	if err != nil {
@@ -1142,8 +1190,18 @@ func KdlFormat(input []byte, cfg any) string {
 
 	var b strings.Builder
 	for _, n := range doc.Nodes {
-		b.WriteString(kdlFormatNode(n, 0, nameMap))
+		f.node(&b, n, 0)
 	}
+	return b.String()
+}
+
+// KdlCfgDump returns cfg as a KDL document in a /* */ comment, with godoc
+// comments above each field.
+func KdlCfgDump(cfg any) string {
+	var b strings.Builder
+	b.WriteString("/*\n")
+	kdlDumpStruct(&b, reflect.ValueOf(cfg), 0)
+	b.WriteString("*/\n")
 	return b.String()
 }
 
@@ -1217,55 +1275,303 @@ func kdlCapitalizeFallback(s string) string {
 	return string(r)
 }
 
-func kdlFormatNode(n *document.Node, depth int, nameMap map[string]string) string {
-	var b strings.Builder
-	indent := strings.Repeat("  ", depth)
+// kdlFmt renders a parsed KDL document.
+type kdlFmt struct {
+	nameMap map[string]string
+}
 
-	name := kdlResolveName(n.Name.Value.(string), nameMap)
-	b.WriteString(indent)
-	b.WriteString(name)
+func (f *kdlFmt) node(b *strings.Builder, n *document.Node, depth int) {
+	indent := strings.Repeat("  ", depth)
+	name := kdlResolveName(n.Name.Value.(string), f.nameMap)
 
 	children := n.Children
 	props := n.Properties.Unordered()
 	hasBraces := len(children) > 0 || len(props) > 0
 
 	if !hasBraces {
+		b.WriteString(indent + name)
+		for _, arg := range n.Arguments {
+			b.WriteString(" " + kdlFormatValue(arg))
+		}
 		b.WriteString("\n")
-		return b.String()
+		return
 	}
 
-	b.WriteString(" {\n")
+	b.WriteString(indent + name + " {\n")
 
 	childIndent := strings.Repeat("  ", depth+1)
 	for k, v := range props {
 		// if kdlIsZeroValue(v) {
 		// 	continue
 		// }
-		key := kdlResolveName(k, nameMap)
-		b.WriteString(childIndent)
-		b.WriteString(key)
+		b.WriteString(childIndent + kdlResolveName(k, f.nameMap))
 		if v.Value != nil {
-			b.WriteString(" ")
-			b.WriteString(kdlFormatValue(v))
+			b.WriteString(" " + kdlFormatValue(v))
 		}
 		b.WriteString("\n")
 	}
 
 	// output arguments (positional values without keys)
 	for _, arg := range n.Arguments {
-		b.WriteString(childIndent)
-		b.WriteString(kdlFormatValue(arg))
-		b.WriteString("\n")
+		b.WriteString(childIndent + kdlFormatValue(arg) + "\n")
 	}
 
 	for _, child := range children {
-		b.WriteString(kdlFormatNode(child, depth+1, nameMap))
+		f.node(b, child, depth+1)
 	}
 
-	b.WriteString(indent)
-	b.WriteString("}\n")
+	b.WriteString(indent + "}\n")
+}
 
-	return b.String()
+// kdlTagHas reports whether a kdl tag contains the given attribute, eg
+// `kdl:"OpenAI,omitempty"`.
+func kdlTagHas(tag, attr string) bool {
+	parts := strings.Split(tag, ",")
+	for _, p := range parts[1:] {
+		if p == attr {
+			return true
+		}
+	}
+	return false
+}
+
+// ///// KDL DUMP
+
+// kdlLine writes an indented KDL line.
+func kdlLine(b *strings.Builder, depth int, s string) {
+	b.WriteString(strings.Repeat("  ", depth))
+	b.WriteString(s)
+	b.WriteString("\n")
+}
+
+// kdlDumpStruct writes all exported fields of a struct as KDL nodes, with their
+// godoc.
+func kdlDumpStruct(b *strings.Builder, val reflect.Value, depth int) {
+	for val.Kind() == reflect.Ptr || val.Kind() == reflect.Interface {
+		if val.IsNil() {
+			return
+		}
+		val = val.Elem()
+	}
+	if val.Kind() != reflect.Struct {
+		return
+	}
+
+	t := val.Type()
+	docs := kdlTypeDocs(t)
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		tag := f.Tag.Get("kdl")
+		if !f.IsExported() || tag == "-" {
+			continue
+		}
+
+		// embedded structs are inlined
+		if f.Anonymous {
+			kdlDumpStruct(b, val.Field(i), depth)
+			continue
+		}
+
+		fv := val.Field(i)
+		if fv.IsZero() && kdlTagHas(tag, "omitempty") {
+			continue
+		}
+		// no arguments means no node
+		if (fv.Kind() == reflect.Slice || fv.Kind() == reflect.Array) &&
+			fv.Len() == 0 {
+
+			continue
+		}
+
+		name := f.Name
+		if tagName := strings.SplitN(tag, ",", 2)[0]; tagName != "" {
+			name = tagName
+		}
+		kdlDumpValue(b, name, fv, depth, docs[f.Name])
+	}
+}
+
+// kdlDumpValue writes a single struct field as commented-out KDL, recursing
+// into structs and struct slices.
+func kdlDumpValue(
+	b *strings.Builder, name string, val reflect.Value, depth int, doc string,
+) {
+	for val.Kind() == reflect.Ptr || val.Kind() == reflect.Interface {
+		if val.IsNil() {
+			return
+		}
+		val = val.Elem()
+	}
+
+	// godoc, as a comment for when the line gets uncommented
+	for _, l := range strings.Split(doc, "\n") {
+		// skip empty lines and TODO notes
+		l = strings.TrimSpace(l)
+		if l == "" || strings.HasPrefix(l, "TODO") {
+			continue
+		}
+		kdlLine(b, depth, "// "+l)
+	}
+
+	switch val.Kind() {
+	case reflect.Struct:
+		kdlLine(b, depth, name+" {")
+		kdlDumpStruct(b, val, depth+1)
+		kdlLine(b, depth, "}")
+	case reflect.Slice, reflect.Array:
+		// slices of structs are repeated nodes, others are arguments
+		if val.Type().Elem().Kind() == reflect.Struct {
+			for i := 0; i < val.Len(); i++ {
+				kdlDumpValue(b, name, val.Index(i), depth, doc)
+				doc = ""
+			}
+			return
+		}
+		s := name
+		for i := 0; i < val.Len(); i++ {
+			s += " " + kdlFormatScalar(val.Index(i))
+		}
+		kdlLine(b, depth, s)
+	default:
+		kdlLine(b, depth, name+" "+kdlFormatScalar(val))
+	}
+}
+
+// kdlFormatScalar formats a scalar KDL value, including durations and text
+// marshalers (eg [slog.Level]).
+func kdlFormatScalar(val reflect.Value) string {
+	if val.Type() == reflect.TypeOf(time.Duration(0)) {
+		d := time.Duration(val.Int())
+		if d != 0 && d%time.Hour == 0 {
+			return strconv.Quote(strconv.FormatInt(int64(d/time.Hour), 10) + "h")
+		}
+		return strconv.Quote(d.String())
+	}
+	if tm, ok := val.Interface().(encoding.TextMarshaler); ok {
+		if txt, err := tm.MarshalText(); err == nil {
+			return strconv.Quote(string(txt))
+		}
+	}
+
+	switch val.Kind() {
+	case reflect.String:
+		return strconv.Quote(val.String())
+	case reflect.Bool:
+		return strconv.FormatBool(val.Bool())
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return strconv.FormatInt(val.Int(), 10)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return strconv.FormatUint(val.Uint(), 10)
+	case reflect.Float32, reflect.Float64:
+		return strconv.FormatFloat(val.Float(), 'f', -1, 64)
+	default:
+		return strconv.Quote(fmt.Sprint(val))
+	}
+}
+
+// ///// GODOC
+
+// kdlDocs caches parsed godoc comments per package dir.
+var kdlDocs sync.Map
+
+// kdlTypeDocs returns the godoc comments of t's exported fields, keyed by field
+// name. It parses the declaring package's source and returns nil when not
+// available (eg in prod builds).
+func kdlTypeDocs(t reflect.Type) map[string]string {
+	dir, ok := kdlPkgDir(t.PkgPath())
+	if !ok {
+		return nil
+	}
+
+	cached, ok := kdlDocs.Load(dir)
+	if !ok {
+		cached, _ = kdlDocs.LoadOrStore(dir, kdlParseDocs(dir))
+	}
+
+	return cached.(map[string]map[string]string)[t.Name()]
+}
+
+// kdlPkgDir resolves an import path to a source dir using the closest go.mod.
+func kdlPkgDir(pkgPath string) (string, bool) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", false
+	}
+
+	for {
+		if data, err := os.ReadFile(filepath.Join(dir, "go.mod")); err == nil {
+			if mod := kdlModulePath(data); mod != "" &&
+				(pkgPath == mod || strings.HasPrefix(pkgPath, mod+"/")) {
+
+				rel := strings.TrimPrefix(pkgPath, mod)
+				return filepath.Join(dir, filepath.FromSlash(strings.TrimPrefix(rel, "/"))), true
+			}
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
+}
+
+func kdlModulePath(goMod []byte) string {
+	for _, line := range strings.Split(string(goMod), "\n") {
+		if rest, ok := strings.CutPrefix(line, "module "); ok {
+			return strings.TrimSpace(rest)
+		}
+	}
+	return ""
+}
+
+// kdlParseDocs parses all non-test files of a package and returns struct field
+// godoc comments as type name -> field name -> comment.
+func kdlParseDocs(dir string) map[string]map[string]string {
+	out := make(map[string]map[string]string)
+
+	pkgs, err := parser.ParseDir(token.NewFileSet(), dir, func(fi fs.FileInfo) bool {
+		return !strings.HasSuffix(fi.Name(), "_test.go")
+	}, parser.ParseComments)
+	if err != nil {
+		return out
+	}
+
+	for _, pkg := range pkgs {
+		for _, file := range pkg.Files {
+			for _, decl := range file.Decls {
+				gd, ok := decl.(*ast.GenDecl)
+				if !ok || gd.Tok != token.TYPE {
+					continue
+				}
+
+				for _, spec := range gd.Specs {
+					ts, ok := spec.(*ast.TypeSpec)
+					if !ok {
+						continue
+					}
+					st, ok := ts.Type.(*ast.StructType)
+					if !ok {
+						continue
+					}
+
+					docs := make(map[string]string)
+					for _, f := range st.Fields.List {
+						if f.Doc == nil {
+							continue
+						}
+						doc := strings.TrimSpace(f.Doc.Text())
+						for _, name := range f.Names {
+							docs[name.Name] = doc
+						}
+					}
+					out[ts.Name.Name] = docs
+				}
+			}
+		}
+	}
+
+	return out
 }
 
 // func kdlIsZeroValue(v *document.Value) bool {
@@ -1330,9 +1636,10 @@ func kdlFormatValue(v *document.Value) string {
 // ///// ///// /////
 
 type FeedItem struct {
-	Title  string
+	ID     string
+	Title  string `jsonschema:"required"`
 	Author string
-	Link   string
+	Link   string `jsonschema:"required"`
 	Date   string
 	Desc   string
 }
@@ -1347,31 +1654,66 @@ func escapeXML(input string) string {
 	return buffer.String()
 }
 
-func GenerateAtomFeed(items []FeedItem, title string) string {
-	now := time.Now().Format(time.RFC3339)
-	feed := fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?>
-		<feed xmlns="http://www.w3.org/2005/Atom">
-		  <title>%s</title>
-		  <link href="https://github.com"/>
-		  <updated>%s</updated>
-		  <id>starred-repos-feed</id>
-		`, title, now)
+// feedItemID returns a stable Atom entry ID derived from the title and update
+// date of an item.
+func feedItemID(title, updated string) string {
+	sum := sha256.Sum256([]byte(title + updated))
+	return fmt.Sprintf("urn:sha256:%x", sum)
+}
 
-	for _, item := range items {
-		title := escapeXML(item.Title)
-		feed += fmt.Sprintf(`
-			<entry>
+// indentLines prefixes every non-empty line of s with n spaces.
+func indentLines(s string, n int) string {
+	pad := strings.Repeat(" ", n)
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		if line != "" {
+			lines[i] = pad + line
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// GenerateAtomFeed renders items as an Atom feed. url is the feed-level
+// alternate link; it falls back to the legacy GitHub link when empty.
+func GenerateAtomFeed(items []FeedItem, title, url string) string {
+	now := time.Now().Format(time.RFC3339)
+	if url == "" {
+		url = "https://github.com"
+	}
+
+	var sb strings.Builder
+	sb.WriteString(Sp(`
+		<?xml version="1.0" encoding="utf-8"?>
+		<feed xmlns="http://www.w3.org/2005/Atom">
 		    <title>%s</title>
 		    <link href="%s"/>
 		    <updated>%s</updated>
-		    <author>%s</author>
-		    <description>%s</description>
-		  </entry>
-		`, title, item.Link, item.Date, item.Author, item.Desc)
+		    <id>starred-repos-feed</id>
+	`, escapeXML(title), escapeXML(url), now))
+
+	for _, item := range items {
+		id := item.ID
+		if id == "" {
+			id = feedItemID(item.Title, item.Date)
+		}
+		entry := Sp(`
+			<entry>
+			    <id>%s</id>
+			    <title>%s</title>
+			    <link href="%s"/>
+			    <updated>%s</updated>
+			    <author><name>%s</name></author>
+			    <description>%s</description>
+			</entry>
+		`, escapeXML(id), escapeXML(item.Title), escapeXML(item.Link),
+			escapeXML(item.Date), escapeXML(item.Author), escapeXML(item.Desc))
+
+		sb.WriteString(indentLines(strings.TrimSuffix(entry, "\n"), 4))
+		sb.WriteString("\n")
 	}
 
-	feed += `</feed>`
-	return feed
+	sb.WriteString("</feed>\n")
+	return sb.String()
 }
 
 // ///// ///// /////
@@ -1674,8 +2016,6 @@ func IsStory(state string) bool {
 	return strings.HasPrefix(state, states.PrefixStory) && state != ss.StoryChanged &&
 		!strings.HasPrefix(state, states.PrefixStoryDisable) && state != ss.StoryAction
 }
-
-
 
 type PromptUsage struct {
 	Model              string

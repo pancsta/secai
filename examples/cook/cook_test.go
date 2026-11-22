@@ -24,8 +24,6 @@ import (
 var (
 	timeout    = 3 * time.Second
 	configFile = "config.kdl"
-	// amDbg      = false
-	amDbg = true
 	// amLog = am.LogOps
 	// amLog = am.LogChanges
 	amLog = am.LogNothing
@@ -196,10 +194,11 @@ func NewConfig(t *testing.T, idSuffix string) *Config {
 	cfg.Web.LogPort = -1
 	cfg.TUI.PortWeb = -1
 	cfg.TUI.PortSSH = -1
-	cfg.Debug.DBGAddr = "1"
-	if !amDbg {
-		cfg.Debug.DBGAddr = ""
-	}
+	// tests must not spawn the web REPL child, the embedded debugger, or
+	// connect to one on a default port
+	cfg.Debug.REPLWeb = -1
+	cfg.Debug.DBGEmbed = false
+	cfg.Debug.DBGAddr = ""
 	cfg.Debug.Mock = mock.Active
 
 	return &cfg

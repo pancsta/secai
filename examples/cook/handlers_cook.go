@@ -3,8 +3,10 @@ package cook
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,8 +15,11 @@ import (
 	"time"
 
 	"github.com/charmbracelet/ssh"
+	"github.com/gdamore/tcell/v2"
 	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
+	tclive "github.com/pancsta/cview/tcell-livepage"
+	lp "github.com/pancsta/livepage"
 	agentllm "github.com/pancsta/secai/agent_llm"
 	"github.com/sblinch/kdl-go"
 
@@ -69,8 +74,15 @@ func (a *Agent) StartState(e *am.Event) {
 	})
 	mach.EvAddErr(e, err, nil)
 
-	// start Heartbeat
 	mach.Fork(ctx, e, func() {
+		// save the default config template
+		if !a.Config.ProdBuild {
+			mach.AddErr(shared.KdlTplWrite(
+				filepath.Join(filepath.Dir(a.Config.File), "config.tpl.kdl"),
+				ConfigTpl, ConfigDefault()), nil)
+		}
+
+		// start Heartbeat
 		tick := time.NewTicker(a.Config.Cook.HeartbeatFreq)
 		defer tick.Stop()
 		for {
@@ -233,7 +245,7 @@ func (a *Agent) HeartbeatState(e *am.Event) {
 	hist, err := a.Hist()
 	if err == nil {
 		mach.AddErr(
-			hist.Sync(), nil)
+			hist.Sync(mach.Context()), nil)
 	}
 
 	// TODO check orienting
@@ -449,9 +461,6 @@ func (a *Agent) SSHConnState(e *am.Event) {
 
 	// new UI will add UIReady
 	mach.Remove1(ss.UIReady, nil)
-	uiMain := ui.NewTui(mach, a.Logger(), a.ConfigBase(),
-		// TODO remote addr of local fwder, not the browser
-		sess.RemoteAddr().String())
 
 	// screen init is required for cview, but not for tview TODO still?
 	if err := screen.Init(); err != nil {
@@ -459,14 +468,10 @@ func (a *Agent) SSHConnState(e *am.Event) {
 		return
 	}
 
-	// init the UI TODO merge into 1
-	stories := ui.NewStories(uiMain, a.Actions(), a.Stories(), a.ConfigBase())
-	chat := ui.NewChat(uiMain, slices.Clone(a.msgs))
-	clock := ui.NewClock(uiMain, a.Store().ClockDiff)
-
-	err = uiMain.Init(screen, a.nextUIName(), stories, clock, chat)
+	// TODO remote addr of local fwder, not the browser
+	uiMain, err := a.newTUI(screen, sess.RemoteAddr().String())
 	if err != nil {
-		a.Mach().EvAddErrState(e, ss.ErrUI, err, nil)
+		mach.EvAddErrState(e, ss.ErrUI, err, nil)
 		return
 	}
 
@@ -491,6 +496,22 @@ func (a *Agent) SSHConnState(e *am.Event) {
 			Id: uiMain.Id,
 		}))
 	})
+}
+
+// newTUI creates and inits a TUI bound to the agent.
+func (a *Agent) newTUI(
+	screen tcell.Screen, clientAddr string,
+) (*ui.TUIAgent, error) {
+	uiMain := ui.NewTui(a.Mach(), a.Logger(), a.ConfigBase(), clientAddr)
+	stories := ui.NewStories(uiMain, a.Actions(), a.Stories(), a.ConfigBase())
+	chat := ui.NewChat(uiMain, slices.Clone(a.msgs))
+	clock := ui.NewClock(uiMain, a.Store().ClockDiff)
+
+	if err := uiMain.Init(screen, a.nextUIName(), stories, clock, chat); err != nil {
+		return nil, err
+	}
+
+	return uiMain, nil
 }
 
 var _ = ss.SSHDisconn
@@ -526,48 +547,109 @@ func (a *Agent) SSHDisconnState(e *am.Event) {
 var _ = ss.UIMode
 
 func (a *Agent) UIModeEnter(e *am.Event) bool {
-	return a.Config.TUI.PortSSH != -1
+	return a.Config.TUI.PortSSH != -1 || a.Config.TUI.PortWeb > 0
 }
 
 func (a *Agent) UIModeState(e *am.Event) {
 	mach := a.Mach()
 	ctx := mach.NewStateCtx(ss.UIMode)
 
-	// new session handler passing to UINewSess state
-	var handlerFn ssh.Handler = func(sess ssh.Session) {
-		done := make(chan struct{})
-		mach.EvAdd1(e, ss.SSHConn, Pass(&shared.ASSHConn{
-			SSHSess: sess,
-			Done:    done,
-		}))
+	// SSH UI
+	if a.Config.TUI.PortSSH != -1 {
+		// new session handler passing to UINewSess state
+		var handlerFn ssh.Handler = func(sess ssh.Session) {
+			done := make(chan struct{})
+			mach.EvAdd1(e, ss.SSHConn, Pass(&shared.ASSHConn{
+				SSHSess: sess,
+				Done:    done,
+			}))
 
-		// TODO WhenArgs for typed args
-		// amhelp.WaitForAll(ctx, time.Hour*9999, mach.WhenArgs(ss.SSHDisconn, am.A{}))
+			// TODO WhenArgs for typed args
+			// amhelp.WaitForAll(ctx, time.Hour*9999, mach.WhenArgs(ss.SSHDisconn, am.A{}))
 
-		// keep this session alive
-		select {
-		case <-ctx.Done():
-		case <-done:
+			// keep this session alive
+			select {
+			case <-ctx.Done():
+			case <-done:
+			}
 		}
+
+		// start SSH
+		mach.Fork(ctx, e, func() {
+			// save srv ref
+			optSrv := func(s *ssh.Server) error {
+				mach.EvAdd1(e, ss.SSHReady, Pass(&shared.ASSHReady{
+					SSHServer: s,
+				}))
+				return nil
+			}
+
+			addr := a.Config.TUI.Host + ":" + strconv.Itoa(a.Config.TUI.PortSSH)
+			a.Log("SSH UI listening", "addr", addr)
+			err := ssh.ListenAndServe(addr, handlerFn, optSrv)
+			if err != nil {
+				mach.EvAddErrState(e, ss.ErrUI, err, nil)
+			}
+		})
 	}
 
-	// start SSH
-	mach.Fork(ctx, e, func() {
-		// save srv ref
-		optSrv := func(s *ssh.Server) error {
-			mach.EvAdd1(e, ss.SSHReady, Pass(&shared.ASSHReady{
-				SSHServer: s,
-			}))
-			return nil
-		}
-
-		addr := a.Config.TUI.Host + ":" + strconv.Itoa(a.Config.TUI.PortSSH)
-		a.Log("SSH UI listening", "addr", addr)
-		err := ssh.ListenAndServe(addr, handlerFn, optSrv)
-		if err != nil {
+	// web UI over livepage
+	if a.Config.TUI.PortWeb > 0 {
+		if err := a.startWebTUI(ctx, e); err != nil {
 			mach.EvAddErrState(e, ss.ErrUI, err, nil)
 		}
+	}
+}
+
+// startWebTUI serves the TUI over livepage on [ConfigTUI.PortWeb].
+func (a *Agent) startWebTUI(ctx context.Context, e *am.Event) error {
+	mach := a.Mach()
+	cfg := a.ConfigBase()
+
+	screen, err := tclive.NewScreen(ctx, tclive.Opts{
+		Title:           cfg.Agent.Label,
+		RefreshInterval: 100 * time.Millisecond,
+		Live: lp.Opts{
+			Debounce: 100 * time.Millisecond,
+		},
 	})
+	if err != nil {
+		return err
+	}
+	uiMain, err := a.newTUI(screen, "livepage")
+	if err != nil {
+		screen.Fini()
+		return err
+	}
+	a.tuis = append(a.tuis, uiMain)
+
+	addr := cfg.TUI.Host + ":" + strconv.Itoa(cfg.TUI.PortWeb)
+	if cfg.DockerMode {
+		addr = "0.0.0.0:" + strconv.Itoa(cfg.TUI.PortWeb)
+	}
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           screen.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		err := srv.ListenAndServe()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			mach.EvAddErrState(e, ss.ErrUI, err, nil)
+		}
+	}()
+	a.Log("web TUI listening", "addr", addr)
+
+	uiMain.Redraw()
+	mach.Fork(ctx, e, func() {
+		_ = uiMain.Start(func() error {
+			_ = srv.Close()
+			screen.Fini()
+			return nil
+		})
+	})
+
+	return nil
 }
 
 func (a *Agent) UIModeEnd(e *am.Event) {

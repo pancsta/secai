@@ -18,9 +18,11 @@ type Prompt[P any, R any] struct {
 	// number of previous messages to include
 	HistoryMsgLen int
 	Msgs          []*PromptMsg
+	// MachId is the machine ID of the caller, forwarded to RequestingAI
+	MachId string
 
-	tools map[string]ToolApi
-	docs  map[string]*Document
+	tools      map[string]ToolApi
+	docs       map[string]*Document
 	lastClient *AIClient
 }
 

@@ -22,7 +22,6 @@ import (
 	"dario.cat/mergo"
 	"github.com/alexflint/go-arg"
 	"github.com/gookit/goutil/dump"
-	instr "github.com/pancsta/instructor-go/pkg/instructor"
 	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
 	amhist "github.com/pancsta/asyncmachine-go/pkg/history"
 	amhistg "github.com/pancsta/asyncmachine-go/pkg/history/gorm"
@@ -38,6 +37,7 @@ import (
 	typesdbg "github.com/pancsta/asyncmachine-go/tools/debugger/types"
 	"github.com/pancsta/asyncmachine-go/tools/relay"
 	rtypes "github.com/pancsta/asyncmachine-go/tools/relay/types"
+	instr "github.com/pancsta/instructor-go/pkg/instructor"
 	"github.com/sashabaranov/go-openai"
 	"google.golang.org/genai"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -129,6 +129,9 @@ func (a *AgentBase) Init(
 		return err
 	}
 
+	// embedded am-dbg TODO ctx
+	a.startAmDbg()
+
 	// dbg relay
 
 	relay, err := a.initRelay()
@@ -137,10 +140,8 @@ func (a *AgentBase) Init(
 	} else if relay != nil {
 		a.relay = relay
 		relay.Start(nil)
+		// TODO wait until relay connected to fwds
 	}
-
-	// embedded am-dbg TODO ctx
-	err = a.startAmDbg()
 
 	// machine
 	mach, err := am.NewCommon(a.ctx, cfg.Agent.ID, a.machSchema, a.states, agentImpl, nil, &am.Opts{
@@ -164,7 +165,9 @@ func (a *AgentBase) Init(
 	a.Log("")
 
 	// aRPC for IPC
-	mux, err := arpc.NewMux(a.ctx, "localhost:0", cfg.Agent.ID, mach, nil)
+	mux, err := arpc.NewMux(a.ctx, "localhost:0", cfg.Agent.ID+"-ipc", mach, &arpc.MuxOpts{
+		Parent: mach,
+	})
 	if err != nil {
 		return err
 	}
@@ -202,7 +205,10 @@ func (a *AgentBase) Init(
 	return nil
 }
 
+// TODO ctx
 func (a *AgentBase) initRelay() (*relay.Relay, error) {
+	// TODO config for pointing WASM to another am-dbg instance
+
 	cfgDbg := a.cfg.Debug
 	if cfgDbg.DBGAddr == "" {
 		return nil, nil
@@ -226,20 +232,23 @@ func (a *AgentBase) initRelay() (*relay.Relay, error) {
 	relayAddr := net.JoinHostPort(relayHost, strconv.Itoa(relayPort+3))
 	// override the am-dbg's listen addr'
 	os.Setenv(dbg.EnvAmDbgAddr, relayAddr)
+	fwdAddrs := slices.Concat(cfgDbg.DBGAddrsFwd, []string{dbgAddr})
 
 	r, err := relay.New(a.ctx, rtypes.CliArgs{
 		Name:  a.cfg.Agent.ID,
-		Debug: cfgDbg.Verbose,
+		Debug: cfgDbg.DBGAddr != "" && cfgDbg.Verbose,
 		RotateDbg: &rtypes.ArgsRotateDbg{
 			ListenAddr:   relayAddr,
-			FwdAddr:      []string{dbgAddr},
+			FwdAddrs:     fwdAddrs,
+			FwdReplayMax: 1000,
 			IntervalTx:   10_000,
 			IntervalTime: 24 * time.Hour,
 			Dir:          filepath.Join(a.cfg.Agent.Dir, "dbg"),
 			OutputMach:   true,
 		},
 		Output: func(format string, v ...any) {
-			a.Log(strings.TrimRight(fmt.Sprintf(format, v...), "\n"))
+			msg := strings.TrimRight(fmt.Sprintf(format, v...), "\n")
+			a.Log(msg, "source", "relay")
 		},
 	})
 	if err != nil {
@@ -303,17 +312,17 @@ func (a *AgentBase) ctxArgs(ctx context.Context, args []any) []any {
 	return args
 }
 
-// LogCtx is a logger sink that extracts am.CtxValue and am.CtxToEv.
+// LogCtx is a logger sink that extracts am.CtxValue and am.CtxToEv. Args like in slog.
 func (a *AgentBase) LogCtx(ctx context.Context, txt string, args ...any) {
 	a.logger.Info(txt, a.ctxArgs(ctx, args)...)
 }
 
-// LogCtxDebug is a DEBUG logger sink that extracts am.CtxValue and am.CtxToEv.
+// LogCtxDebug is a DEBUG logger sink that extracts am.CtxValue and am.CtxToEv. Args like in slog.
 func (a *AgentBase) LogCtxDebug(ctx context.Context, txt string, args ...any) {
 	a.logger.Debug(txt, a.ctxArgs(ctx, args)...)
 }
 
-// LogCtxTrace is a TRACE logger sink that extracts am.CtxValue and am.CtxToEv.
+// LogCtxTrace is a TRACE logger sink that extracts am.CtxValue and am.CtxToEv. Args like in slog.
 func (a *AgentBase) LogCtxTrace(ctx context.Context, txt string, args ...any) {
 	if !a.ConfigBase().Debug.Verbose {
 		return
@@ -322,7 +331,7 @@ func (a *AgentBase) LogCtxTrace(ctx context.Context, txt string, args ...any) {
 	a.logger.Debug(txt, a.ctxArgs(ctx, args)...)
 }
 
-// LogCtxWarn is a WARN logger sink that extracts am.CtxValue and am.CtxToEv.
+// LogCtxWarn is a WARN logger sink that extracts am.CtxValue and am.CtxToEv. Args like in slog.
 func (a *AgentBase) LogCtxWarn(ctx context.Context, txt string, err error, args ...any) {
 	args = append([]any{"err", err}, args...)
 	if a.cfg != nil && a.cfg.Agent.Log.FwdWarnState && a.loggerMach != nil {
@@ -331,7 +340,7 @@ func (a *AgentBase) LogCtxWarn(ctx context.Context, txt string, err error, args 
 	a.logger.Warn(txt, a.ctxArgs(ctx, args)...)
 }
 
-// LogCtxErr is an ERROR logger sink that extracts am.CtxValue and am.CtxToEv.
+// LogCtxErr is an ERROR logger sink that extracts am.CtxValue and am.CtxToEv. Args like in slog.
 func (a *AgentBase) LogCtxErr(ctx context.Context, msg string, err error, args ...any) {
 	args = append([]any{"err", err}, args...)
 	if a.cfg != nil && a.cfg.Agent.Log.FwdErrState && a.loggerMach != nil {
@@ -340,24 +349,24 @@ func (a *AgentBase) LogCtxErr(ctx context.Context, msg string, err error, args .
 	a.logger.Error(msg, a.ctxArgs(ctx, args)...)
 }
 
-// LogEv is an INFO slog logger sink.
+// LogEv is an INFO slog logger sink. Args like in slog.
 func (a *AgentBase) LogEv(e *am.Event, txt string, args ...any) {
 	args = append([]any{"mach_ev", e.Name}, args...)
 	a.logger.Info(txt, args...)
 }
 
-// LogDebug is an DEBUG slog logger sink.
+// LogDebug is an DEBUG slog logger sink. Args like in slog.
 func (a *AgentBase) LogDebug(txt string, args ...any) {
 	a.logger.Debug(txt, args...)
 }
 
-// LogEvDebug is an DEBUG slog logger sink.
+// LogEvDebug is an DEBUG slog logger sink. Args like in slog.
 func (a *AgentBase) LogEvDebug(e *am.Event, txt string, args ...any) {
 	args = append([]any{"mach_ev", e.Name}, args...)
 	a.logger.Debug(txt, args...)
 }
 
-// LogTrace  is an TRACE slog logger sink.
+// LogTrace  is an TRACE slog logger sink. Args like in slog.
 func (a *AgentBase) LogTrace(txt string, args ...any) {
 	if !a.ConfigBase().Debug.Verbose {
 		return
@@ -373,7 +382,7 @@ func (a *AgentBase) LogEvTrace(e *am.Event, txt string, args ...any) {
 	a.LogTrace(txt, args...)
 }
 
-// LogWarn  is an WARN slog logger sink. It can optionally be forwarded to the machine as the WarnLog state.
+// LogWarn  is an WARN slog logger sink. It can optionally be forwarded to the machine as the WarnLog state. Args like in slog.
 func (a *AgentBase) LogWarn(txt string, err error, args ...any) {
 	args = append([]any{"err", err}, args...)
 	// fwd state?
@@ -383,7 +392,7 @@ func (a *AgentBase) LogWarn(txt string, err error, args ...any) {
 	a.logger.Warn(txt, args...)
 }
 
-// LogEvWarn  is an WARN slog logger sink. It can optionally be forwarded to the machine as the WarnLog state.
+// LogEvWarn  is an WARN slog logger sink. It can optionally be forwarded to the machine as the WarnLog state. Args like in slog.
 func (a *AgentBase) LogEvWarn(e *am.Event, txt string, err error, args ...any) {
 	args = append([]any{"mach_ev", e.Name, "err", err}, args...)
 	// fwd state?
@@ -393,7 +402,7 @@ func (a *AgentBase) LogEvWarn(e *am.Event, txt string, err error, args ...any) {
 	a.logger.Warn(txt, args...)
 }
 
-// LogErr is an ERROR slog logger sink. It can optionally be forwarded to the machine as the ErrLog state.
+// LogErr is an ERROR slog logger sink. It can optionally be forwarded to the machine as the ErrLog state. Args like in slog.
 func (a *AgentBase) LogErr(msg string, err error, args ...any) {
 	args = append([]any{"err", err}, args...)
 	// fwd state?
@@ -403,7 +412,7 @@ func (a *AgentBase) LogErr(msg string, err error, args ...any) {
 	a.logger.Error(msg, args...)
 }
 
-// LogEvErr is an ERROR slog logger sink. It can optionally be forwarded to the machine as the ErrLog state.
+// LogEvErr is an ERROR slog logger sink. It can optionally be forwarded to the machine as the ErrLog state. Args like in slog.
 func (a *AgentBase) LogEvErr(e *am.Event, msg string, err error, args ...any) {
 	args = append([]any{"mach_ev", e.Name}, args...)
 	a.LogErr(msg, err, args...)
@@ -482,7 +491,7 @@ func (a *AgentBase) SetConfigBase(cfg *shared.Config) error {
 			},
 		}))
 
-		// redir legacy logger (eg gotty)
+		// redir legacy logger (eg web UI)
 		log.SetFlags(0)
 		log.SetPrefix("")
 		log.SetOutput(io.Discard)
@@ -539,11 +548,24 @@ func (a *AgentBase) DBHistory() *sql.DB {
 	return a.dbHist
 }
 
+func (a *AgentBase) IsStoryDisabled(storyState string) bool {
+	mach := a.Mach()
+	storyName := strings.TrimPrefix(storyState, states.PrefixStory)
+	disabled := states.PrefixStoryDisable + storyName
+	if mach.Has1(disabled) && mach.Is1(disabled) {
+		return true
+	}
+
+	return false
+}
+
 func (a *AgentBase) StoryActivate(e *am.Event, storyState string) am.Result {
-	// TODO verify prefix eg StoryFoo
 	mach := a.Mach()
 
-	// TODO check the story group for [story] and return am.Canceled
+	// TODO check StoryExists(storyState) and return am.Canceled
+	if a.IsStoryDisabled(storyState) {
+		return am.Canceled
+	}
 
 	return mach.EvAdd(e, S{ss.StoryChanged, ss.CheckStories}, am.Pass(&shared.AStoryChanged{
 		StatesList:   S{storyState},
@@ -824,7 +846,7 @@ func (a *AgentBase) BaseDBStartingState(e *am.Event) {
 		if ctx.Err() != nil {
 			return // expired
 		}
-		a.Mach().Add1(ss.BaseDBReady, nil)
+		a.Mach().EvAdd1(e, ss.BaseDBReady, nil)
 	})
 
 	// TODO migrations
@@ -1240,6 +1262,11 @@ func (a *AgentBase) startAmDbg() error {
 	p.OutputDir = a.cfg.Agent.Dir
 	p.ListenAddr = dbgAddr
 	p.UiSsh = true
+	// web UI over livepage, on --listen-addr +1
+	p.UiWeb = true
+	p.UiLivepage = cfg.DBGEmbedWeb
+	// no local terminal screen in the agent process
+	p.UiPty = false
 	p.Version = version
 	p.OutputDiagrams = typesdbg.ParamsOutputDiagramsOne
 	p.ViewExpandLinks = false

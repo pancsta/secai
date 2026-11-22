@@ -1,7 +1,10 @@
 package states
 
+// TODO regen with am-gen
+
 import (
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
+	. "github.com/pancsta/asyncmachine-go/pkg/states/global"
 
 	"github.com/pancsta/secai/states"
 )
@@ -27,8 +30,8 @@ type StatesDef struct {
 type GroupsDef struct {
 }
 
-// Schema represents all relations and properties of States.
-var Schema = SchemaMerge(
+// CollySchema represents all relations and properties of States.
+var CollySchema = SchemaMerge(
 	// inherit from Tool
 	states.ToolSchema,
 

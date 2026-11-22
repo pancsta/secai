@@ -1,0 +1,11 @@
+FROM archlinux:latest
+
+RUN pacman-key --init \
+ && pacman-key --populate archlinux \
+ && pacman -Syu --noconfirm --needed go git ca-certificates \
+ && pacman -Scc --noconfirm
+
+ENV CGO_ENABLED=0 \
+    GOMAXPROCS=4 \
+    GOPATH=/go
+WORKDIR /src

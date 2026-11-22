@@ -16,10 +16,6 @@ import (
 	"time"
 
 	"github.com/charmbracelet/ssh"
-	"github.com/pancsta/instructor-go/pkg/instructor"
-	"github.com/pancsta/instructor-go/pkg/instructor/core"
-	instrg "github.com/pancsta/instructor-go/pkg/instructor/providers/google"
-	instroai "github.com/pancsta/instructor-go/pkg/instructor/providers/openai"
 	amhelp "github.com/pancsta/asyncmachine-go/pkg/helpers"
 	"github.com/pancsta/asyncmachine-go/pkg/history"
 	am "github.com/pancsta/asyncmachine-go/pkg/machine"
@@ -27,6 +23,10 @@ import (
 	"github.com/pancsta/asyncmachine-go/pkg/telemetry/prometheus"
 	"github.com/pancsta/asyncmachine-go/tools/debugger"
 	"github.com/pancsta/asyncmachine-go/tools/generator"
+	"github.com/pancsta/instructor-go/pkg/instructor"
+	"github.com/pancsta/instructor-go/pkg/instructor/core"
+	instrg "github.com/pancsta/instructor-go/pkg/instructor/providers/google"
+	instroai "github.com/pancsta/instructor-go/pkg/instructor/providers/openai"
 	"github.com/sashabaranov/go-openai"
 	oaischema "github.com/sashabaranov/go-openai/jsonschema"
 	"google.golang.org/genai"
@@ -82,6 +82,8 @@ type ARequestingTool struct {
 	Name   string `log:"name"`
 	Source string `log:"source"`
 	Target string `log:"target"`
+	// MachId is the machine ID of the requester, used for dispatching
+	MachId string `log:"mach_id"`
 }
 
 func (ARequestingTool) State() string {
@@ -94,6 +96,8 @@ type ARequestingAI struct {
 	Args
 	Length string `log:"length"`
 	Source string `log:"source"`
+	// MachId is the machine ID of the requester, used for dispatching
+	MachId string `log:"mach_id"`
 }
 
 func (ARequestingAI) State() string {
@@ -339,7 +343,9 @@ type Prompt[P any, R any] struct {
 	Thread    string
 	Reasoning string
 	LastModel string
-	Godoc map[string]string
+	// MachId is the machine ID of the caller, forwarded to RequestingAI
+	MachId string
+	Godoc  map[string]string
 
 	tools      map[string]ToolApi
 	docs       map[string]*Document
@@ -358,7 +364,7 @@ func NewPrompt[P any, R any](agent AgentBaseAPI, state, condition, steps, result
 		HistoryMsgLen: 10,
 		State:         state,
 		A:             agent,
-		Godoc: make(map[string]string),
+		Godoc:         make(map[string]string),
 
 		tools: make(map[string]ToolApi),
 		docs:  make(map[string]*Document),
@@ -453,8 +459,12 @@ func (p *Prompt[P, R]) Exec(e *am.Event, params P, cachedParams []*P, opts ...Pr
 	// metrics
 	mach.EvAdd1(e, ss.RequestingAI, am.Pass(ARequestingAI{
 		Source: p.State,
+		MachId: p.MachId,
 	}))
-	defer mach.EvAdd1(e, ss.RequestedAI, nil)
+	defer mach.EvAdd1(e, ss.RequestedAI, am.Pass(ARequestingAI{
+		Source: p.State,
+		MachId: p.MachId,
+	}))
 
 	// loop over AI provider
 	var c *AIClient
@@ -770,7 +780,6 @@ func (p *Prompt[P, R]) execProvider(
 	return nil, nil, err
 }
 
-
 func (p *Prompt[P, R]) saveDB(
 	ctx context.Context, c *AIClient, historyLen int64, sys, prompt, cache string,
 ) int64 {
@@ -949,6 +958,7 @@ func (c *RawAIClient) Cfg() *ConfigAICommon {
 // string (typically JSON), and ResultSchema defines the expected JSON Schema
 // for structured output enforcement. The raw JSON response is returned
 // via Exec / ExecInto.
+// TODO rebase on Prompt changes
 type PromptRaw struct {
 	Conditions string
 	Steps      string
@@ -1400,14 +1410,14 @@ func (p *PromptRaw) genSysPrompt() string {
 		if len(c) == 0 {
 			continue
 		}
-		docs += "## " + doc.Title() + "\n\n" + strings.Join(doc.Parts(), "\n") + "\n\n"
+		docs += "## " + doc.Title() + "\n\n\t\t" + strings.Join(doc.Parts(), "\n\t\t") + "\n\n"
 	}
 	for _, d := range p.docs {
 		c := d.Parts()
 		if len(c) == 0 {
 			continue
 		}
-		docs += "## " + d.Title() + "\n\n" + strings.Join(d.Parts(), "\n") + "\n\n"
+		docs += "## " + d.Title() + "\n\n\t\t" + strings.Join(d.Parts(), "\n\t\t") + "\n\n"
 	}
 	if docs != "" {
 		docs = "# EXTRA INFORMATION AND CONTEXT\n\n" + docs

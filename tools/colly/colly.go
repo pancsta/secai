@@ -43,7 +43,7 @@ type Tool struct {
 func New(agent shared.AgentBaseAPI) (*Tool, error) {
 	var err error
 	t := &Tool{}
-	t.Tool, err = secai.NewTool(agent, id, title, ss.Names(), sa.Schema)
+	t.Tool, err = secai.NewTool(agent, id, title, ss.Names(), sa.CollySchema)
 	if err != nil {
 		return nil, err
 	}
